@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duo"
+version = "0.1.0"
+description = "Duo - use the Windows PC efficiently by turning the Android device into a headless app server (scrcpy engine + PyQt shell)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "iluluyu" }]
+keywords = ["android", "scrcpy", "mirroring", "windows", "virtual-display"]
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.6"]
+dev = [
+        "pytest>=8",
+        "ruff>=0.6",
+        "mypy>=1.10",
+]
+
+[project.scripts]
+duo = "duo.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/iluluyu/duo"
+Repository = "https://github.com/iluluyu/duo"
+Issues = "https://github.com/iluluyu/duo/issues"
+
+[tool.setuptools.packages.find]
+include = ["duo*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
