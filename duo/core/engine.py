@@ -17,6 +17,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Literal
 
 #: Tools Duo depends on for the mirroring engine.
 REQUIRED_TOOLS: tuple[str, ...] = ("scrcpy", "adb")
@@ -89,3 +90,103 @@ def probe(tool: str) -> ToolInfo:
                 version = lines[0] if lines else None
                 return ToolInfo(name=tool, path=found, version=version)
         return ToolInfo(name=tool, path=None, version=None)
+
+
+# ----------------------------------------------------------------------------
+# Engine argument assembly (EngineArgs)
+#
+# The dataclasses below compile a session description into scrcpy argv.
+# Version quirks discovered by experiment (see plan.md, section 7) live here:
+#   - scrcpy >= 3.0 has no positive ``--clipboard-autosync`` flag (default on,
+#     only ``--no-clipboard-autosync`` exists) — never emit the positive form.
+#   - ``--flex-display`` must be paired with ``--new-display``.
+# ----------------------------------------------------------------------------
+
+DisplayMode = Literal["mirror", "flex", "fixed"]
+
+
+@dataclass(frozen=True)
+class DisplaySpec:
+        """Which Android display to stream.
+
+        mirror: the physical device screen.
+        flex: a virtual display that continuously resizes to match the window
+                (needs scrcpy >= 4.1 with ``--flex-display``).
+        fixed: a virtual display with a locked resolution.
+        """
+
+        mode: DisplayMode = "flex"
+        width: int | None = None
+        height: int | None = None
+        dpi: int | None = 480
+
+        def to_flags(self) -> list[str]:
+                """Compile to scrcpy display flags."""
+                if self.mode == "mirror":
+                        return []
+                if self.mode == "flex":
+                        value = f"/{self.dpi}" if self.dpi else ""
+                        new_display = f"--new-display={value}" if value else "--new-display"
+                        return [new_display, "--flex-display"]
+                if self.width is None or self.height is None:
+                        raise ValueError("fixed display mode requires width and height")
+                value = f"{self.width}x{self.height}"
+                if self.dpi:
+                        value += f"/{self.dpi}"
+                return [f"--new-display={value}"]
+
+
+@dataclass(frozen=True)
+class VideoSpec:
+        """Video encoding parameters.
+
+        ``encoder=None`` lets scrcpy pick the device's default hardware
+        encoder; pinning a specific encoder is a per-device preset decision.
+        """
+
+        codec: str = "h265"
+        encoder: str | None = None
+        bitrate_mbps: int = 30
+        max_fps: int = 90
+
+        def to_flags(self) -> list[str]:
+                """Compile to scrcpy video flags."""
+                flags = [f"--video-codec={self.codec}"]
+                if self.encoder:
+                        flags.append(f"--video-encoder={self.encoder}")
+                flags.append(f"--video-bit-rate={self.bitrate_mbps}M")
+                flags.append(f"--max-fps={self.max_fps}")
+                return flags
+
+
+@dataclass(frozen=True)
+class EngineArgs:
+        """A complete mirroring session, compilable to a scrcpy command."""
+
+        serial: str
+        display: DisplaySpec = DisplaySpec()
+        video: VideoSpec = VideoSpec()
+        app_package: str | None = None
+        screen_off: bool = True
+        stay_awake: bool = True
+        keyboard: str = "uhid"
+        audio: bool = True
+        window_title: str | None = None
+
+        def to_argv(self, binary: str = "scrcpy") -> list[str]:
+                """Compile to a full argv for the scrcpy binary."""
+                argv = [binary, f"--serial={self.serial}"]
+                argv += self.display.to_flags()
+                if self.app_package:
+                        argv.append(f"--start-app={self.app_package}")
+                if self.screen_off:
+                        argv.append("--turn-screen-off")
+                if self.stay_awake:
+                        argv.append("--stay-awake")
+                argv.append(f"--keyboard={self.keyboard}")
+                argv += self.video.to_flags()
+                if not self.audio:
+                        argv.append("--no-audio")
+                if self.window_title:
+                        argv.append(f"--window-title={self.window_title}")
+                return argv

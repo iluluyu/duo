@@ -69,9 +69,11 @@ scrcpy \
   --start-app=<package> \
   --turn-screen-off --stay-awake \
   --max-fps=90 --video-bit-rate=30M --video-codec=h265 \
-  --keyboard=uhid --clipboard-autosync \
+  --keyboard=uhid \
   --window-title="Duo · 背单词"
 ```
+
+> 注：剪贴板同步在 scrcpy 3.0+ 已默认开启，无正向旗标（传 `--clipboard-autosync` 会报错退出）；关闭才需 `--no-clipboard-autosync`。
 
 ## 3. 架构
 
@@ -145,15 +147,18 @@ duo/
 - [x] GitHub 仓库创建（public）
 - [x] 包结构 + pyproject + CI 骨架
 - [x] `python -m duo` 可运行：打印版本、探测 scrcpy/adb
-- [ ] CI 绿灯（ruff + pytest + mypy）
+- [x] CI 绿灯（ruff + pytest + mypy）（2026-09-03 验证通过）
 
 ### M1：MVP 投屏（目标：可日常使用）
-- [ ] 设备列表：`adb devices` 解析 + 热插拔刷新（`adb track-devices` 或轮询）
-- [ ] 引擎探测：定位 PATH / 自带 bundle 目录中的 scrcpy 与 adb，读取 `--version`
-- [ ] 一键投屏：默认参数（h265 / 20Mbps / max-fps 与设备刷新率对齐 / 窗口自适应）
-- [ ] 会话管理：进程存活监控、退出码展示、崩溃重启（最多 3 次）
-- [ ] 参数拼装器 `EngineArgs`：覆盖 R3/R4 的所有旗标，带版本兼容检查
-- [ ] 结构化日志：stdout/stderr 按行采集，写入 `~/.local/share/duo/logs/`
+- [ ] 设备列表：`adb devices` 解析 + 热插拔刷新（`adb track-devices` 或轮询）（✅ 解析与自动选机已实现，热插拔待做）
+- [x] 引擎探测：定位 PATH / 自带 bundle 目录中的 scrcpy 与 adb，读取 `--version`（M0 完成，WSL interop 就绪）
+- [x] 一键投屏：默认参数（h265 / 30M / max-fps=90 / flex 显示 + dpi480）——已固化为 `duo mirror` CLI，全链路实测通过（2026-09-03）
+- [x] 会话管理：进程存活监控、崩溃自动重启（最多 3 次）、退出码；`session.py` 完成
+- [x] 参数拼装器 `EngineArgs`：覆盖 R3/R4 的所有旗标，带版本兼容检查（clipboard 正向旗标缺失、flex 依赖 new-display 已固化在测试里）
+- [x] 结构化日志：stdout/stderr 按行采集，写入 `~/.local/share/duo/logs/`
+- [x] App 品牌化会话：窗口标题 = App 标签（aapt2 解析，APK 拉取缓存）——不背单词实测通过；⚠️ 窗口图标：scrcpy 无旗标，后续走 Windows AUMID+快捷方式或自绘窗口
+- [ ] GUI：设备列表 + 一键投屏按钮（PyQt6）
+- [ ] 热插拔监听 + 拔线状态回落
 
 **验收**：插上平板 → 点一下按钮 → 电脑出现镜像，帧率 ≥ 60，窗口尺寸贴合屏幕；拔线后 Duo 状态正确回落。
 
@@ -196,10 +201,10 @@ duo/
 | 硬解 | `--video-encoder=xxx`（可选） | 默认不动 | 高级选项 |
 | 屏幕适配 | `--window-width/--window-height` | 按主显示器工作区 85% 与设备宽高比计算 | 与 `--max-size` 二选一，倾向窗口侧 |
 | 黑屏 | `--turn-screen-off --stay-awake` | "沉浸模式"开关 | 唤醒用 `MOD+Shift+o` |
-| 虚拟显示 | `--new-display=WxH[/dpi]` | 预设配置，默认 1920x1080/2560x1440 档位 | scrcpy ≥2.0 |
+| 虚拟显示 | `--new-display=WxH[/dpi]` | 预设配置，默认 1920x1080/2560x1440 档位 | scrcpy ≥2.0；另有 `-x/--flex-display`（须与 `--new-display` 同用，不能单独用）：虚拟屏持续跟随窗口尺寸变化 |
 | 启动应用 | `--start-app=<pkg>` | 启动器传入 | scrcpy ≥2.4 |
 | 键盘 | `--keyboard=uhid` | uhid（支持中文输入法）| 旧版行为 `--prefer-text` 兼容 |
-| 剪贴板 | `--clipboard-autosync` | 开 | 同步安卓↔PC |
+| 剪贴板 | 默认开启（无正向旗标） | 默认同步；关闭用 `--no-clipboard-autosync`（3.0 起默认开，⚠️ 4.1 实测正向旗标报错） | 同步安卓↔PC |
 | 多设备 | `--serial=<id>` | 会话绑定设备 | — |
 | 音频 | `--audio-codec=opus`（可选开关） | 默认关闭（背单词场景手机外放即可） | scrcpy ≥2.0，Android ≥11 |
 | 旋转 | `--rotation`/`MOD+r` | — | 平板横竖屏切换 |
@@ -242,7 +247,25 @@ duo/
 - Python ≥ 3.11；依赖：`PyQt6`（gui extra）；工具链：`ruff`、`pytest`、`mypy`
 - 运行: `python -m duo --check`（环境自检，WSL 下显示 interop 模式） / `python -m duo`（GUI，M1 起可用）
 - GUI 运行环境注意: PyQt 壳最终打包为 Windows exe（M5）；开发期可在 WSLg 预览 UI，但投屏会话（spawn `scrcpy.exe`）始终在 Windows 侧进行
-- **手动测试设备（兼容矩阵第 1 行）**: OPPO 平板 `OPD2409`，serial `4444bd6b`，Android **16**，物理分辨率 2400×3392，USB 连接——✅ 已验证：虚拟显示 1920×1080@201dpi 正常、D3D11 渲染正常（首次实验 2026-09-03）
+- **手动测试设备（兼容矩阵第 1 行）**: OPPO 平板 `OPD2409`，serial `4444bd6b`，Android **16**，物理分辨率 2400×3392（刷新率 30/48/50/60/90/120/144Hz 七档），USB 连接——✅ 已验证：虚拟显示 1920×1080@201dpi 正常、D3D11 渲染正常（首次实验 2026-09-03）
+- **实验记录（2026-09-03，黑屏与硬编串流验证）**:
+    - ✅ 黑屏串流：`--turn-screen-off --stay-awake` → server 报 `Device display turned off`，串流继续；退出后屏幕自动恢复 ON（无需手动唤醒）
+    - ✅ 静息跳帧：画面静止时 fps→0（scrcpy 只在内容变化时编码，黑屏挂机时功耗/带宽趋零）
+    - ✅ 硬件编码：`--video-codec=h265 --video-encoder=c2.qti.hevc.encoder`（Qualcomm 硬编）+ `--video-bit-rate=30M` + `--max-fps=90`：滑动动画期间实测峰值 112fps、稳定段 80-100+；`max-fps` 为近似上限（短时可超）
+    - ✅ 组合验证：黑屏 + 硬编 + 高帧率同开无冲突（即背单词命令形态，除 `--new-display`/`--start-app` 外全部就绪）
+    - ✅ 比例解耦验证：`--new-display=2560x1440` + 黑屏 + 硬编 → 虚拟屏 16:9 横版、DPI 自动 268、平板 7:5 物理屏熄灭不参与，串流原生 2560×1440 零黑边；任意 WxH[/dpi] 可选（解决 PC 16:9 vs 平板 7:5 比例不匹配问题）
+    - ⚠️ 副屏桌面不可用：虚拟屏回落到 ColorOS 启动器时渲染乱码（OEM launcher 副屏支持差）。产品决策：**虚拟屏 = 纯 App 容器**，预设必带 `start_app` 直达 App，Duo 不展示任何副屏桌面；App 退出由会话策略处理（重启 App 或结束会话）
+    - ✅ 多虚拟屏并发：同设备同时 10 块 1280×720 虚拟屏（id 10–19）+ 10 路硬编 H.265 并行，零错误零残留。实测下限 ≥10，实际上限受硬编并发/USB 带宽/内存约束，产品合理甜点区 1–3 块高分辨率屏
+    - ✅ flex-display 动态跟随（2026-09-03，不背单词实测）：`--new-display --flex-display` → 虚拟屏尺寸持续跟随 scrcpy 窗口（初始 1280×960 → 窗口最大化后自动变 3840×2054）。彻底解决任务栏导致的宽高比不匹配黑边（4K 屏减任务栏后 ≠16:9，固定尺寸虚拟屏必留边）。⚠️ 限制：`-x` 必须与 `--new-display` 同用。产品决策：Duo 默认显示模式 = flex，固定 WxH 作为预设可选
+    - ⚠️ flex 默认 DPI=160 在 4K 窗口下过小（UI 元素按 1dp=1px 渲染）；用 `--new-display=/DPI` 单独指定 DPI 与 flex 兼容。4K 最大化窗口推荐 480（1dp=3px，≈1280dp 宽大平板布局；320 紧凑 / 560 特大）。EngineArgs 需提供 dpi 旋钮 + 按显示器宽度自动推荐逻辑
+    - ⚠️ ColorOS 限制：`screencap -d <虚拟屏id>` 报 "not valid"，无法直接截取非默认屏（排障时改用 PC 侧窗口截图）
+- **M1 开工（2026-09-03）：代码落地与端到端验证**
+    - ✅ `duo mirror --app <pkg>` 全链路：自动选机 → APK 拉取缓存（设备路径变化自动失效）→ aapt2 标签解析 → EngineArgs 拼装 → 会话监管 → 窗口标题「不背单词」实测生效
+    - ⚠️ APK 解析坑：新式 AXML（header 12 字节）击溃 pyaxmlparser/androguard/apkutils2 三个纯 Python 库；改用 Google Maven 官方 aapt2（`tools.py` 自动下载到 ~/.local/share/duo/tools/，版本 pin 9.4.0-15978811），M5 打包时随 bundle 分发
+    - ✅ 测试 28 项全绿（fixtures 为设备真实输出）；ruff/mypy 干净
+    - 待办：热插拔监听、GUI、窗口图标（AUMID 方案）、stdout flush（nohup 下缓冲）
+    - ✅ 黑屏期间 `adb shell input` 注入正常（Duo 全局热键方案可行）
+    - ⚠️ 引擎参数修正：scrcpy 4.1 无 `--clipboard-autosync` 正向旗标（已更新 §2.1 与 §5）；`EngineArgs` 必须做版本能力表
 
 ## 8. 验收清单（v1.0 Definition of Done）
 
