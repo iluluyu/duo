@@ -608,7 +608,7 @@ namespace DuoChrome
                 float cy = b.Circle.Top + b.Circle.Height / 2f;
                 // AssistiveTouch-style glass disc: flat smoked glass with a
                 // light rim, readable over any content.
-                float disc = 46f * Dpi;
+                float disc = 38f * Dpi;
                 int scrim = b.Pressed ? 200 : (b.Hover ? 175 : 155);
                 using (GraphicsPath path = new GraphicsPath())
                 {
@@ -955,6 +955,11 @@ namespace DuoChrome
         public void BeginResize(int edge)
         {
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            if (_fakedMax)
+            {
+                _fakedMax = false;
+                _top.SetMaximized(false);
+            }
             _resizeEdge = edge;
             _resizeStart = WindowRect();
             NativeMethods.POINT pt;
@@ -1006,6 +1011,11 @@ namespace DuoChrome
         public void BeginMove()
         {
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            if (_fakedMax)
+            {
+                _fakedMax = false;
+                _top.SetMaximized(false);
+            }
             Rectangle wr = WindowRect();
             _moveStart = new Point(wr.Left, wr.Top);
             NativeMethods.POINT pt;
@@ -1312,10 +1322,14 @@ namespace DuoChrome
         {
             if (!_fakedMax || Environment.TickCount < _maxGraceUntil) return;
             Rectangle r = WindowRect();
-            if (Math.Abs(r.X - _maxRect.X) > 2 || Math.Abs(r.Y - _maxRect.Y) > 2 ||
-                Math.Abs(r.Width - _maxRect.Width) > 2 || Math.Abs(r.Height - _maxRect.Height) > 2)
+            // Tolerance covers SDL size-snapping (observed 1-3px drift);
+            // real user drags clear the state explicitly in BeginResize/BeginMove.
+            if (Math.Abs(r.X - _maxRect.X) > 12 || Math.Abs(r.Y - _maxRect.Y) > 12 ||
+                Math.Abs(r.Width - _maxRect.Width) > 12 || Math.Abs(r.Height - _maxRect.Height) > 12)
             {
                 _fakedMax = false;
+                _top.SetMaximized(false);
+                _top.Render();
                 Log.Write("fake maximize dropped");
             }
         }
