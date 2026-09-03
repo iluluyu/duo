@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,9 @@ class SessionSpec:
         log_path: Path
         max_restarts: int = 3
         restart_delay_s: float = 2.0
+
+
+_POLL_INTERVAL_S = 0.5
 
 
 class Session:
@@ -58,17 +62,23 @@ class Session:
                         self._proc.kill()
                         self._proc.wait(timeout=5)
 
-        def run(self) -> int:
+        def run(self, should_stop: Callable[[], bool] | None = None) -> int:
                 """Run the session, restarting on crashes, until clean exit.
 
-                Returns the final exit code. KeyboardInterrupt stops the
-                session and returns 130 (conventional SIGINT exit code).
+                ``should_stop`` is polled twice a second; when it returns True
+                the session is stopped and 2 (device lost) is returned.
+                KeyboardInterrupt stops the session and returns 130.
                 """
                 try:
                         self.start()
                         assert self._proc is not None
                         while True:
-                                return_code = self._proc.wait()
+                                while self.is_alive():
+                                        if should_stop is not None and should_stop():
+                                                self.stop()
+                                                return 2
+                                        time.sleep(_POLL_INTERVAL_S)
+                                return_code = self._proc.returncode
                                 if return_code == 0 or self.restarts >= self.spec.max_restarts:
                                         return return_code
                                 self.restarts += 1

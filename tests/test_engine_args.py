@@ -89,3 +89,39 @@ def test_binary_position():
         assert argv[0] == "scrcpy"
         argv = EngineArgs(serial="s").to_argv(binary="/usr/bin/scrcpy.exe")
         assert argv[0] == "/usr/bin/scrcpy.exe"
+
+
+def test_window_position_emitted_with_flex():
+        """Position flags are allowed alongside flex display."""
+        argv = _argv(
+                serial="s",
+                window_x=100,
+                window_y=50,
+        )
+        assert "--window-x=100" in argv
+        assert "--window-y=50" in argv
+        size_flags = ("--window-width", "--window-height")
+        assert not any(a.startswith(size_flags) for a in argv)
+
+
+def test_window_size_suppressed_under_flex():
+        """Size flags are rejected by --flex-display, so they must not be emitted."""
+        argv = _argv(serial="s", window_width=800, window_height=1200)
+        assert not any(a.startswith("--window-") for a in argv)
+
+
+def test_window_size_emitted_for_fixed():
+        """Fixed display mode can pin the full window geometry."""
+        display = DisplaySpec(mode="fixed", width=1252, height=2088, dpi=313)
+        argv = _argv(
+                serial="s",
+                display=display,
+                window_x=10,
+                window_y=20,
+                window_width=1252,
+                window_height=2088,
+        )
+        assert "--window-x=10" in argv
+        assert "--window-y=20" in argv
+        assert "--window-width=1252" in argv
+        assert "--window-height=2088" in argv

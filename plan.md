@@ -150,15 +150,17 @@ duo/
 - [x] CI 绿灯（ruff + pytest + mypy）（2026-09-03 验证通过）
 
 ### M1：MVP 投屏（目标：可日常使用）
-- [ ] 设备列表：`adb devices` 解析 + 热插拔刷新（`adb track-devices` 或轮询）（✅ 解析与自动选机已实现，热插拔待做）
+- [x] 设备列表与热插拔：`adb devices` 轮询差分（2s）+ 会话随设备断开自动停止（track-devices 二进制帧协议方案弃用，见实验记录）
 - [x] 引擎探测：定位 PATH / 自带 bundle 目录中的 scrcpy 与 adb，读取 `--version`（M0 完成，WSL interop 就绪）
 - [x] 一键投屏：默认参数（h265 / 30M / max-fps=90 / flex 显示 + dpi480）——已固化为 `duo mirror` CLI，全链路实测通过（2026-09-03）
-- [x] 会话管理：进程存活监控、崩溃自动重启（最多 3 次）、退出码；`session.py` 完成
-- [x] 参数拼装器 `EngineArgs`：覆盖 R3/R4 的所有旗标，带版本兼容检查（clipboard 正向旗标缺失、flex 依赖 new-display 已固化在测试里）
+- [x] 会话管理：进程存活监控、崩溃自动重启（最多 3 次）、退出码；拔线自动停止；`session.py` 完成
+- [x] 参数拼装器 `EngineArgs`：覆盖 R3/R4 的所有旗标，带版本兼容检查（clipboard 正向旗标缺失、flex 依赖 new-display、flex 拒绝 window-size 旗标已固化在测试里）
 - [x] 结构化日志：stdout/stderr 按行采集，写入 `~/.local/share/duo/logs/`
 - [x] App 品牌化会话：窗口标题 = App 标签（aapt2 解析，APK 拉取缓存）——不背单词实测通过；⚠️ 窗口图标：scrcpy 无旗标，后续走 Windows AUMID+快捷方式或自绘窗口
-- [ ] GUI：设备列表 + 一键投屏按钮（PyQt6）
-- [ ] 热插拔监听 + 拔线状态回落
+- [x] GUI 雏形：`duo --gui`（PyQt6 面板：设备状态/应用列表/竖屏开关；Apple 美学：克制/留白/KISS；WSLg 不可用时 offscreen 验证，Windows 原生运行）
+- [ ] GUI 在 Windows 侧实景运行验证（WSLg 本环境 DISPLAY 不可用）
+- [ ] 窗口 chrome：无边框 + 顶部悬停控制 + 底部返回/桌面（子代理攻关中）
+- [ ] 拔线回落实景验收（用户拔线观察）
 
 **验收**：插上平板 → 点一下按钮 → 电脑出现镜像，帧率 ≥ 60，窗口尺寸贴合屏幕；拔线后 Duo 状态正确回落。
 
@@ -259,7 +261,9 @@ duo/
     - ✅ flex-display 动态跟随（2026-09-03，不背单词实测）：`--new-display --flex-display` → 虚拟屏尺寸持续跟随 scrcpy 窗口（初始 1280×960 → 窗口最大化后自动变 3840×2054）。彻底解决任务栏导致的宽高比不匹配黑边（4K 屏减任务栏后 ≠16:9，固定尺寸虚拟屏必留边）。⚠️ 限制：`-x` 必须与 `--new-display` 同用。产品决策：Duo 默认显示模式 = flex，固定 WxH 作为预设可选
     - ⚠️ flex 默认 DPI=160 在 4K 窗口下过小（UI 元素按 1dp=1px 渲染）；用 `--new-display=/DPI` 单独指定 DPI 与 flex 兼容。4K 最大化窗口推荐 480（1dp=3px，≈1280dp 宽大平板布局；320 紧凑 / 560 特大）。EngineArgs 需提供 dpi 旋钮 + 按显示器宽度自动推荐逻辑
     - ✅ 竖屏 DPI 调优（2026-09-03）：固定 DPI 在竖屏下 dp 宽度只剩 ~500dp，手机布局拉伸到巨窗 = 元素巨大。解法：`monitor.py` 读物理工作区 → 横屏 flex+按目标 1280dp 反推 DPI（4K→480）；竖屏 `--portrait` = 固定 WxH 屏（宽=工作区高×0.6，≈640dp）+ 右侧预设窗口。实测 1252×2088/313（=640dp 手机布局）
+    - ✅ PowerToys 调窗自动跟随（2026-09-03）：竖屏改回 flex（仅预设位置不锁尺寸，窗口几何完全交给用户的管理器）；用 Win32 SetWindowPos 模拟外部改窗实测 Texture 连续跟随（1250×1302→1886×2000）✅
     - ⚠️ 引擎约束（4.1 实测）：`--window-width/--height` 与 `--flex-display` 互斥（报错），竖屏固定模式可用；PowerShell 查工作区需先 `SetProcessDPIAware()` 否则拿到 150% 缩放的逻辑像素（2560×1392）而非物理像素（3840×2088），scrcpy 窗口用的是物理像素
+    - ⚠️ `adb track-devices` 用二进制长度前缀帧协议（无行分隔，实测首帧 `\x00\x10` + payload），行式解析不可用 → 热插拔改用 2s 轮询 `adb devices` 差分（KISS，跨版本稳定）
     - ⚠️ ColorOS 限制：`screencap -d <虚拟屏id>` 报 "not valid"，无法直接截取非默认屏（排障时改用 PC 侧窗口截图）
 - **M1 开工（2026-09-03）：代码落地与端到端验证**
     - ✅ `duo mirror --app <pkg>` 全链路：自动选机 → APK 拉取缓存（设备路径变化自动失效）→ aapt2 标签解析 → EngineArgs 拼装 → 会话监管 → 窗口标题「不背单词」实测生效

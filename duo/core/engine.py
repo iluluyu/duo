@@ -107,21 +107,17 @@ DisplayMode = Literal["mirror", "flex", "fixed"]
 
 @dataclass(frozen=True)
 class WindowGeometry:
-        """Optional scrcpy window placement (screen coordinates)."""
+        """A scrcpy window placement (screen coordinates)."""
 
         x: int
         y: int
         width: int
         height: int
 
-        def to_flags(self) -> list[str]:
-                """Compile to scrcpy window geometry flags."""
-                return [
-                        f"--window-x={self.x}",
-                        f"--window-y={self.y}",
-                        f"--window-width={self.width}",
-                        f"--window-height={self.height}",
-                ]
+
+def _int_flag(name: str, value: int | None) -> list[str]:
+        """Emit a window geometry flag only when a value is set."""
+        return [f"--{name}={value}"] if value is not None else []
 
 
 @dataclass(frozen=True)
@@ -191,7 +187,10 @@ class EngineArgs:
         keyboard: str = "uhid"
         audio: bool = True
         window_title: str | None = None
-        window: WindowGeometry | None = None
+        window_x: int | None = None
+        window_y: int | None = None
+        window_width: int | None = None
+        window_height: int | None = None
 
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
@@ -209,6 +208,12 @@ class EngineArgs:
                         argv.append("--no-audio")
                 if self.window_title:
                         argv.append(f"--window-title={self.window_title}")
-                if self.window:
-                        argv += self.window.to_flags()
+                # Position flags are allowed with --flex-display; size flags
+                # are rejected by it (experiment finding) and only make sense
+                # together with a fixed-size display.
+                argv += _int_flag("window-x", self.window_x)
+                argv += _int_flag("window-y", self.window_y)
+                if self.display.mode != "flex":
+                        argv += _int_flag("window-width", self.window_width)
+                        argv += _int_flag("window-height", self.window_height)
                 return argv

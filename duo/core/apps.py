@@ -73,16 +73,6 @@ class Adb:
 # ----------------------------------------------------------------------------
 
 
-def parse_device_serials(devices_output: str) -> list[str]:
-        """Parse ``adb devices`` output into online device serials."""
-        serials = []
-        for line in devices_output.splitlines()[1:]:
-                fields = line.split()
-                if len(fields) >= 2 and fields[1] == "device":
-                        serials.append(fields[0])
-        return serials
-
-
 def parse_package_list(packages_output: str, third_party: bool = True) -> list[str]:
         """Parse ``pm list packages [-3]`` output into package names (sorted)."""
         names = []
@@ -239,15 +229,3 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
                 version_name=fields.get("version_name"),
                 icon_path=icon_path,
         )
-
-
-def list_device_serials(adb_binary: str) -> list[str]:
-        """List serials of devices currently online (no serial binding)."""
-        result = subprocess.run(
-                [adb_binary, "devices"],
-                capture_output=True,
-                text=True,
-                timeout=_RUN_TIMEOUT_S,
-                check=False,
-        )
-        return parse_device_serials(result.stdout or "")
