@@ -19,22 +19,30 @@ from PyQt6.QtGui import QCloseEvent, QFont, QIcon
 from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
+        QGridLayout,
         QHBoxLayout,
         QLabel,
         QMainWindow,
         QPushButton,
+        QScrollArea,
         QToolButton,
         QVBoxLayout,
         QWidget,
 )
 
-from duo.core.apps import Adb, app_info
+from duo.core.apps import Adb, AdbError, app_info
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.paths import data_dir
 from duo.core.winproc import creation_flags
 
 #: Session key for whole-device mirroring (not an app package).
 MIRROR_KEY = "__device_mirror__"
+
+
+def package_to_label(package: str) -> str:
+        """Human-ish fallback label for uncataloged packages."""
+        tail = package.rsplit(".", 1)[-1]
+        return tail[:1].upper() + tail[1:]
 
 #: Small curated catalog; filtered against installed packages at startup.
 APP_CATALOG: list[tuple[str, str]] = [
@@ -163,6 +171,8 @@ class _Bridge(QObject):
         devices_changed = pyqtSignal(object)
         apps_resolved = pyqtSignal(object)
         icon_ready = pyqtSignal(str, object)
+        all_apps_ready = pyqtSignal(object)
+        all_icon_ready = pyqtSignal(str, object, str)
 
 
 def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> None:
@@ -208,6 +218,8 @@ class MainWindow(QMainWindow):
                 self._bridge = _Bridge()
                 self._bridge.devices_changed.connect(self._on_devices)
                 self._bridge.apps_resolved.connect(self._on_apps)
+                self._bridge.all_apps_ready.connect(self._on_all_apps)
+                self._bridge.all_icon_ready.connect(self._on_all_icon)
                 self._installed: set[str] | None = None
                 self._icon_buttons: dict[str, QPushButton] = {}
                 self._portrait_prefs = load_portrait_prefs()
@@ -250,6 +262,8 @@ class MainWindow(QMainWindow):
                 column.addWidget(self._build_device_card())
                 column.addSpacing(6)
                 column.addWidget(self._build_apps_card())
+                column.addSpacing(6)
+                column.addWidget(self._build_all_apps_card())
                 column.addSpacing(6)
                 column.addWidget(self._build_running_card())
                 column.addSpacing(6)
@@ -335,6 +349,28 @@ class MainWindow(QMainWindow):
                 inner.addWidget(button)
                 return card
 
+        def _build_all_apps_card(self) -> QFrame:
+                """Every user-installed app: letter avatars first, real icons
+                resolving in the background (APK pull + aapt2, cached)."""
+                card, inner = self._card()
+                inner.addWidget(_label("全部应用", "section"))
+                self._all_grid_host = QWidget()
+                self._all_grid_host.setObjectName("all-apps-host")
+                self._all_grid = QGridLayout(self._all_grid_host)
+                self._all_grid.setContentsMargins(0, 0, 0, 0)
+                self._all_grid.setSpacing(8)
+                self._all_buttons: dict[str, QPushButton] = {}
+                scroll = QScrollArea()
+                scroll.setObjectName("all-apps")
+                scroll.setWidgetResizable(True)
+                scroll.setFixedHeight(180)
+                scroll.setWidget(self._all_grid_host)
+                inner.addWidget(scroll)
+                hint = _label("字母头像为占位，图标后台解析中…", "caption")
+                self._all_hint = hint
+                inner.addWidget(hint)
+                return card
+
         def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
                 portrait = self._portrait_prefs.get(package, False)
                 orientation = "竖屏" if portrait else "横屏"
@@ -383,6 +419,70 @@ class MainWindow(QMainWindow):
                 text = f"已安装：{', '.join(present)}" if present else "目录中无已安装应用"
                 self._status.setText(text)
                 self._load_icons()
+                self._load_all_apps()
+
+        def _load_all_apps(self) -> None:
+                """Query every third-party package, then resolve icons lazily."""
+
+                def work() -> None:
+                        serial = next(iter(self._monitor.online), None)
+                        if not serial:
+                                return
+                        adb = Adb(self._adb_binary, serial)
+                        try:
+                                packages = adb.third_party_packages()
+                        except (AdbError, OSError):
+                                return
+                        self._bridge.all_apps_ready.emit(packages)
+                        # Sequential background resolution: real icon + label
+                        # per app (cached in the data dir after first pass).
+                        for package in packages:
+                                try:
+                                        info = app_info(adb, package)
+                                except Exception:
+                                        continue
+                                self._bridge.all_icon_ready.emit(
+                                        package, info.icon_path, info.label
+                                )
+
+                threading.Thread(target=work, daemon=True).start()
+
+        def _on_all_apps(self, packages: object) -> None:
+                """Fill the grid with letter-avatar buttons (placeholders)."""
+                assert isinstance(packages, list)
+                per_row = 8
+                for index, package in enumerate(packages):
+                        short = package.rsplit(".", 1)[-1][:2].upper()
+                        button = QPushButton(short)
+                        button.setObjectName("mini-icon")
+                        button.setFixedSize(44, 44)
+                        button.setIconSize(QSize(34, 34))
+                        button.setToolTip(package)
+                        button.clicked.connect(
+                                lambda _=False, pkg=package, fn=self._launch: fn(
+                                        pkg, package_to_label(pkg)
+                                )
+                        )
+                        self._all_buttons[package] = button
+                        self._all_grid.addWidget(
+                                button, index // per_row, index % per_row
+                        )
+                count = len(packages)
+                self._all_hint.setText(
+                        f"共 {count} 个应用 · 图标后台解析中（仅首次较慢）"
+                )
+
+        def _on_all_icon(self, package: str, icon_path: object, label: str) -> None:
+                """Swap a letter avatar for the real icon + label."""
+                button = self._all_buttons.get(package)
+                if button is None or icon_path is None:
+                        return
+                icon = QIcon(str(icon_path))
+                if icon.isNull():
+                        return
+                button.setText("")
+                button.setIcon(icon)
+                button.setToolTip(f"{label} · {package}")
 
         def _load_icons(self) -> None:
                 """Resolve icons in the background (first run pulls APKs)."""

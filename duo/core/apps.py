@@ -33,6 +33,8 @@ _AAPT2_URL = (
 
 _RUN_TIMEOUT_S = 60.0
 _PULL_TIMEOUT_S = 300.0
+#: APKs larger than this are skipped for icon extraction (letter avatar stays).
+_MAX_ICON_APK_BYTES = 200 * 1024 * 1024
 
 
 class AdbError(RuntimeError):
@@ -45,6 +47,20 @@ class Adb:
         def __init__(self, binary: str, serial: str) -> None:
                 self.binary = binary
                 self.serial = serial
+
+        def third_party_packages(self, timeout: float = _RUN_TIMEOUT_S) -> list[str]:
+                """User-installed (third-party) packages, sorted.
+
+                ``pm list packages -3`` skips the preinstalled system bulk -
+                what a launcher should offer is what the user installed.
+                """
+                result = self.run("shell", "pm", "list", "packages", "-3", timeout=timeout)
+                names = [
+                        line.removeprefix("package:").strip()
+                        for line in result.splitlines()
+                        if line.startswith("package:")
+                ]
+                return sorted(names)
 
         def run(self, *args: str, timeout: float = _RUN_TIMEOUT_S) -> str:
                 """Run adb for this device and return stdout."""
@@ -365,6 +381,18 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
         device_path = parse_base_apk_path(adb.shell(f"pm path {package}"))
         if device_path is None:
                 raise AdbError(f"package {package} is not installed on {adb.serial}")
+
+        # Size guard: huge APKs (games) are not worth pulling just for an
+        # icon; the panel keeps its letter avatar for them.
+        size_stat = adb.shell(f"stat -c %s {device_path}").strip()
+        try:
+                if int(size_stat) > _MAX_ICON_APK_BYTES:
+                        raise AdbError(
+                                f"{package} apk too large for icon extraction "
+                                f"({int(size_stat) // (1 << 20)} MB)"
+                        )
+        except ValueError:
+                pass  # unexpected stat output - let the pull try
 
         apk_path = apk_cache / f"{package}.apk"
         meta_path = apk_cache / f"{package}.json"
