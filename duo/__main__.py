@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import time
 
 from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info
+from duo.core.audio_lock import AudioLock
 from duo.core.chrome import ChromeError, ChromeOverlay
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import (
@@ -127,13 +129,21 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 title = info.label
                 print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
 
+        # Single-audio arbitration: only one live session may capture the
+        # device mixer (two captures crackle). Later windows start muted.
+        audio = not args.no_audio
+        audio_lock = AudioLock()
+        if audio and not audio_lock.acquire():
+                audio = False
+                print("audio already owned by another duo window - muted", flush=True)
+
         engine_args = EngineArgs(
                 serial=serial,
                 display=display,
                 video=video,
                 app_package=args.app,
                 screen_off=not args.no_screen_off,
-                audio=not args.no_audio,
+                audio=audio,
                 window_title=title,
                 window_x=engine_window.get("window_x"),
                 window_y=engine_window.get("window_y"),
@@ -177,6 +187,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 monitor.stop()
                 if overlay is not None:
                         overlay.stop()
+                audio_lock.release()
         if code == 2:
                 print("device disconnected - session stopped", flush=True)
         return code
@@ -247,6 +258,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
         """Parse CLI arguments and dispatch subcommands."""
+        # The GUI panel terminates sessions with SIGTERM; route it through
+        # SystemExit so the finally blocks stop the overlay and scrcpy.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         parser = _build_parser()
         args = parser.parse_args(argv)
 
