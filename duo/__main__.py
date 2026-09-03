@@ -153,7 +153,11 @@ def _run_mirror(args: argparse.Namespace) -> int:
         if args.chrome:
                 if not title:
                         raise ChromeError("--chrome needs a window title: pass --app or --title")
-                overlay = ChromeOverlay(title=title, serial=serial, adb_path=adb_info.path)
+                # Long-press-home only makes sense when mirroring the real
+                # display; a virtual display has no launcher behind the app.
+                overlay = ChromeOverlay(
+                        title=title, serial=serial, adb_path=adb_info.path, home=args.app is None
+                )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
 
