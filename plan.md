@@ -236,11 +236,13 @@ duo/
 
 ## 7. 开发与调试环境
 
-- **开发机**: Linux（本仓库维护处）；**目标平台**: Windows 10/11 x64
-- Python ≥ 3.11；`uv` 或 `pip` 管理；依赖：`PyQt6`、`pyqt6-tools`(dev)
-- 工具链：`ruff`（lint+format）、`pytest`、`mypy`
-- 运行: `python -m duo`（GUI） / `python -m duo --check`（环境自检）
-- 手动测试设备：用户的安卓平板（开启 USB 调试）
+- **开发机**: WSL2 (Linux)；**目标平台**: Windows 10/11 x64
+- **关键约定（WSL interop 工作流）**: 开发在 WSL，实验跑 Windows 侧 —— 通过 interop 调用 Windows 二进制（`scrcpy.exe` / `adb.exe`）。只有 Windows 侧 adb 能看到 USB 设备，也只有 Windows 侧 scrcpy 能在桌面开窗。`engine.probe()` 在 WSL 下自动优先探测 `.exe` 变体
+- **引擎现状（已验证）**: scrcpy **4.1** + adb **37.0.1**（scoop 安装，均在 Windows PATH）
+- Python ≥ 3.11；依赖：`PyQt6`（gui extra）；工具链：`ruff`、`pytest`、`mypy`
+- 运行: `python -m duo --check`（环境自检，WSL 下显示 interop 模式） / `python -m duo`（GUI，M1 起可用）
+- GUI 运行环境注意: PyQt 壳最终打包为 Windows exe（M5）；开发期可在 WSLg 预览 UI，但投屏会话（spawn `scrcpy.exe`）始终在 Windows 侧进行
+- **手动测试设备（兼容矩阵第 1 行）**: OPPO 平板 `OPD2409`，serial `4444bd6b`，Android **16**，物理分辨率 2400×3392，USB 连接——✅ 已验证：虚拟显示 1920×1080@201dpi 正常、D3D11 渲染正常（首次实验 2026-09-03）
 
 ## 8. 验收清单（v1.0 Definition of Done）
 

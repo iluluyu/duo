@@ -6,12 +6,14 @@ import argparse
 import sys
 
 from duo import __version__
-from duo.core.engine import REQUIRED_TOOLS, probe
+from duo.core.engine import REQUIRED_TOOLS, is_wsl, probe
 
 
 def _run_check() -> int:
         """Print an environment report and return an exit code (0 = all tools present)."""
         print(f"duo {__version__}")
+        env = "wsl (windows binaries via interop)" if is_wsl() else "native"
+        print(f"environment: {env}")
         print("-" * 48)
         missing: list[str] = []
         for tool in REQUIRED_TOOLS:
