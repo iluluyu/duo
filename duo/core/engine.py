@@ -186,6 +186,8 @@ class EngineArgs:
         stay_awake: bool = True
         keyboard: str = "uhid"
         audio: bool = True
+        audio_codec: str = "flac"          # lossless; bandwidth is cheap on USB
+        audio_buffer_ms: int = 100         # >50ms default: kills crackling
         window_title: str | None = None
         window_x: int | None = None
         window_y: int | None = None
@@ -207,6 +209,9 @@ class EngineArgs:
                 argv += self.video.to_flags()
                 if not self.audio:
                         argv.append("--no-audio")
+                else:
+                        argv.append(f"--audio-codec={self.audio_codec}")
+                        argv.append(f"--audio-buffer={self.audio_buffer_ms}")
                 if self.window_title:
                         argv.append(f"--window-title={self.window_title}")
                 # A borderless window loses its title bar and decorations; the
