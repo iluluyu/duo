@@ -182,6 +182,7 @@ namespace DuoChrome
         public readonly Action Fire;
         public readonly int Kind;          // 0 = chevron, 1 = ring, 2..4 = win glyphs
         public bool Hover;
+        public bool Pressed;
 
         public NavButton(Rectangle circle, int kind, Action fire)
         {
@@ -262,6 +263,8 @@ namespace DuoChrome
             if (old != null) old.Dispose();
         }
 
+        protected bool GhostBackdrop;   // true = no bar surface, only what PaintBar draws
+
         public void Render()
         {
             if (Width <= 0 || Height <= 0) return;
@@ -271,13 +274,22 @@ namespace DuoChrome
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.PixelOffsetMode = PixelOffsetMode.Half;
-                    using (GraphicsPath clip = RoundedPath(
-                        Width, Height, _radiusTop, _radiusBottom))
-                    using (Region region = new Region(clip))
+                    if (GhostBackdrop)
                     {
-                        g.SetClip(region, CombineMode.Replace);
-                        DrawAcrylic(g);
+                        // Minimal surface: unpainted pixels stay alpha=0 and
+                        // pass clicks through to the mirrored app.
                         PaintBar(g);
+                    }
+                    else
+                    {
+                        using (GraphicsPath clip = RoundedPath(
+                            Width, Height, _radiusTop, _radiusBottom))
+                        using (Region region = new Region(clip))
+                        {
+                            g.SetClip(region, CombineMode.Replace);
+                            DrawAcrylic(g);
+                            PaintBar(g);
+                        }
                     }
                 }
                 PushLayered(bmp);
@@ -487,6 +499,7 @@ namespace DuoChrome
         public ChinWindow(Controller owner, bool home)
             : base(owner, 0, (int)(18 * ScaleOf()))
         {
+            GhostBackdrop = true;
             int btn = (int)(LogicalButton * Dpi);
             int h = (int)(LogicalHeight * Dpi);
             Size = new Size(600, h);           // width resynced by the controller
@@ -520,7 +533,8 @@ namespace DuoChrome
             };
             MouseLeave += delegate
             {
-                foreach (NavButton b in Buttons) b.Hover = false;
+                foreach (NavButton b in Buttons) { b.Hover = false; b.Pressed = false; }
+                _hold.Stop();
                 Render();
             };
             MouseClick += delegate(object s, MouseEventArgs e)
@@ -533,6 +547,9 @@ namespace DuoChrome
                 if (e.Button == MouseButtons.Left && HitIndex(e.Location) >= 0)
                 {
                     _firedHold = false;
+                    Buttons[0].Pressed = true;
+                    Capture = true;   // ensure the matching MouseUp comes home
+                    Render();
                     _hold.Start();
                     return;
                 }
@@ -546,6 +563,12 @@ namespace DuoChrome
             MouseUp += delegate(object s, MouseEventArgs e)
             {
                 _hold.Stop();
+                if (Buttons[0].Pressed)
+                {
+                    Buttons[0].Pressed = false;
+                    Capture = false;
+                    Render();
+                }
                 if (e.Button == MouseButtons.Left && (Ctrl.Resizing || Ctrl.Moving))
                 {
                     Ctrl.EndResize();
@@ -575,18 +598,44 @@ namespace DuoChrome
 
         protected override void PaintBar(Graphics g)
         {
-            // Hairline along the top edge: rgba(255,255,255,0.10).
-            using (Pen pen = new Pen(Color.FromArgb(26, 255, 255, 255), 1f))
-                g.DrawLine(pen, 0, 0.5f, Width, 0.5f);
+            // Invisible resize sliver along the very bottom (alpha=1 is enough
+            // to stay hit-testable while visually imperceptible).
+            using (SolidBrush band = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
+                g.FillRectangle(band, 0, Height - S6(), Width, S6());
             foreach (NavButton b in Buttons)
             {
-                DrawHoverFill(g, b);
                 float cx = b.Circle.Left + b.Circle.Width / 2f;
                 float cy = b.Circle.Top + b.Circle.Height / 2f;
-                float opacity = b.Hover ? 1.0f : 0.72f;
-                if (b.Kind == 0) DrawChevron(g, cx, cy, opacity);
-                else DrawRing(g, cx, cy, opacity);
+                // AssistiveTouch-style glass disc: flat smoked glass with a
+                // light rim, readable over any content.
+                float disc = 46f * Dpi;
+                int scrim = b.Pressed ? 200 : (b.Hover ? 175 : 155);
+                using (GraphicsPath path = new GraphicsPath())
+                {
+                    path.AddEllipse(cx - disc / 2f, cy - disc / 2f, disc, disc);
+                    using (SolidBrush glass = new SolidBrush(Color.FromArgb(scrim, 10, 10, 12)))
+                        g.FillPath(glass, path);
+                    // top rim highlight
+                    using (Pen rim = new Pen(Color.FromArgb(b.Pressed ? 90 : 55, 255, 255, 255), 1f))
+                        g.DrawArc(rim, cx - disc / 2f, cy - disc / 2f, disc, disc, 200f, 100f);
+                }
+                // hover glow halo
+                if (b.Hover || b.Pressed)
+                {
+                    using (Pen halo = new Pen(Color.FromArgb(60, 255, 255, 255), 1.6f * Dpi))
+                    {
+                        float d2 = disc + 7f * Dpi;
+                        g.DrawEllipse(halo, cx - d2 / 2f, cy - d2 / 2f, d2, d2);
+                    }
+                }
+                float opacity = (b.Hover || b.Pressed) ? 1.0f : 0.72f;
+                DrawRing(g, cx, cy, opacity);
             }
+        }
+
+        private int S6()
+        {
+            return (int)(6 * Dpi);
         }
 
         public void ResyncWidth(int width)
@@ -616,6 +665,7 @@ namespace DuoChrome
         public TopWindow(Controller owner)
             : base(owner, (int)(18 * ScaleOf()), (int)(18 * ScaleOf()))
         {
+            GhostBackdrop = true;
             float s = ScaleOf();
             int btn = (int)(LogicalButton * s);
             int pad = (int)(LogicalPad * s);
@@ -675,6 +725,16 @@ namespace DuoChrome
 
         protected override void PaintBar(Graphics g)
         {
+            // Minimal capsule: anti-aliased smoked-glass fill (FillPath, not a
+            // Region clip - clips have hard edges) with a light rim.
+            float rad = Height / 2f;
+            using (GraphicsPath path = RoundedPath(Width, Height, (int)rad, (int)rad))
+            {
+                using (SolidBrush glass = new SolidBrush(Color.FromArgb(180, 10, 10, 12)))
+                    g.FillPath(glass, path);
+                using (Pen rim = new Pen(Color.FromArgb(70, 255, 255, 255), 1f))
+                    g.DrawPath(rim, path);
+            }
             Font font = GlyphFont(Dpi);
             foreach (NavButton b in Buttons)
             {
@@ -1067,7 +1127,9 @@ namespace DuoChrome
             }
 
             DropStaleFakeMax();
-            MaybeSample();
+            // NOTE: PrintWindow content sampling retired - both bars are
+            // flat smoked glass now, and dropping the 220ms sample cadence
+            // made the bars track window moves noticeably tighter.
         }
 
         private void HideBars()
@@ -1119,6 +1181,13 @@ namespace DuoChrome
             {
                 _chin.Show();
                 Log.Write("chin shown");
+            }
+            // Hook-driven: keep the capsule glued during moves/resizes too,
+            // not just on the 20fps tick.
+            if (_top.Visible)
+            {
+                _top.Left = client.Right - _top.Width - S(TopMargin);
+                _top.Top = client.Top + S(TopMargin);
             }
             _chin.Render();
             if (_top.Visible) _top.Render();
