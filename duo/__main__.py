@@ -8,6 +8,7 @@ import time
 
 from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info
+from duo.core.chrome import ChromeError, ChromeOverlay
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import (
         REQUIRED_TOOLS,
@@ -138,6 +139,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 window_y=engine_window.get("window_y"),
                 window_width=engine_window.get("window_width"),
                 window_height=engine_window.get("window_height"),
+                borderless=args.chrome,
         )
         command = engine_args.to_argv(binary=scrcpy_info.path)
 
@@ -145,6 +147,15 @@ def _run_mirror(args: argparse.Namespace) -> int:
         log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
         session = Session(SessionSpec(command=command, log_path=log_path))
         print(f"session log: {log_path}", flush=True)
+
+        # Window chrome: borderless window + Windows-side hover overlay.
+        overlay: ChromeOverlay | None = None
+        if args.chrome:
+                if not title:
+                        raise ChromeError("--chrome needs a window title: pass --app or --title")
+                overlay = ChromeOverlay(title=title, serial=serial, adb_path=adb_info.path)
+                overlay_log = overlay.start()
+                print(f"chrome overlay log: {overlay_log}", flush=True)
 
         # Hotplug watch: stop the session when the device goes away.
         changes: list[dict[str, str]] = []
@@ -160,6 +171,8 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 code = session.run(should_stop=device_gone)
         finally:
                 monitor.stop()
+                if overlay is not None:
+                        overlay.stop()
         if code == 2:
                 print("device disconnected - session stopped", flush=True)
         return code
@@ -218,6 +231,12 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         mirror.add_argument("--no-audio", action="store_true", help="disable audio forwarding")
         mirror.add_argument("--title", help="window title (defaults to the app label)")
+        mirror.add_argument(
+                "--chrome",
+                action="store_true",
+                help="borderless window with hover-revealed edge controls "
+                "(min/max/close, back/home overlay)",
+        )
 
         return parser
 
@@ -238,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mirror":
                 try:
                         return _run_mirror(args)
-                except AdbError as exc:
+                except (AdbError, ChromeError) as exc:
                         print(f"error: {exc}", file=sys.stderr)
                         return 1
         if not args.check:
