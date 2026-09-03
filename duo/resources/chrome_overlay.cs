@@ -203,11 +203,11 @@ namespace DuoChrome
         private readonly int _radiusTop, _radiusBottom;
         private Bitmap _behind;               // sampled content, may be null
         protected readonly List<NavButton> Buttons = new List<NavButton>();
-        protected readonly Controller Owner;
+        protected readonly Controller Ctrl;
 
         protected OverlayWindow(Controller owner, int radiusTop, int radiusBottom)
         {
-            Owner = owner;
+            Ctrl = owner;
             Bitmap probe = new Bitmap(1, 1);
             using (Graphics g = Graphics.FromImage(probe)) Dpi = g.DpiX / 96f;
             probe.Dispose();
@@ -409,6 +409,7 @@ namespace DuoChrome
         {
             MouseMove += delegate(object s, MouseEventArgs e)
             {
+                if (Ctrl.Resizing) return;   // drag-in-progress: no hover churn
                 int hit = HitIndex(e.Location);
                 Cursor = hit >= 0 ? Cursors.Hand
                     : (ResizeEdgeAt(e.Location) != 0 ? Cursors.SizeNS : Cursors.Default);
@@ -427,14 +428,34 @@ namespace DuoChrome
                 if (hit >= 0) Buttons[hit].Fire();
             };
             // The target window is borderless: SDL swallows native edge
-            // hit-testing, so drags on empty bar area inject the native
-            // size-move loop (WM_SYSCOMMAND SC_SIZE) on the target instead.
+            // hit-testing, so drags on empty bar area resize the target via
+            // our own mouse capture + live SetWindowPos (normal feel).
             MouseDown += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
                 if (HitIndex(e.Location) >= 0) return;
                 int edge = ResizeEdgeAt(e.Location);
-                if (edge != 0) Owner.ScSize(edge);
+                if (edge != 0)
+                {
+                    Ctrl.BeginResize(edge);
+                    Capture = true;
+                }
+            };
+            MouseUp += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && Ctrl.Resizing)
+                {
+                    Ctrl.EndResize();
+                    Capture = false;
+                }
+            };
+            MouseUp += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && Ctrl.Resizing)
+                {
+                    Ctrl.EndResize();
+                    Capture = false;
+                }
             };
         }
 
@@ -614,6 +635,111 @@ namespace DuoChrome
     // -------------------------------------------------------------------------
     // Controller: discovery, window repair, tracking, sampling, visibility.
     // -------------------------------------------------------------------------
+    /// <summary>An invisible layered hot-zone hugging one window edge.
+    /// Pixel alpha is zero everywhere, but layered windows still receive
+    /// mouse input, so this is how the borderless scrcpy window regains
+    /// native-feeling resize edges (correct cursors, live feedback).</summary>
+    internal sealed class EdgeStrip : Form
+    {
+        public readonly int Edge;   // HT code: 10 left .. 17 bottomright
+        private readonly Controller _owner;
+
+        public EdgeStrip(Controller owner, int edge)
+        {
+            _owner = owner;
+            Edge = edge;
+            StartPosition = FormStartPosition.Manual;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            AutoScaleMode = AutoScaleMode.None;
+            Bounds = new Rectangle(-20000, -20000, 1, 1);   // parked until synced
+            bool vertical = edge == 10 || edge == 11;
+            bool horizontal = edge == 12 || edge == 15;
+            if (vertical) Cursor = Cursors.SizeWE;
+            else if (horizontal) Cursor = Cursors.SizeNS;
+            else if (edge == 13 || edge == 17) Cursor = Cursors.SizeNWSE;
+            else Cursor = Cursors.SizeNESW;
+            MouseDown += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) return;
+                _owner.BeginResize(Edge);
+                Capture = true;
+            };
+            MouseMove += delegate(object s, MouseEventArgs e)
+            {
+                if (_owner.Resizing) _owner.UpdateResize();
+            };
+            MouseUp += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && _owner.Resizing)
+                {
+                    _owner.EndResize();
+                    Capture = false;
+                }
+            };
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00080000      // WS_EX_LAYERED
+                           | 0x08000000      // WS_EX_NOACTIVATE
+                           | 0x00000080      // WS_EX_TOOLWINDOW
+                           | 0x00000008;     // WS_EX_TOPMOST
+                return cp;
+            }
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            PushGhost();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            if (IsHandleCreated) PushGhost();
+        }
+
+        /// <summary>Make every pixel fully transparent (alpha 0) yet keep the
+        /// window hit-testable - only WS_EX_TRANSPARENT would pass clicks
+        /// through, and we deliberately do not set it.</summary>
+        private void PushGhost()
+        {
+            if (Width <= 0 || Height <= 0) return;
+            using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
+            {
+                // leave all pixels at (0,0,0,0)
+                IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
+                IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
+                IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
+                IntPtr old = NativeMethods.SelectObject(mem, hbm);
+                try
+                {
+                    NativeMethods.SIZE size;
+                    size.cx = Width; size.cy = Height;
+                    NativeMethods.POINT src;
+                    src.X = 0; src.Y = 0;
+                    NativeMethods.BLENDFUNCTION blend;
+                    blend.BlendOp = 0; blend.BlendFlags = 0;
+                    blend.SourceConstantAlpha = 255; blend.AlphaFormat = 1;
+                    NativeMethods.UpdateLayeredWindow(
+                        Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2);
+                }
+                finally
+                {
+                    NativeMethods.SelectObject(mem, old);
+                    NativeMethods.DeleteObject(hbm);
+                    NativeMethods.DeleteDC(mem);
+                    NativeMethods.ReleaseDC(IntPtr.Zero, screen);
+                }
+            }
+        }
+    }
+
     internal sealed class Controller : IDisposable
     {
         private const int TickMs = 50;
@@ -640,6 +766,7 @@ namespace DuoChrome
         private NativeMethods.WinEventDelegate _hookProc;   // keep delegate alive
         private IntPtr _hook = IntPtr.Zero;
         private int _ticks;
+        private EdgeStrip[] _strips;
 
         public Controller(string title, string serial, string adb)
         {
@@ -651,6 +778,14 @@ namespace DuoChrome
             // BeginInvoke requires an existing handle.
             if (!_chin.IsHandleCreated) { IntPtr h = _chin.Handle; }
             if (!_top.IsHandleCreated) { IntPtr h = _top.Handle; }
+            // Invisible resize hot-zones for all four edges. Created after
+            // the bars so the visible bars stack above them.
+            _strips = new EdgeStrip[5];
+            _strips[0] = new EdgeStrip(this, 10);   // left
+            _strips[1] = new EdgeStrip(this, 11);   // right
+            _strips[2] = new EdgeStrip(this, 12);   // top
+            _strips[3] = new EdgeStrip(this, 13);   // top-left
+            _strips[4] = new EdgeStrip(this, 14);   // top-right
             _tick.Interval = TickMs;
             _tick.Tick += Tick;
             _tick.Start();
@@ -665,20 +800,62 @@ namespace DuoChrome
                 _hook = IntPtr.Zero;
             }
             if (_sample != null) { _sample.Dispose(); _sample = null; }
+            foreach (EdgeStrip strip in _strips)
+            {
+                strip.Dispose();
+            }
         }
 
         // -- actions used by the bars ----------------------------------------
 
-        /// <summary>Inject the native size-move loop on the target window
-        /// (edge: HTTOPLEFT..HTBOTTOMRIGHT = 12..17).</summary>
-        public void ScSize(int edge)
+        // ---- live resize engine (replaces SC_SIZE: our overlay holds the
+        // mouse capture, so the target's own size-move loop would starve) ----
+
+        private bool _resizing;
+        private Rectangle _resizeStart;
+        private Point _resizeMouse;
+        private int _resizeEdge;
+        private const int MinW = 400, MinH = 400;   // physical px floor
+
+        public bool Resizing { get { return _resizing; } }
+
+        public void BeginResize(int edge)
         {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            _resizeEdge = edge;
+            _resizeStart = WindowRect();
             NativeMethods.POINT pt;
             NativeMethods.GetCursorPos(out pt);
-            IntPtr lParam = (IntPtr)((pt.Y << 16) | (pt.X & 0xFFFF));
-            NativeMethods.PostMessageW(_hwnd, 0x0112 /*WM_SYSCOMMAND*/,
-                (IntPtr)(0xF000 + edge), lParam);
-            Log.Write("sc-size edge=" + edge);
+            _resizeMouse = new Point(pt.X, pt.Y);
+            _resizing = true;
+            Log.Write("resize begin edge=" + edge);
+        }
+
+        public void UpdateResize()
+        {
+            if (!_resizing) return;
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            int dx = pt.X - _resizeMouse.X, dy = pt.Y - _resizeMouse.Y;
+            int L = _resizeStart.Left, T = _resizeStart.Top;
+            int R = _resizeStart.Right, B = _resizeStart.Bottom;
+            bool left = _resizeEdge == 10 || _resizeEdge == 13 || _resizeEdge == 16;
+            bool top = _resizeEdge == 12 || _resizeEdge == 13 || _resizeEdge == 14;
+            bool right = _resizeEdge == 11 || _resizeEdge == 14 || _resizeEdge == 17;
+            bool bottom = _resizeEdge == 15 || _resizeEdge == 16 || _resizeEdge == 17;
+            if (left) L = Math.Min(_resizeStart.Left + dx, R - MinW);
+            if (top) T = Math.Min(_resizeStart.Top + dy, B - MinH);
+            if (right) R = Math.Max(_resizeStart.Right + dx, L + MinW);
+            if (bottom) B = Math.Max(_resizeStart.Bottom + dy, T + MinH);
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, L, T, R - L, B - T,
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+        }
+
+        public void EndResize()
+        {
+            if (!_resizing) return;
+            _resizing = false;
+            Log.Write("resize end");
         }
 
         public void AdbKey(int code)
@@ -739,8 +916,11 @@ namespace DuoChrome
             if (NativeMethods.IsIconic(_hwnd) || !NativeMethods.IsWindowVisible(_hwnd))
             {
                 HideBars();
+                SyncStrips(WindowRect());
                 return;
             }
+
+            SyncStrips(WindowRect());
 
             Rectangle client = ClientRect();
             Point cursor = CursorPosition();
@@ -777,6 +957,28 @@ namespace DuoChrome
             if (_chin.Visible) Log.Write("bars hidden");
             _chin.Hide();
             _top.Hide();
+        }
+
+        /// <summary>Keep the edge hot-zones glued to the window frame. The
+        /// strips are always on (invisible, topmost): a normal window is
+        /// resizable regardless of focus.</summary>
+        private void SyncStrips(Rectangle wr)
+        {
+            if (wr.Width < 2 * MinW || wr.Height < 2 * MinH) return;
+            int edge = S(6);
+            int corner = S(18);
+            Place(_strips[0], wr.Left, wr.Top + corner, edge, wr.Height - 2 * corner);
+            Place(_strips[1], wr.Right - edge, wr.Top + corner, edge, wr.Height - 2 * corner);
+            Place(_strips[2], wr.Left + corner, wr.Top, wr.Width - 2 * corner, edge);
+            Place(_strips[3], wr.Left, wr.Top, corner, corner);
+            Place(_strips[4], wr.Right - corner, wr.Top, corner, corner);
+        }
+
+        private static void Place(Form f, int x, int y, int w, int h)
+        {
+            Rectangle want = new Rectangle(x, y, w, h);
+            if (f.Bounds != want) f.Bounds = want;
+            if (!f.Visible) f.Show();
         }
 
         private bool ComputeTopVisibility(Rectangle client, Point cursor)
