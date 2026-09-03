@@ -8,8 +8,8 @@ window (FindWindow by title, GetWindowRect, styles, z-order):
 
     cursor near the top edge    -> top-right capsule: minimize / maximize
                                    (taskbar-safe, emulated) / close
-    window active               -> persistent chin: "<" back, "O" home
-                                   (adb keyevents 4 / 3)
+    window active               -> persistent chin: mBack ring, tap = back,
+                                   long-press = home (physical mirroring)
 
 The overlay itself is the C# program ``duo/resources/chrome_overlay.cs``,
 compiled on first use with the .NET Framework ``csc.exe`` that every Windows
@@ -20,16 +20,8 @@ argv (CJK window titles pass through raw), it owns its WinForms message loop
 without console-host quirks, and its layered windows use per-pixel alpha
 acrylic sampled from the mirrored window.
 
-Interop details handled here:
-
-- The compiler and the cache are addressed once; the overlay process itself
-  is spawned directly from its WSL-visible path (interop runs PE binaries
-  from the Linux filesystem when the execute bit is set).
-- ``csc.exe`` and the source it reads need Windows-shaped paths: WSL paths
-  are translated via ``wslpath -w`` (UNC) before compiling.
-- The overlay lifecycle is bound to the mirroring session: the parent stops
-  it when the session ends, and the overlay exits by itself once the scrcpy
-  window has been gone for a while.
+The module runs both under WSL (paths translated via ``wslpath -w``) and on
+native Windows (paths are already Windows-shaped and pass through).
 """
 
 from __future__ import annotations
@@ -44,8 +36,12 @@ from duo.core.paths import data_dir, logs_dir
 #: The overlay source shipped inside the package resources.
 OVERLAY_SOURCE = Path(__file__).resolve().parent.parent / "resources" / "chrome_overlay.cs"
 
-#: .NET Framework compilers, best first (Framework64 on x64 Windows).
+#: .NET Framework compilers, best first. The same binary is reachable both
+#: through the WSL mount and natively on Windows; existence checks pick the
+#: one that exists in the current environment.
 CSC_CANDIDATES = (
+        "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
+        "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe",
         "/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",
         "/mnt/c/Windows/Microsoft.NET/Framework/v4.0.30319/csc.exe",
 )
