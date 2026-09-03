@@ -1341,23 +1341,15 @@ namespace DuoChrome
                 _savedRect = WindowRect();
                 Rectangle wa = WorkArea();
                 NativeMethods.RECT insets = FrameInsets();
-                // Aspect-preserving fit: a portrait phone app must not be
-                // stretched across a landscape work area (iPhone-Mirroring
-                // style maximize - fill one dimension, center the other).
-                int cw = _savedRect.Width - insets.Left - insets.Right;
-                int ch = _savedRect.Height - insets.Top - insets.Bottom;
-                if (cw <= 0 || ch <= 0) { cw = _savedRect.Width; ch = _savedRect.Height; }
-                double windowAr = (double)cw / ch;
-                double waAr = (double)wa.Width / wa.Height;
-                int w, h;
-                if (windowAr > waAr) { w = wa.Width; h = (int)(wa.Width / windowAr); }
-                else { h = wa.Height; w = (int)(wa.Height * windowAr); }
-                int x = wa.X + (wa.Width - w) / 2 - insets.Left;
-                int y = wa.Y + (wa.Height - h) / 2 - insets.Top;
-                int W = w + insets.Left + insets.Right;
-                int H = h + insets.Top + insets.Bottom;
-                NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y, W, H, 0x0014);
-                _maxRect = new Rectangle(x, y, W, H);
+                // True maximize semantics: fill the whole work area (the flex
+                // display follows the window ratio; the app letterboxes or
+                // reflows its own content).
+                int x = wa.X - insets.Left;
+                int y = wa.Y - insets.Top;
+                int w = wa.Width + insets.Left + insets.Right;
+                int h = wa.Height + insets.Top + insets.Bottom;
+                NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, 0x0014);
+                _maxRect = new Rectangle(x, y, w, h);
                 _fakedMax = true;
                 _maxGraceUntil = Environment.TickCount + MaxGraceMs;
                 Log.Write("fake maximize on " + _maxRect);
