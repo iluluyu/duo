@@ -203,9 +203,11 @@ namespace DuoChrome
         private readonly int _radiusTop, _radiusBottom;
         private Bitmap _behind;               // sampled content, may be null
         protected readonly List<NavButton> Buttons = new List<NavButton>();
+        protected readonly Controller Owner;
 
-        protected OverlayWindow(int radiusTop, int radiusBottom)
+        protected OverlayWindow(Controller owner, int radiusTop, int radiusBottom)
         {
+            Owner = owner;
             Bitmap probe = new Bitmap(1, 1);
             using (Graphics g = Graphics.FromImage(probe)) Dpi = g.DpiX / 96f;
             probe.Dispose();
@@ -396,12 +398,20 @@ namespace DuoChrome
 
         // -- input ------------------------------------------------------------
 
+        /// <summary>Which resize edge a drag on empty bar area should start
+        /// (0 = none). Evaluated against the local click point.</summary>
+        protected virtual int ResizeEdgeAt(Point p)
+        {
+            return 0;
+        }
+
         protected void WireInput()
         {
             MouseMove += delegate(object s, MouseEventArgs e)
             {
                 int hit = HitIndex(e.Location);
-                Cursor = hit >= 0 ? Cursors.Hand : Cursors.Default;
+                Cursor = hit >= 0 ? Cursors.Hand
+                    : (ResizeEdgeAt(e.Location) != 0 ? Cursors.SizeNS : Cursors.Default);
                 for (int i = 0; i < Buttons.Count; i++)
                     Buttons[i].Hover = i == hit;
                 Render();
@@ -415,6 +425,16 @@ namespace DuoChrome
             {
                 int hit = HitIndex(e.Location);
                 if (hit >= 0) Buttons[hit].Fire();
+            };
+            // The target window is borderless: SDL swallows native edge
+            // hit-testing, so drags on empty bar area inject the native
+            // size-move loop (WM_SYSCOMMAND SC_SIZE) on the target instead.
+            MouseDown += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) return;
+                if (HitIndex(e.Location) >= 0) return;
+                int edge = ResizeEdgeAt(e.Location);
+                if (edge != 0) Owner.ScSize(edge);
             };
         }
 
@@ -436,7 +456,7 @@ namespace DuoChrome
         private const int LogicalGap = 112;
 
         public ChinWindow(Controller owner)
-            : base(0, (int)(10 * ScaleOf()))
+            : base(owner, 0, (int)(10 * ScaleOf()))
         {
             int btn = (int)(LogicalButton * Dpi);
             int gap = (int)(LogicalGap * Dpi);
@@ -453,6 +473,15 @@ namespace DuoChrome
                     kind, delegate { owner.AdbKey(code); }));
             }
             WireInput();
+        }
+
+        protected override int ResizeEdgeAt(Point p)
+        {
+            // Dragging the chin resizes the device from its bottom edge; the
+            // outer fifths pick the diagonal corners (like a native frame).
+            if (p.X < Width * 0.2) return 16;      // HTBOTTOMLEFT
+            if (p.X > Width * 0.8) return 17;      // HTBOTTOMRIGHT
+            return 15;                            // HTBOTTOM
         }
 
         private static float ScaleOf()
@@ -508,7 +537,7 @@ namespace DuoChrome
         private readonly string[] _glyphs;
 
         public TopWindow(Controller owner)
-            : base((int)(14 * ScaleOf()), (int)(14 * ScaleOf()))
+            : base(owner, (int)(14 * ScaleOf()), (int)(14 * ScaleOf()))
         {
             float s = ScaleOf();
             int btn = (int)(LogicalButton * s);
@@ -529,6 +558,14 @@ namespace DuoChrome
                     delegate { owner.TopAction(index); }));
             }
             WireInput();
+        }
+
+        protected override int ResizeEdgeAt(Point p)
+        {
+            // Dragging the top capsule resizes from the top edge.
+            if (p.X < Width * 0.2) return 13;      // HTTOPLEFT
+            if (p.X > Width * 0.8) return 14;      // HTTOPRIGHT
+            return 12;                            // HTTOP
         }
 
         private static float ScaleOf()
@@ -632,6 +669,18 @@ namespace DuoChrome
 
         // -- actions used by the bars ----------------------------------------
 
+        /// <summary>Inject the native size-move loop on the target window
+        /// (edge: HTTOPLEFT..HTBOTTOMRIGHT = 12..17).</summary>
+        public void ScSize(int edge)
+        {
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            IntPtr lParam = (IntPtr)((pt.Y << 16) | (pt.X & 0xFFFF));
+            NativeMethods.PostMessageW(_hwnd, 0x0112 /*WM_SYSCOMMAND*/,
+                (IntPtr)(0xF000 + edge), lParam);
+            Log.Write("sc-size edge=" + edge);
+        }
+
         public void AdbKey(int code)
         {
             try
@@ -667,7 +716,17 @@ namespace DuoChrome
             {
                 Log.Write("tick error (kept alive): " + ex.Message);
             }
-            if (++_ticks % 100 == 0) Log.Write("alive #" + _ticks);
+            if (++_ticks % 100 == 0)
+            {
+                Log.Write("alive #" + _ticks);
+                // SDL can re-assert its own styles on some events; keep the
+                // resize frame alive without user-visible work.
+                if (_hwnd != IntPtr.Zero && NativeMethods.IsWindow(_hwnd))
+                {
+                    int s = NativeMethods.GetWindowLong(_hwnd, -16);
+                    if ((s & 0x00040000) == 0) Repair();
+                }
+            }
         }
 
         private void TickInner()
