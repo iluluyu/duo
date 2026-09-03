@@ -276,6 +276,12 @@ duo/
     - 待办：热插拔监听、GUI、窗口图标（AUMID 方案）、stdout flush（nohup 下缓冲）
     - ✅ 黑屏期间 `adb shell input` 注入正常（Duo 全局热键方案可行）
     - ⚠️ 引擎参数修正：scrcpy 4.1 无 `--clipboard-autosync` 正向旗标（已更新 §2.1 与 §5）；`EngineArgs` 必须做版本能力表
+- **GUI 面板与 Windows 分发（2026-09-03/04）**
+    - ✅ PyQt6 面板（`duo/ui/main_window.py`）：设备卡 + 常用应用大图标 + 全部应用网格 + 运行中芯片（✕ SIGTERM → CLI finally 清理）+ 右键图标切竖屏（`gui_prefs.json` 持久化）+ 整机镜像按钮（`--display mirror --title 平板镜像`，mBack 长按回桌面仅此模式生效）
+    - ✅ 全部应用网格：`pm list packages -3` 枚举（实测 114 个）→ 字母头像秒开 → 后台逐个 APK 拉取 + aapt2 + 自适应图标合成渐进替换（缓存于 ~/.local/share/duo/icons，永久）；>200MB APK 跳过拉取保字母头像；图标下常驻名称（真名解析后自动替换）
+    - ✅ Windows 分发形态（开发阶段轻量版）：embeddable Python 便携构建（不装 Python 不进 PATH）→ PyInstaller onefile+windowed → `%LOCALAPPDATA%\Duo\` + 开始菜单/桌面快捷方式 + 注册表 Uninstall 条目 + uninstall.ps1；应用图标 = Apple 蓝圆角方块 + 白色 mBack 圆环（assets/duo.ico，与产品视觉同源）
+    - ⚠️ PyInstaller 冻结版五连坑（全部实测）：① `sys.executable` 在冻结 exe 里指向自己，面板 spawn 会话变成再开一个面板（解法：`getattr(sys, 'frozen', False)` 时 argv 直接走 CLI 入口，gui_entry.py 带参路由）；② 原生 Windows subprocess 默认 GBK 解码，UTF-8 中文应用标签直接炸掉后台线程（全部 subprocess 显式 `encoding='utf-8', errors='replace'`）；③ GUI 进程 spawn 控制台程序（adb/scrcpy/csc）会弹新控制台窗，2s 轮询 = 屏幕狂闪（全部 14 处 spawn 统一 `CREATE_NO_WINDOW`，中心化在 `duo/core/winproc.py`）；④ `os.kill(pid, 0)` 在 Windows 对死 PID 抛 `OSError WinError 6` 而非 ProcessLookupError（audio_lock._pid_alive 补 catch OSError = dead）；⑤ `from PIL import Image` 的 ImportError 被 `except ImportError: return None` 静默吞掉，冻结包没 Pillow → 图标全军覆没（pillow 升为正式依赖）
+    - ⚠️ 其余经验：`--add-data` 相对路径按 specpath 解析而非 CWD（必须绝对路径）；OneDrive 桌面重定向（GetFolderPath('Desktop') ≠ C:\Users\X\Desktop，两个都要放）；robocopy 同步源码到 C:\duo-build\src 再 pip install --no-deps + PyInstaller
 
 ## 8. 验收清单（v1.0 Definition of Done）
 
