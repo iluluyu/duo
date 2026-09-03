@@ -7,27 +7,30 @@ column: device status, app list, one option, one status line.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QFont, QIcon
 from PyQt6.QtWidgets import (
         QApplication,
-        QCheckBox,
         QFrame,
         QHBoxLayout,
         QLabel,
         QMainWindow,
         QPushButton,
+        QToolButton,
         QVBoxLayout,
         QWidget,
 )
 
 from duo.core.apps import Adb, app_info
 from duo.core.devices import DeviceMonitor, poll_query
+from duo.core.paths import data_dir
 
 #: Small curated catalog; filtered against installed packages at startup.
 APP_CATALOG: list[tuple[str, str]] = [
@@ -55,15 +58,13 @@ QPushButton#app-icon {
 QPushButton#app-icon:hover { background: #F0F0F3; }
 QPushButton#app-icon:pressed { background: #E8E8ED; }
 QPushButton#app-icon:disabled { color: #E5E5EA; }
-QCheckBox { color: #1D1D1F; font-size: 13px; spacing: 10px; }
-QCheckBox::indicator {
-        width: 22px; height: 22px; border-radius: 11px;
-        border: 1.5px solid #D2D2D7; background: #FFFFFF;
+QLabel#running-chip {
+        background: #F0F0F3; color: #1D1D1F; font-size: 12px;
+        border-radius: 11px; padding: 4px 6px 4px 12px;
 }
-QCheckBox::indicator:checked {
-        background: #0071E3; border-color: #0071E3;
-        image: url(none);
-}
+QToolButton#chip-close { background: transparent; border: none; color: #86868B; font-size: 13px; }
+QToolButton#chip-close:hover { color: #1D1D1F; }
+QLabel#empty-hint { color: #C7C7CC; font-size: 12px; }
 QLabel#status { color: #86868B; font-size: 12px; }
 """
 
@@ -73,6 +74,59 @@ _STATE_TEXT = {
         "unauthorized": "未授权 USB 调试",
         "recovery": "recovery 模式",
 }
+
+#: Per-app portrait defaults (reading/vocabulary apps want a tall phone).
+DEFAULT_PORTRAIT: dict[str, bool] = {
+        "cn.com.langeasy.LangEasyLexis": True,
+        "com.tencent.weread": True,
+}
+
+
+def _prefs_path() -> Path:
+        return data_dir() / "gui_prefs.json"
+
+
+def load_portrait_prefs() -> dict[str, bool]:
+        """Read the persisted per-app portrait choices (missing = defaults)."""
+        try:
+                raw = json.loads(_prefs_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+                return dict(DEFAULT_PORTRAIT)
+        saved = raw.get("portrait", {})
+        merged = dict(DEFAULT_PORTRAIT)
+        merged.update({k: bool(v) for k, v in saved.items()})
+        return merged
+
+
+def save_portrait_prefs(prefs: dict[str, bool]) -> None:
+        """Persist the per-app portrait choices for the next run."""
+        _prefs_path().parent.mkdir(parents=True, exist_ok=True)
+        _prefs_path().write_text(
+                json.dumps({"portrait": prefs}, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
+def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
+        """The mirror argv for a panel launch.
+
+        Every panel window gets the borderless chrome. Audio is always
+        requested - the CLI arbitrates ownership (single capture) via the
+        audio lock, so the panel stays out of that policy.
+        """
+        argv = [
+                sys.executable,
+                "-m",
+                "duo",
+                "mirror",
+                "--app",
+                package,
+                "--serial",
+                serial,
+                "--chrome",
+        ]
+        if portrait:
+                argv.append("--portrait")
+        return argv
 
 
 class _Bridge(QObject):
@@ -125,6 +179,8 @@ class MainWindow(QMainWindow):
                 self._bridge.apps_resolved.connect(self._on_apps)
                 self._installed: set[str] | None = None
                 self._icon_buttons: dict[str, QPushButton] = {}
+                self._portrait_prefs = load_portrait_prefs()
+                self._sessions: dict[str, subprocess.Popen[bytes]] = {}
                 self._build_ui()
 
                 self._monitor = DeviceMonitor(
@@ -136,6 +192,12 @@ class MainWindow(QMainWindow):
                 self._monitor.start()
                 self._bridge.icon_ready.connect(self._on_icon)
                 _resolve_installed(adb_binary, self._bridge.apps_resolved.emit)
+
+                # Reap dead sessions and refresh the running chips quietly.
+                self._reaper = QTimer(self)
+                self._reaper.setInterval(1200)
+                self._reaper.timeout.connect(self._refresh_sessions)
+                self._reaper.start()
 
         # ---------------------------------------------------------------- UI
 
@@ -158,7 +220,7 @@ class MainWindow(QMainWindow):
                 column.addSpacing(6)
                 column.addWidget(self._build_apps_card())
                 column.addSpacing(6)
-                column.addWidget(self._build_option_card())
+                column.addWidget(self._build_running_card())
                 column.addStretch(1)
 
                 self._status = _label("就绪", "status")
@@ -212,10 +274,18 @@ class MainWindow(QMainWindow):
                         button.setObjectName("app-icon")
                         button.setFixedSize(56, 56)
                         button.setIconSize(QSize(46, 46))
-                        button.setToolTip(label)
+                        self._set_app_tooltip(button, label, package)
                         button.setEnabled(False)
                         button.clicked.connect(
                                 lambda _=False, pkg=package, text=label: self._launch(pkg, text)
+                        )
+                        # Right-click toggles this app's portrait preference.
+                        button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                        toggle = self._toggle_portrait
+                        button.customContextMenuRequested.connect(
+                                lambda pos, b=button, pkg=package, text=label, fn=toggle: fn(
+                                        b, pkg, text
+                                )
                         )
                         self._icon_buttons[package] = button
                         row.addWidget(button)
@@ -223,10 +293,19 @@ class MainWindow(QMainWindow):
                 inner.addLayout(row)
                 return card
 
-        def _build_option_card(self) -> QFrame:
+        def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
+                portrait = self._portrait_prefs.get(package, False)
+                orientation = "竖屏" if portrait else "横屏"
+                button.setToolTip(f"{label} · {orientation}（右键切换）")
+
+        def _build_running_card(self) -> QFrame:
+                """Live session chips with quiet close buttons."""
                 card, inner = self._card()
-                self._portrait = QCheckBox("竖屏窗口")
-                inner.addWidget(self._portrait)
+                inner.addWidget(_label("运行中", "section"))
+                self._running_row = QHBoxLayout()
+                self._running_row.setSpacing(8)
+                self._running_row.addWidget(_label("暂无窗口", "empty-hint"))
+                inner.addLayout(self._running_row)
                 return card
 
         # ------------------------------------------------------------ events
@@ -295,19 +374,84 @@ class MainWindow(QMainWindow):
                 button.setIcon(icon)
 
         def _launch(self, package: str, label: str) -> None:
-                """Spawn `duo mirror` detached and report in the status line."""
-                argv = [sys.executable, "-m", "duo", "mirror", "--app", package]
-                if self._portrait.isChecked():
-                        argv.append("--portrait")
-                ok = subprocess.Popen(
-                        [*argv, "--serial", next(iter(self._monitor.online), "")],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                )
-                orientation = "竖屏" if self._portrait.isChecked() else "横屏"
-                text = f"已启动 {label} · {orientation}" if ok else f"启动失败：{label}"
-                self._status.setText(text)
+                """Spawn a chrome-clad mirror session and track it."""
+                serial = next(iter(self._monitor.online), "")
+                if not serial:
+                        self._status.setText("设备未连接")
+                        return
+                self._reap_sessions()
+                if package in self._sessions:
+                        self._status.setText(f"{label} 已在运行")
+                        return
+                portrait = self._portrait_prefs.get(package, False)
+                argv = build_launch_argv(package, serial, portrait)
+                try:
+                        proc = subprocess.Popen(
+                                argv, start_new_session=True, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                        )
+                except OSError as exc:
+                        self._status.setText(f"启动失败：{label}（{exc}）")
+                        return
+                self._sessions[package] = proc
+                self._refresh_sessions()
+                orientation = "竖屏" if portrait else "横屏"
+                self._status.setText(f"已启动 {label} · {orientation}")
+
+        def _toggle_portrait(self, button: QPushButton, package: str, label: str) -> None:
+                """Right-click on an app icon flips its remembered orientation."""
+                now = not self._portrait_prefs.get(package, False)
+                self._portrait_prefs[package] = now
+                save_portrait_prefs(self._portrait_prefs)
+                self._set_app_tooltip(button, label, package)
+                orientation = "竖屏" if now else "横屏"
+                self._status.setText(f"{label} 将以{orientation}启动")
+
+        def _reap_sessions(self) -> None:
+                """Drop sessions whose process has exited."""
+                for package in [p for p, proc in self._sessions.items() if proc.poll() is not None]:
+                        del self._sessions[package]
+
+        def _refresh_sessions(self) -> None:
+                """Redraw the running chips from the live session map."""
+                self._reap_sessions()
+                while self._running_row.count():
+                        item = self._running_row.takeAt(0)
+                        if item is None:
+                                continue
+                        widget = item.widget()
+                        if widget is not None:
+                                widget.deleteLater()
+                if not self._sessions:
+                        self._running_row.addWidget(_label("暂无窗口", "empty-hint"))
+                        return
+                labels = {pkg: label for label, pkg in APP_CATALOG}
+                for package in self._sessions:
+                        chip = QFrame()
+                        chip.setObjectName("running-chip")
+                        layout = QHBoxLayout(chip)
+                        layout.setContentsMargins(0, 0, 6, 0)
+                        layout.setSpacing(4)
+                        text = _label(labels.get(package, package), "")
+                        layout.addWidget(text)
+                        close = QToolButton()
+                        close.setObjectName("chip-close")
+                        close.setText("✕")
+                        close.clicked.connect(
+                                lambda _=False, pkg=package: self._stop_session(pkg)
+                        )
+                        layout.addWidget(close)
+                        self._running_row.addWidget(chip)
+                self._running_row.addStretch(1)
+
+        def _stop_session(self, package: str) -> None:
+                """Terminate one session; the CLI's SIGTERM handler cleans up."""
+                proc = self._sessions.get(package)
+                if proc is None:
+                        return
+                proc.terminate()
+                labels = {pkg: label for label, pkg in APP_CATALOG}
+                self._status.setText(f"已关闭 {labels.get(package, package)}")
 
         def closeEvent(self, event: QCloseEvent | None) -> None:
                 """Stop polling on close."""

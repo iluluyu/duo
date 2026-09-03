@@ -75,6 +75,7 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint ga);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -1112,15 +1113,36 @@ namespace DuoChrome
             if (NativeMethods.IsIconic(_hwnd) || !NativeMethods.IsWindowVisible(_hwnd))
             {
                 HideBars();
-                SyncStrips(WindowRect());
+                HideStrips();
                 return;
             }
-
-            SyncStrips(WindowRect());
 
             Rectangle client = ClientRect();
             Point cursor = CursorPosition();
             bool overBars = _chin.Bounds.Contains(cursor) || _top.Bounds.Contains(cursor);
+            bool overStrips = false;
+            foreach (EdgeStrip strip in _strips) if (strip.Bounds.Contains(cursor)) overStrips = true;
+            // Deep binding: affordances exist only while the scrcpy window
+            // truly owns the screen under the cursor (or is foreground, or
+            // the cursor is over our own bars/strips). When another app
+            // covers the window, everything must vanish - no floating chrome
+            // above someone else's fullscreen app.
+            NativeMethods.POINT probe;
+            probe.X = cursor.X; probe.Y = cursor.Y;
+            IntPtr rootAtCursor = NativeMethods.GetAncestor(
+                NativeMethods.WindowFromPoint(probe), 2 /*GA_ROOT*/);
+            bool foreground = NativeMethods.GetAncestor(
+                NativeMethods.GetForegroundWindow(), 2 /*GA_ROOT*/) == _hwnd;
+            bool engaged = foreground || rootAtCursor == _hwnd
+                || overBars || overStrips || _resizing || _moving;
+            if (!engaged)
+            {
+                HideBars();
+                HideStrips();
+                return;
+            }
+            SyncStrips(WindowRect());
+
             // Per-bar proximity rules, symmetric like a native window's own
             // affordances: capsule reveals near the top edge, the mBack dot
             // near the bottom edge. Neither cares about focus.
@@ -1154,6 +1176,14 @@ namespace DuoChrome
             if (_chin.Visible) Log.Write("bars hidden");
             _chin.Hide();
             _top.Hide();
+        }
+
+        private void HideStrips()
+        {
+            foreach (EdgeStrip strip in _strips)
+            {
+                if (strip.Visible) strip.Hide();
+            }
         }
 
         /// <summary>Keep the edge hot-zones glued to the window frame. The
