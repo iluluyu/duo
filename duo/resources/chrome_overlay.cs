@@ -1367,16 +1367,17 @@ namespace DuoChrome
                 int x, y, w, h;
                 if (fit)
                 {
-                    // Aspect-preserving fit: fill one dimension, center the
-                    // other (keeps a portrait app portrait).
+                    // Aspect-preserving fit: scale to the largest size that
+                    // fits the work area while keeping the ratio - but keep
+                    // the window anchored where it is (no centering).
                     int cw = Math.Max(1, _savedRect.Width - insets.Left - insets.Right);
                     int ch = Math.Max(1, _savedRect.Height - insets.Top - insets.Bottom);
                     double windowAr = (double)cw / ch;
                     double waAr = (double)wa.Width / wa.Height;
                     if (windowAr > waAr) { w = wa.Width; h = (int)(wa.Width / windowAr); }
                     else { h = wa.Height; w = (int)(wa.Height * windowAr); }
-                    x = wa.X + (wa.Width - w) / 2 - insets.Left;
-                    y = wa.Y + (wa.Height - h) / 2 - insets.Top;
+                    x = _savedRect.Left;
+                    y = _savedRect.Top;
                 }
                 else
                 {
