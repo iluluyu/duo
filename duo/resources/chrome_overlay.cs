@@ -409,7 +409,7 @@ namespace DuoChrome
         {
             MouseMove += delegate(object s, MouseEventArgs e)
             {
-                if (Ctrl.Resizing) return;   // drag-in-progress: no hover churn
+                if (Ctrl.Resizing || Ctrl.Moving) return;   // polled from Tick
                 int hit = HitIndex(e.Location);
                 Cursor = hit >= 0 ? Cursors.Hand
                     : (ResizeEdgeAt(e.Location) != 0 ? Cursors.SizeNS : Cursors.Default);
@@ -658,24 +658,26 @@ namespace DuoChrome
             if (vertical) Cursor = Cursors.SizeWE;
             else if (horizontal) Cursor = Cursors.SizeNS;
             else if (edge == 13 || edge == 17) Cursor = Cursors.SizeNWSE;
-            else Cursor = Cursors.SizeNESW;
+            else if (edge == 14 || edge == 16) Cursor = Cursors.SizeNESW;
+            else Cursor = Cursors.Default;       // move zone: plain arrow
             MouseDown += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
-                _owner.BeginResize(Edge);
+                if (Edge == 0) _owner.BeginMove();
+                else _owner.BeginResize(Edge);
                 Capture = true;
             };
             MouseMove += delegate(object s, MouseEventArgs e)
             {
-                if (_owner.Resizing) _owner.UpdateResize();
+                // Resize/move tracking is poll-driven (Tick): window ops
+                // under a captured cursor synthesize WM_MOUSEMOVE, so doing
+                // work here would form a self-perpetuating feedback storm.
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
-                if (e.Button == MouseButtons.Left && _owner.Resizing)
-                {
-                    _owner.EndResize();
-                    Capture = false;
-                }
+                if (e.Button != MouseButtons.Left) return;
+                if (_owner.Resizing) { _owner.EndResize(); Capture = false; }
+                else if (_owner.Moving) { _owner.EndMove(); Capture = false; }
             };
         }
 
@@ -712,7 +714,14 @@ namespace DuoChrome
             if (Width <= 0 || Height <= 0) return;
             using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
             {
-                // leave all pixels at (0,0,0,0)
+                // alpha=1: layered windows pass mouse through where alpha=0,
+                // so the hot-zone needs the tiniest non-zero opacity to be
+                // clickable while staying visually imperceptible.
+                using (Graphics g = Graphics.FromImage(bmp))
+                using (SolidBrush ghost = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
+                {
+                    g.FillRectangle(ghost, 0, 0, Width, Height);
+                }
                 IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
                 IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
                 IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
@@ -779,13 +788,16 @@ namespace DuoChrome
             if (!_chin.IsHandleCreated) { IntPtr h = _chin.Handle; }
             if (!_top.IsHandleCreated) { IntPtr h = _top.Handle; }
             // Invisible resize hot-zones for all four edges. Created after
-            // the bars so the visible bars stack above them.
-            _strips = new EdgeStrip[5];
+            // the bars so the visible bars stack above them. The sixth strip
+            // (edge 0) is the top-center move grab zone, created last so it
+            // sits above the top resize band.
+            _strips = new EdgeStrip[6];
             _strips[0] = new EdgeStrip(this, 10);   // left
             _strips[1] = new EdgeStrip(this, 11);   // right
             _strips[2] = new EdgeStrip(this, 12);   // top
             _strips[3] = new EdgeStrip(this, 13);   // top-left
             _strips[4] = new EdgeStrip(this, 14);   // top-right
+            _strips[5] = new EdgeStrip(this, 0);    // move (top-center)
             _tick.Interval = TickMs;
             _tick.Tick += Tick;
             _tick.Start();
@@ -815,6 +827,8 @@ namespace DuoChrome
         private Rectangle _resizeStart;
         private Point _resizeMouse;
         private int _resizeEdge;
+        private int _resizeMoves;
+        private int _lastDx = int.MinValue, _lastDy = int.MinValue;
         private const int MinW = 400, MinH = 400;   // physical px floor
 
         public bool Resizing { get { return _resizing; } }
@@ -827,6 +841,7 @@ namespace DuoChrome
             NativeMethods.POINT pt;
             NativeMethods.GetCursorPos(out pt);
             _resizeMouse = new Point(pt.X, pt.Y);
+            _lastDx = int.MinValue; _lastDy = int.MinValue;
             _resizing = true;
             Log.Write("resize begin edge=" + edge);
         }
@@ -837,6 +852,9 @@ namespace DuoChrome
             NativeMethods.POINT pt;
             NativeMethods.GetCursorPos(out pt);
             int dx = pt.X - _resizeMouse.X, dy = pt.Y - _resizeMouse.Y;
+            if (dx == _lastDx && dy == _lastDy) return;   // dedupe: no-op drags
+            _lastDx = dx; _lastDy = dy;
+            _resizeMoves++;
             int L = _resizeStart.Left, T = _resizeStart.Top;
             int R = _resizeStart.Right, B = _resizeStart.Bottom;
             bool left = _resizeEdge == 10 || _resizeEdge == 13 || _resizeEdge == 16;
@@ -847,15 +865,52 @@ namespace DuoChrome
             if (top) T = Math.Min(_resizeStart.Top + dy, B - MinH);
             if (right) R = Math.Max(_resizeStart.Right + dx, L + MinW);
             if (bottom) B = Math.Max(_resizeStart.Bottom + dy, T + MinH);
-            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, L, T, R - L, B - T,
+            bool ok = NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, L, T, R - L, B - T,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            if (!ok && _resizeMoves == 1) Log.Write("swp failed");
         }
 
         public void EndResize()
         {
             if (!_resizing) return;
             _resizing = false;
-            Log.Write("resize end");
+            Log.Write("resize end moves=" + _resizeMoves);
+        }
+
+        // ---- window move (top-center grab zone) ---------------------------
+
+        private bool _moving;
+        private Point _moveStart, _moveMouse;
+
+        public bool Moving { get { return _moving; } }
+
+        public void BeginMove()
+        {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            Rectangle wr = WindowRect();
+            _moveStart = new Point(wr.Left, wr.Top);
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            _moveMouse = new Point(pt.X, pt.Y);
+            _moving = true;
+            Log.Write("move begin");
+        }
+
+        public void UpdateMove()
+        {
+            if (!_moving) return;
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                _moveStart.X + pt.X - _moveMouse.X, _moveStart.Y + pt.Y - _moveMouse.Y,
+                0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+        }
+
+        public void EndMove()
+        {
+            if (!_moving) return;
+            _moving = false;
+            Log.Write("move end");
         }
 
         public void AdbKey(int code)
@@ -908,6 +963,9 @@ namespace DuoChrome
 
         private void TickInner()
         {
+            // Poll-driven resize/move tracking (see EdgeStrip.MouseMove note).
+            if (_resizing) UpdateResize();
+            else if (_moving) UpdateMove();
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
             {
                 Discover();
@@ -972,6 +1030,9 @@ namespace DuoChrome
             Place(_strips[2], wr.Left + corner, wr.Top, wr.Width - 2 * corner, edge);
             Place(_strips[3], wr.Left, wr.Top, corner, corner);
             Place(_strips[4], wr.Right - corner, wr.Top, corner, corner);
+            int moveW = Math.Min(wr.Width / 3, S(280));
+            int moveH = S(14);
+            Place(_strips[5], wr.Left + (wr.Width - moveW) / 2, wr.Top, moveW, moveH);
         }
 
         private static void Place(Form f, int x, int y, int w, int h)
