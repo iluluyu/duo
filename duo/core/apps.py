@@ -154,32 +154,198 @@ def _ensure_executable(path: Path) -> None:
                 path.chmod(0o755)
 
 
-def extract_icon(apk_path: Path, icon_ref: str, out_png: Path) -> Path | None:
-        """Extract an icon out of an APK into a PNG file.
+_DENSITY_RANK = {"ldpi": 0, "mdpi": 1, "hdpi": 2, "xhdpi": 3, "xxhdpi": 4, "xxxhdpi": 5}
+_RASTER_SUFFIXES = (".png", ".webp", ".jpg")
 
-        Adaptive icons (``.xml`` references) need foreground/background layer
-        compositing which is deferred to the M3 launcher; for now they yield
-        ``None`` and callers fall back to a generic icon.
+
+def parse_resource_files(resources_dump: str) -> dict[str, list[tuple[int, str]]]:
+        """Map resource id -> [(density rank, raster file path)] from aapt2 dump."""
+        files: dict[str, list[tuple[int, str]]] = {}
+        current: str | None = None
+        for line in resources_dump.splitlines():
+                header = re.match(r"\s*resource (0x[0-9a-f]+) \S+", line)
+                if header:
+                        current = header.group(1)
+                        continue
+                entry = re.search(r"\(([\w-]*)\) \(file\) (\S+) type=", line)
+                if entry and current:
+                        path = entry.group(2)
+                        if path.lower().endswith(_RASTER_SUFFIXES):
+                                rank = _DENSITY_RANK.get(entry.group(1), 1)
+                                files.setdefault(current, []).append((rank, path))
+        return files
+
+
+def parse_resource_colors(resources_dump: str) -> dict[str, str]:
+        """Map resource id -> color hex (#RRGGBB[AA]) from aapt2 dump."""
+        colors: dict[str, str] = {}
+        current: str | None = None
+        for line in resources_dump.splitlines():
+                header = re.match(r"\s*resource (0x[0-9a-f]+) \S+", line)
+                if header:
+                        current = header.group(1)
+                        continue
+                hex_value = re.search(r"(#[0-9a-fA-F]{6,8})\b", line)
+                if hex_value and current and current not in colors:
+                        colors[current] = hex_value.group(1)
+        return colors
+
+
+def resource_id_for_file(resources_dump: str, file_path: str) -> str | None:
+        """Find the resource id whose block lists ``file_path``."""
+        current: str | None = None
+        for line in resources_dump.splitlines():
+                header = re.match(r"\s*resource (0x[0-9a-f]+) \S+", line)
+                if header:
+                        current = header.group(1)
+                        continue
+                if file_path in line and "(file)" in line and current:
+                        return current
+        return None
+
+
+def parse_adaptive_refs(xmltree_dump: str) -> dict[str, str]:
+        """Map layer name -> drawable resource id from adaptive-icon xmltree."""
+        refs: dict[str, str] = {}
+        layer: str | None = None
+        for line in xmltree_dump.splitlines():
+                element = re.search(r"E: (\w+)", line)
+                if element:
+                        layer = element.group(1)
+                        continue
+                attr = re.search(r"drawable\(0x[0-9a-f]+\)=@?(0x[0-9a-f]+)", line)
+                if attr and layer in {"foreground", "background"} and layer not in refs:
+                        refs[layer] = attr.group(1)
+        return refs
+
+
+def extract_icon(
+        apk_path: Path,
+        icon_ref: str,
+        out_png: Path,
+        aapt2: Path | None = None,
+) -> Path | None:
+        """Extract an app icon out of an APK into a PNG file.
+
+        Strategy: a raster icon ref is read directly. An adaptive icon (.xml)
+        first falls back to the same resource's legacy raster variant (most
+        apps still ship one); when that is missing, the adaptive layers are
+        resolved and composited (canvas 108 -> visible centre 72 model).
         """
-        if icon_ref.endswith(".xml"):
-                return None
-        try:
-                with zipfile.ZipFile(apk_path) as apk:
-                        data = apk.read(icon_ref)
-        except (KeyError, zipfile.BadZipFile):
-                return None
+        import io
+
         try:
                 from PIL import Image
         except ImportError:
                 return None
-        import io
 
+        def read(path: str) -> bytes | None:
+                try:
+                        with zipfile.ZipFile(apk_path) as apk:
+                                return apk.read(path)
+                except (KeyError, zipfile.BadZipFile):
+                        return None
+
+        def best_resource_file(dump: str, res_id: str) -> str | None:
+                candidates = sorted(
+                        parse_resource_files(dump).get(res_id, []), key=lambda item: -item[0]
+                )
+                return candidates[0][1] if candidates else None
+
+        ref = icon_ref
+        if icon_ref.endswith(".xml"):
+                if aapt2 is None:
+                        return None
+                dump = _aapt2_output(aapt2, ["dump", "resources", str(apk_path)])
+                if dump is None:
+                        return None
+                res_id = resource_id_for_file(dump, icon_ref)
+                legacy = best_resource_file(dump, res_id) if res_id else None
+                if legacy:
+                        ref = legacy
+                else:
+                        argv = ["dump", "xmltree", "--file", icon_ref, str(apk_path)]
+                        tree = _aapt2_output(aapt2, argv)
+                        if tree is None:
+                                return None
+                        refs = parse_adaptive_refs(tree)
+                        fg_data = None
+                        if refs.get("foreground"):
+                                path = best_resource_file(dump, refs["foreground"])
+                                fg_data = read(path) if path else None
+                        bg_data = None
+                        bg_color = None
+                        if refs.get("background"):
+                                path = best_resource_file(dump, refs["background"])
+                                if path:
+                                        bg_data = read(path)
+                                if bg_data is None:
+                                        colors = parse_resource_colors(dump)
+                                        bg_color = colors.get(refs["background"])
+                        composed = _compose_adaptive(fg_data, bg_data, bg_color)
+                        if composed is None:
+                                return None
+                        out_png.write_bytes(composed)
+                        return out_png
+
+        data = read(ref)
+        if data is None:
+                return None
         try:
                 with Image.open(io.BytesIO(data)) as image:
                         image.save(out_png, format="PNG")
         except OSError:
                 return None
         return out_png
+
+
+def _aapt2_output(aapt2: Path, argv: list[str]) -> str | None:
+        """Run aapt2 and return stdout (None on failure)."""
+        try:
+                result = subprocess.run(
+                        [str(aapt2), *argv],
+                        capture_output=True,
+                        text=True,
+                        timeout=_RUN_TIMEOUT_S,
+                        check=False,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+                return None
+        return result.stdout or None
+
+
+def _compose_adaptive(
+        fg_data: bytes | None, bg_data: bytes | None, bg_color: str | None
+) -> bytes | None:
+        """Composite adaptive layers: 108-unit canvas, visible centre 72."""
+        import io
+
+        try:
+                from PIL import Image
+        except ImportError:
+                return None
+        canvas = 512
+        visible = canvas * 72 // 108
+        base = Image.new("RGBA", (canvas, canvas), bg_color or "#FFFFFF")
+        if bg_data:
+                try:
+                        with Image.open(io.BytesIO(bg_data)) as bg_file:
+                                bg: Image.Image = bg_file.convert("RGBA").resize((canvas, canvas))
+                                base.paste(bg, (0, 0), bg)
+                except OSError:
+                        pass
+        if fg_data:
+                try:
+                        with Image.open(io.BytesIO(fg_data)) as fg_file:
+                                fg: Image.Image = fg_file.convert("RGBA").resize((canvas, canvas))
+                                base.paste(fg, (0, 0), fg)
+                except OSError:
+                        return None
+        box = ((canvas - visible) // 2,) * 2 + ((canvas + visible) // 2,) * 2
+        cropped = base.crop(box)
+        buffer = io.BytesIO()
+        cropped.save(buffer, format="PNG")
+        return buffer.getvalue()
 
 
 def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
@@ -221,7 +387,7 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
         label = fields.get("label") or package
         icon_ref = fields.get("icon") or ""
         icon_out = icon_cache / f"{package}.png"
-        icon_path = extract_icon(apk_path, icon_ref, icon_out) if icon_ref else None
+        icon_path = extract_icon(apk_path, icon_ref, icon_out, aapt2) if icon_ref else None
 
         return AppInfo(
                 package=package,

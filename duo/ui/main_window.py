@@ -12,8 +12,8 @@ import sys
 import threading
 from collections.abc import Callable
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QFont
+from PyQt6.QtCore import QObject, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QFont, QIcon
 from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
         QWidget,
 )
 
+from duo.core.apps import Adb, app_info
 from duo.core.devices import DeviceMonitor, poll_query
 
 #: Small curated catalog; filtered against installed packages at startup.
@@ -47,14 +48,13 @@ QLabel#dot { border-radius: 5px; background: #D2D2D7; }
 QLabel#dot[state="device"] { background: #30D158; }
 QLabel#dot[state="offline"], QLabel#dot[state="unauthorized"] { background: #FF9F0A; }
 QLabel#device-name { color: #1D1D1F; font-size: 14px; font-weight: 600; }
-QPushButton#open {
-        background: #0071E3; color: #FFFFFF; border: none;
-        border-radius: 13px; padding: 5px 16px; font-size: 12px; font-weight: 500;
+QPushButton#app-icon {
+        background: transparent; border: none; border-radius: 14px;
+        font-size: 18px; font-weight: 600; color: #C7C7CC;
 }
-QPushButton#open:hover { background: #0077ED; }
-QPushButton#open:pressed { background: #006EDB; }
-QPushButton#open:disabled { background: #E5E5EA; color: #FFFFFF; }
-QLabel#app-name { color: #1D1D1F; font-size: 13px; }
+QPushButton#app-icon:hover { background: #F0F0F3; }
+QPushButton#app-icon:pressed { background: #E8E8ED; }
+QPushButton#app-icon:disabled { color: #E5E5EA; }
 QCheckBox { color: #1D1D1F; font-size: 13px; spacing: 10px; }
 QCheckBox::indicator {
         width: 22px; height: 22px; border-radius: 11px;
@@ -80,6 +80,7 @@ class _Bridge(QObject):
 
         devices_changed = pyqtSignal(object)
         apps_resolved = pyqtSignal(object)
+        icon_ready = pyqtSignal(str, object)
 
 
 def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> None:
@@ -123,7 +124,7 @@ class MainWindow(QMainWindow):
                 self._bridge.devices_changed.connect(self._on_devices)
                 self._bridge.apps_resolved.connect(self._on_apps)
                 self._installed: set[str] | None = None
-                self._app_rows: dict[str, tuple[QLabel, QPushButton]] = {}
+                self._icon_buttons: dict[str, QPushButton] = {}
                 self._build_ui()
 
                 self._monitor = DeviceMonitor(
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
                 )
                 self._monitor.poll_now()
                 self._monitor.start()
+                self._bridge.icon_ready.connect(self._on_icon)
                 _resolve_installed(adb_binary, self._bridge.apps_resolved.emit)
 
         # ---------------------------------------------------------------- UI
@@ -149,9 +151,7 @@ class MainWindow(QMainWindow):
                 column.setSpacing(10)
 
                 title = _label("Duo", "title")
-                subtitle = _label("安卓设备 · 无头应用服务器", "caption")
                 column.addWidget(title)
-                column.addWidget(subtitle)
                 column.addSpacing(12)
 
                 column.addWidget(self._build_device_card())
@@ -205,20 +205,22 @@ class MainWindow(QMainWindow):
         def _build_apps_card(self) -> QFrame:
                 card, inner = self._card()
                 inner.addWidget(_label("应用", "section"))
+                row = QHBoxLayout()
+                row.setSpacing(8)
                 for label, package in APP_CATALOG:
-                        row = QHBoxLayout()
-                        name = _label(label, "app-name")
-                        button = QPushButton("打开")
-                        button.setObjectName("open")
+                        button = QPushButton(label[0])
+                        button.setObjectName("app-icon")
+                        button.setFixedSize(56, 56)
+                        button.setIconSize(QSize(46, 46))
+                        button.setToolTip(label)
                         button.setEnabled(False)
                         button.clicked.connect(
                                 lambda _=False, pkg=package, text=label: self._launch(pkg, text)
                         )
-                        self._app_rows[package] = (name, button)
-                        row.addWidget(name)
-                        row.addStretch(1)
+                        self._icon_buttons[package] = button
                         row.addWidget(button)
-                        inner.addLayout(row)
+                row.addStretch(1)
+                inner.addLayout(row)
                 return card
 
         def _build_option_card(self) -> QFrame:
@@ -249,7 +251,7 @@ class MainWindow(QMainWindow):
                         style.polish(self._dot)
                 enabled = bool(online)
                 if self._installed is not None:
-                        for package, (_, button) in self._app_rows.items():
+                        for package, button in self._icon_buttons.items():
                                 button.setEnabled(enabled and package in self._installed)
 
         def _on_apps(self, installed: object) -> None:
@@ -259,6 +261,38 @@ class MainWindow(QMainWindow):
                 present = [t for t, p in APP_CATALOG if p in installed]
                 text = f"已安装：{', '.join(present)}" if present else "目录中无已安装应用"
                 self._status.setText(text)
+                self._load_icons()
+
+        def _load_icons(self) -> None:
+                """Resolve icons in the background (first run pulls APKs)."""
+                installed = set(self._installed or set())
+
+                def work() -> None:
+                        serial = next(iter(self._monitor.online), None)
+                        if not serial:
+                                return
+                        adb = Adb(self._adb_binary, serial)
+                        for _, package in APP_CATALOG:
+                                if package not in installed:
+                                        continue
+                                try:
+                                        info = app_info(adb, package)
+                                except Exception:
+                                        continue
+                                self._bridge.icon_ready.emit(package, info.icon_path)
+
+                threading.Thread(target=work, daemon=True).start()
+
+        def _on_icon(self, package: str, icon_path: object) -> None:
+                """Swap a letter button for the real app icon."""
+                button = self._icon_buttons.get(package)
+                if button is None or icon_path is None:
+                        return
+                icon = QIcon(str(icon_path))
+                if icon.isNull():
+                        return
+                button.setText("")
+                button.setIcon(icon)
 
         def _launch(self, package: str, label: str) -> None:
                 """Spawn `duo mirror` detached and report in the status line."""
