@@ -74,6 +74,9 @@ def test_audio_and_title_flags():
         assert "--window-title=不背单词" in argv
         argv = _argv(serial="s")
         assert "--no-audio" not in argv
+        # Lossless codec + roomier capture buffer by default.
+        assert "--audio-codec=flac" in argv
+        assert "--audio-buffer=100" in argv
 
 
 def test_screen_off_switchable():
