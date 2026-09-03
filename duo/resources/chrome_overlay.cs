@@ -719,9 +719,14 @@ namespace DuoChrome
             return _glyphFont;
         }
 
-        public void SetMaximized(bool maximized)
+        /// <summary>Swap the glyph of the active maximize button to the
+        /// restore glyph (two overlapping squares) so the user sees which
+        /// mode is on; the other button keeps its base glyph. mode: 0 none,
+        /// 1 aspect fit, 2 full fill.</summary>
+        public void SetMaximized(int mode)
         {
-            _glyphs[1] = ((char)(maximized ? 0xE923 : 0xE922)).ToString();
+            _glyphs[1] = ((char)(mode == 1 ? 0xE923 : 0xE740)).ToString();
+            _glyphs[2] = ((char)(mode == 2 ? 0xE923 : 0xE922)).ToString();
         }
 
         protected override void PaintBar(Graphics g)
@@ -960,7 +965,7 @@ namespace DuoChrome
             if (_fakedMax)
             {
                 _fakedMax = false;
-                _top.SetMaximized(false);
+                _top.SetMaximized(0);
             }
             _resizeEdge = edge;
             _resizeStart = WindowRect();
@@ -1016,7 +1021,7 @@ namespace DuoChrome
             if (_fakedMax)
             {
                 _fakedMax = false;
-                _top.SetMaximized(false);
+                _top.SetMaximized(0);
             }
             Rectangle wr = WindowRect();
             _moveStart = new Point(wr.Left, wr.Top);
@@ -1346,7 +1351,7 @@ namespace DuoChrome
                 Math.Abs(r.Width - _maxRect.Width) > 12 || Math.Abs(r.Height - _maxRect.Height) > 12)
             {
                 _fakedMax = false;
-                _top.SetMaximized(false);
+                _top.SetMaximized(0);
                 _top.Render();
                 Log.Write("fake maximize dropped");
             }
@@ -1395,7 +1400,7 @@ namespace DuoChrome
                 _fakedMax = false;
                 Log.Write("fake maximize off");
             }
-            _top.SetMaximized(_fakedMax);
+            _top.SetMaximized(on ? (fit ? 1 : 2) : 0);
             _top.Render();
         }
 
