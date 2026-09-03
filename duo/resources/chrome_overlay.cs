@@ -406,7 +406,7 @@ namespace DuoChrome
         protected void DrawHoverFill(Graphics g, NavButton b)
         {
             if (!b.Hover) return;
-            Color fill = b.Kind == 4
+            Color fill = b.Kind == 5
                 ? Color.FromArgb(255, 232, 17, 35)      // close hover: #E81123
                 : Color.FromArgb(28, 255, 255, 255);    // rgba(255,255,255,0.11)
             using (SolidBrush brush = new SolidBrush(fill))
@@ -670,14 +670,15 @@ namespace DuoChrome
             int btn = (int)(LogicalButton * s);
             int pad = (int)(LogicalPad * s);
             int gap = (int)(LogicalGap * s);
-            int w = 2 * pad + 3 * btn + 2 * gap;
+            int w = 2 * pad + 4 * btn + 3 * gap;
             int h = 2 * pad + btn;
             Size = new Size(w, h);
-            _glyphs = new string[3];
+            _glyphs = new string[4];
             _glyphs[0] = ((char)0xE921).ToString();   // ChromeMinimize
-            _glyphs[1] = ((char)0xE922).ToString();   // ChromeMaximize
-            _glyphs[2] = ((char)0xE8BB).ToString();   // ChromeClose
-            for (int i = 0; i < 3; i++)
+            _glyphs[1] = ((char)0xE740).ToString();   // ChromeFullScreen -> aspect fit
+            _glyphs[2] = ((char)0xE922).ToString();   // ChromeMaximize -> fill work area
+            _glyphs[3] = ((char)0xE8BB).ToString();   // ChromeClose
+            for (int i = 0; i < 4; i++)
             {
                 int index = i;
                 Buttons.Add(new NavButton(
@@ -869,7 +870,7 @@ namespace DuoChrome
     {
         private const int TickMs = 50;
         private const int SampleMs = 220;
-        private const int FirstWaitMs = 30000;
+        private const int FirstWaitMs = 12000;
         private const int LostWaitMs = 15000;
         private const int TriggerTop = 6;      // logical px reveal band
         private const int RetainTop = 48;      // logical px hysteresis
@@ -884,6 +885,7 @@ namespace DuoChrome
         private int _waitedMs;
         private bool _repaired;
         private bool _fakedMax;
+        private int _fakedMode;                    // 1 aspect fit, 2 full fill
         private Rectangle _savedRect, _maxRect;
         private int _maxGraceUntil;
         private int _lastSample;
@@ -1060,8 +1062,9 @@ namespace DuoChrome
         public void TopAction(int index)
         {
             if (index == 0) NativeMethods.ShowWindow(_hwnd, 6 /*SW_MINIMIZE*/);
-            else if (index == 1) FakeMaximize(!_fakedMax);
-            else if (index == 2)
+            else if (index == 1) FakeMaximize(!_fakedMax || _fakedMode != 1, true);
+            else if (index == 2) FakeMaximize(!_fakedMax || _fakedMode != 2, false);
+            else if (index == 3)
                 NativeMethods.PostMessageW(_hwnd, 0x0010 /*WM_CLOSE*/, IntPtr.Zero, IntPtr.Zero);
         }
 
@@ -1097,6 +1100,7 @@ namespace DuoChrome
             else if (_moving) UpdateMove();
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
             {
+                HideBars();          // never linger bars over a dead window
                 Discover();
                 return;
             }
@@ -1111,17 +1115,15 @@ namespace DuoChrome
 
             Rectangle client = ClientRect();
             Point cursor = CursorPosition();
-            bool overWindow = client.Contains(cursor);
             bool overBars = _chin.Bounds.Contains(cursor) || _top.Bounds.Contains(cursor);
-            bool foreground = NativeMethods.GetAncestor(
-                NativeMethods.GetForegroundWindow(), 2 /*GA_ROOT*/) == _hwnd;
-            // The chin belongs to the visible window; it must not float over
-            // other apps, so it needs window activity or cursor proximity.
-            bool barsAllowed = foreground || overWindow || overBars;
-            if (!barsAllowed) { HideBars(); return; }
-
-            SyncChin(client);
+            // Per-bar proximity rules, symmetric like a native window's own
+            // affordances: capsule reveals near the top edge, the mBack dot
+            // near the bottom edge. Neither cares about focus.
             bool showTop = ComputeTopVisibility(client, cursor);
+            bool showChin = ComputeChinVisibility(client, cursor) || overBars
+                || _resizing || _moving;
+
+            SyncChin(client, showChin);
             if (showTop && !_top.Visible)
             {
                 _top.Left = client.Right - _top.Width - S(TopMargin);
@@ -1182,15 +1184,31 @@ namespace DuoChrome
             return _top.Visible && cursor.Y < client.Top + S(RetainTop);
         }
 
-        private void SyncChin(Rectangle client)
+        private bool ComputeChinVisibility(Rectangle client, Point cursor)
+        {
+            // Bottom-edge twin of the capsule rule: reveal when the cursor
+            // dips into the bottom band, retain with hysteresis while it
+            // stays near.
+            bool inX = cursor.X >= client.Left && cursor.X < client.Right;
+            if (!inX) return _chin.Bounds.Contains(cursor);
+            if (cursor.Y > client.Bottom - S(TriggerTop)) return true;
+            return _chin.Visible && cursor.Y > client.Bottom - S(RetainTop);
+        }
+
+        private void SyncChin(Rectangle client, bool show)
         {
             _chin.ResyncWidth(client.Width);
             _chin.Left = client.Left;
             _chin.Top = client.Bottom - _chin.Height;
-            if (!_chin.Visible)
+            if (show && !_chin.Visible)
             {
                 _chin.Show();
                 Log.Write("chin shown");
+            }
+            else if (!show && _chin.Visible)
+            {
+                _chin.Hide();
+                Log.Write("chin hidden");
             }
             // Hook-driven: keep the capsule glued during moves/resizes too,
             // not just on the 20fps tick.
@@ -1291,7 +1309,7 @@ namespace DuoChrome
                         {
                             _chin.BeginInvoke((MethodInvoker)delegate
                             {
-                                SyncChin(ClientRect());
+                                SyncChin(ClientRect(), true);
                             });
                         }
                         catch { }
@@ -1334,25 +1352,41 @@ namespace DuoChrome
             }
         }
 
-        private void FakeMaximize(bool on)
+        private void FakeMaximize(bool on, bool fit)
         {
             if (on)
             {
-                _savedRect = WindowRect();
+                if (!_fakedMax) _savedRect = WindowRect();
                 Rectangle wa = WorkArea();
                 NativeMethods.RECT insets = FrameInsets();
-                // True maximize semantics: fill the whole work area (the flex
-                // display follows the window ratio; the app letterboxes or
-                // reflows its own content).
-                int x = wa.X - insets.Left;
-                int y = wa.Y - insets.Top;
-                int w = wa.Width + insets.Left + insets.Right;
-                int h = wa.Height + insets.Top + insets.Bottom;
+                int x, y, w, h;
+                if (fit)
+                {
+                    // Aspect-preserving fit: fill one dimension, center the
+                    // other (keeps a portrait app portrait).
+                    int cw = Math.Max(1, _savedRect.Width - insets.Left - insets.Right);
+                    int ch = Math.Max(1, _savedRect.Height - insets.Top - insets.Bottom);
+                    double windowAr = (double)cw / ch;
+                    double waAr = (double)wa.Width / wa.Height;
+                    if (windowAr > waAr) { w = wa.Width; h = (int)(wa.Width / windowAr); }
+                    else { h = wa.Height; w = (int)(wa.Height * windowAr); }
+                    x = wa.X + (wa.Width - w) / 2 - insets.Left;
+                    y = wa.Y + (wa.Height - h) / 2 - insets.Top;
+                }
+                else
+                {
+                    // True maximize semantics: fill the whole work area.
+                    x = wa.X - insets.Left;
+                    y = wa.Y - insets.Top;
+                    w = wa.Width + insets.Left + insets.Right;
+                    h = wa.Height + insets.Top + insets.Bottom;
+                }
                 NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, 0x0014);
                 _maxRect = new Rectangle(x, y, w, h);
                 _fakedMax = true;
+                _fakedMode = fit ? 1 : 2;
                 _maxGraceUntil = Environment.TickCount + MaxGraceMs;
-                Log.Write("fake maximize on " + _maxRect);
+                Log.Write("fake maximize on mode=" + _fakedMode + " " + _maxRect);
             }
             else
             {
