@@ -25,6 +25,7 @@ import subprocess
 from dataclasses import dataclass
 
 from duo.core.engine import WindowGeometry
+from duo.core.winproc import creation_flags
 
 _QUERY_TIMEOUT_S = 15.0
 
@@ -82,6 +83,7 @@ def primary_work_area() -> WorkArea:
                         errors="replace",
                         timeout=_QUERY_TIMEOUT_S,
                         check=False,
+                        creationflags=creation_flags(),
                 )
                 match = re.search(r"(\d+)\s*x\s*(\d+)", result.stdout or "")
                 if match:

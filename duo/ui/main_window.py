@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from duo.core.apps import Adb, app_info
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.paths import data_dir
+from duo.core.winproc import creation_flags
 
 #: Session key for whole-device mirroring (not an app package).
 MIRROR_KEY = "__device_mirror__"
@@ -177,6 +178,7 @@ def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> Non
                         errors="replace",
                                 timeout=8,
                                 check=False,
+                                creationflags=creation_flags(),
                         )
                         installed = {
                                 line.removeprefix("package:").strip()
@@ -429,6 +431,7 @@ class MainWindow(QMainWindow):
                         proc = subprocess.Popen(
                                 argv, start_new_session=True, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
+                                creationflags=creation_flags(),
                         )
                 except OSError as exc:
                         self._status.setText(f"启动失败：{label}（{exc}）")
@@ -453,6 +456,7 @@ class MainWindow(QMainWindow):
                         proc = subprocess.Popen(
                                 argv, start_new_session=True, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
+                                creationflags=creation_flags(),
                         )
                 except OSError as exc:
                         self._status.setText(f"启动失败：设备镜像（{exc}）")

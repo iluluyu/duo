@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from duo.core.winproc import creation_flags
+
 
 @dataclass
 class SessionSpec:
@@ -44,7 +46,10 @@ class Session:
                 self.spec.log_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.spec.log_path, "ab") as log_file:
                         self._proc = subprocess.Popen(
-                                self.spec.command, stdout=log_file, stderr=subprocess.STDOUT
+                                self.spec.command,
+                                stdout=log_file,
+                                stderr=subprocess.STDOUT,
+                                creationflags=creation_flags(),
                         )
 
         def is_alive(self) -> bool:

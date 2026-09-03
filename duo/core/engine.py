@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
 
+from duo.core.winproc import creation_flags
+
 #: Tools Duo depends on for the mirroring engine.
 REQUIRED_TOOLS: tuple[str, ...] = ("scrcpy", "adb")
 
@@ -87,6 +89,7 @@ def probe(tool: str) -> ToolInfo:
                         errors="replace",
                                 timeout=_PROBE_TIMEOUT_S,
                                 check=False,
+                                creationflags=creation_flags(),
                         )
                 except (OSError, subprocess.TimeoutExpired):
                         return ToolInfo(name=tool, path=found, version=None)
