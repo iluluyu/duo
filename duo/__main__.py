@@ -16,6 +16,7 @@ from duo.core.engine import (
         is_wsl,
         probe,
 )
+from duo.core.monitor import primary_work_area, recommend_landscape, recommend_portrait
 from duo.core.paths import logs_dir
 from duo.core.session import Session, SessionSpec
 
@@ -76,6 +77,32 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 height=args.height,
                 dpi=args.dpi,
         )
+        # Display recommendation from the PC monitor when not pinned.
+        window = None
+        if display.mode != "mirror":
+                area = primary_work_area()
+                if args.portrait:
+                        # Portrait wants a preset tall window, which flex refuses
+                        # (--window-* disabled with --flex-display): fixed WxH mode.
+                        rec = recommend_portrait(area, target_dp=args.dp or 640)
+                        display = DisplaySpec(
+                                mode="fixed",
+                                width=args.width or rec.display_width,
+                                height=args.height or rec.display_height,
+                                dpi=args.dpi or rec.dpi,
+                        )
+                        window = rec.window
+                else:
+                        rec = recommend_landscape(area, target_dp=args.dp or 1280)
+                        if args.dpi is None:
+                                display = DisplaySpec(
+                                        mode=display.mode,
+                                        width=display.width,
+                                        height=display.height,
+                                        dpi=rec.dpi,
+                                )
+                area_text = f"work area {area.width}x{area.height}"
+                print(f"display: {display.mode} dpi={display.dpi} ({area_text})")
         video = VideoSpec(bitrate_mbps=args.bitrate, max_fps=args.fps)
         adb = Adb(adb_info.path, serial)
 
@@ -93,6 +120,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 screen_off=not args.no_screen_off,
                 audio=not args.no_audio,
                 window_title=title,
+                window=window,
         )
         command = engine_args.to_argv(binary=scrcpy_info.path)
 
@@ -130,7 +158,18 @@ def _build_parser() -> argparse.ArgumentParser:
         mirror.add_argument("--width", type=int, help="virtual display width (fixed mode)")
         mirror.add_argument("--height", type=int, help="virtual display height (fixed mode)")
         mirror.add_argument(
-                "--dpi", type=int, default=480, help="virtual display density (default 480)"
+                "--dpi", type=int, default=None, help="virtual display density (auto by default)"
+        )
+        mirror.add_argument(
+                "--dp",
+                type=int,
+                default=None,
+                help="target layout width in dp (default 1280 landscape / 640 portrait)",
+        )
+        mirror.add_argument(
+                "--portrait",
+                action="store_true",
+                help="open a tall window on the right with portrait-tuned dpi",
         )
         mirror.add_argument("--fps", type=int, default=90, help="max fps (default 90)")
         mirror.add_argument(

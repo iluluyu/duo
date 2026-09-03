@@ -106,6 +106,25 @@ DisplayMode = Literal["mirror", "flex", "fixed"]
 
 
 @dataclass(frozen=True)
+class WindowGeometry:
+        """Optional scrcpy window placement (screen coordinates)."""
+
+        x: int
+        y: int
+        width: int
+        height: int
+
+        def to_flags(self) -> list[str]:
+                """Compile to scrcpy window geometry flags."""
+                return [
+                        f"--window-x={self.x}",
+                        f"--window-y={self.y}",
+                        f"--window-width={self.width}",
+                        f"--window-height={self.height}",
+                ]
+
+
+@dataclass(frozen=True)
 class DisplaySpec:
         """Which Android display to stream.
 
@@ -172,6 +191,7 @@ class EngineArgs:
         keyboard: str = "uhid"
         audio: bool = True
         window_title: str | None = None
+        window: WindowGeometry | None = None
 
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
@@ -189,4 +209,6 @@ class EngineArgs:
                         argv.append("--no-audio")
                 if self.window_title:
                         argv.append(f"--window-title={self.window_title}")
+                if self.window:
+                        argv += self.window.to_flags()
                 return argv
