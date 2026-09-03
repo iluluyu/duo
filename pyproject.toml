@@ -32,6 +32,9 @@ Issues = "https://github.com/iluluyu/duo/issues"
 [tool.setuptools.packages.find]
 include = ["duo*"]
 
+[tool.setuptools.package-data]
+duo = ["resources/*.cs"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

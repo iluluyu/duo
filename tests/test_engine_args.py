@@ -125,3 +125,11 @@ def test_window_size_emitted_for_fixed():
         assert "--window-y=20" in argv
         assert "--window-width=1252" in argv
         assert "--window-height=2088" in argv
+
+
+def test_borderless_flag():
+        """--chrome sessions emit --window-borderless; default keeps decorations."""
+        argv = _argv(serial="s", borderless=True)
+        assert "--window-borderless" in argv
+        argv = _argv(serial="s")
+        assert "--window-borderless" not in argv

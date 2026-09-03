@@ -159,7 +159,7 @@ duo/
 - [x] App 品牌化会话：窗口标题 = App 标签（aapt2 解析，APK 拉取缓存）——不背单词实测通过；⚠️ 窗口图标：scrcpy 无旗标，后续走 Windows AUMID+快捷方式或自绘窗口
 - [x] GUI 雏形：`duo --gui`（PyQt6 面板：设备状态/应用列表/竖屏开关；Apple 美学：克制/留白/KISS；WSLg 不可用时 offscreen 验证，Windows 原生运行）
 - [ ] GUI 在 Windows 侧实景运行验证（WSLg 本环境 DISPLAY 不可用）
-- [ ] 窗口 chrome：无边框 + 顶部悬停控制 + 底部返回/桌面（子代理攻关中）
+- [x] 窗口 chrome：无边框 + 顶部悬停胶囊（min/max/close）+ 常驻下巴（‹返回 ○桌面）（2026-09-03 完成，实测悬停/常驻/心跳全通过）
 - [ ] 拔线回落实景验收（用户拔线观察）
 
 **验收**：插上平板 → 点一下按钮 → 电脑出现镜像，帧率 ≥ 60，窗口尺寸贴合屏幕；拔线后 Duo 状态正确回落。
@@ -266,6 +266,8 @@ duo/
     - ⚠️ `adb track-devices` 用二进制长度前缀帧协议（无行分隔，实测首帧 `\x00\x10` + payload），行式解析不可用 → 热插拔改用 2s 轮询 `adb devices` 差分（KISS，跨版本稳定）
     - ⚠️ ColorOS 限制：`screencap -d <虚拟屏id>` 报 "not valid"，无法直接截取非默认屏（排障时改用 PC 侧窗口截图）
 - **M1 开工（2026-09-03）：代码落地与端到端验证**
+- ✅ 窗口 chrome 交付（2026-09-03，子代理原型 + 主线重写视觉层）：`duo mirror --chrome`；架构 = scrcpy `--window-borderless` + Windows 侧 C# overlay（`chrome_overlay.cs`，csc.exe 现场编译缓存于 ~/.local/share/duo/overlay/，sha256 戳失效）。视觉 = UpdateLayeredWindow 逐像素 Alpha + PrintWindow(PW_RENDERFULLCONTENT) 采样自制亚克力（SetWindowCompositionAttribute 在 Win11 24H2 返回 E_FAIL，不可用）；窗口修复 = WS_THICKFRAME 重加（可 resize）+ DWMWCP_ROUND（Win11 圆角）；仿最大化防盖任务栏；WinEvent 钩子实时跟随
+- ⚠️ 调试战史（全是实测换来的）：① CreateCompatibleDC/SelectObject 等住在 **gdi32.dll** 不是 user32（入口点缺失 = 静默崩溃）；② WinEvent 回调里 BeginInvoke 需先建句柄 + 防 teardown 竞态 try/catch；③ csc.exe 输出是本地化 GBK，解码要 errors=replace；④ powershell.exe 命令行会弄花 CJK（PS 走 UTF-8 BOM 脚本文件，C# exe 走 UTF-16 argv 无此问题）；⑤ WSL 里 pkill -f 的 pattern 会匹配含同样文本的自身命令行（清场与启动分两条命令）；⑥ 子代理后台 bash/孤儿进程会持续干扰实验（结束后必扫残留）
     - ✅ `duo mirror --app <pkg>` 全链路：自动选机 → APK 拉取缓存（设备路径变化自动失效）→ aapt2 标签解析 → EngineArgs 拼装 → 会话监管 → 窗口标题「不背单词」实测生效
     - ⚠️ APK 解析坑：新式 AXML（header 12 字节）击溃 pyaxmlparser/androguard/apkutils2 三个纯 Python 库；改用 Google Maven 官方 aapt2（`tools.py` 自动下载到 ~/.local/share/duo/tools/，版本 pin 9.4.0-15978811），M5 打包时随 bundle 分发
     - ✅ 测试 28 项全绿（fixtures 为设备真实输出）；ruff/mypy 干净

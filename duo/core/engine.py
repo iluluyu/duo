@@ -191,6 +191,7 @@ class EngineArgs:
         window_y: int | None = None
         window_width: int | None = None
         window_height: int | None = None
+        borderless: bool = False
 
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
@@ -208,6 +209,11 @@ class EngineArgs:
                         argv.append("--no-audio")
                 if self.window_title:
                         argv.append(f"--window-title={self.window_title}")
+                # A borderless window loses its title bar and decorations; the
+                # Windows-side chrome overlay (duo.core.chrome) supplies hover
+                # controls and repairs the resize frame in that case.
+                if self.borderless:
+                        argv.append("--window-borderless")
                 # Position flags are allowed with --flex-display; size flags
                 # are rejected by it (experiment finding) and only make sense
                 # together with a fixed-size display.
