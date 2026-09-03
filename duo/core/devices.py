@@ -12,6 +12,8 @@ import subprocess
 import threading
 from collections.abc import Callable
 
+from duo.core.winproc import creation_flags
+
 #: Exit code used by supervisors when the device went away.
 EXIT_DEVICE_LOST = 2
 
@@ -45,6 +47,7 @@ def poll_query(adb_binary: str) -> Callable[[], dict[str, str]]:
                         errors="replace",
                                 timeout=_QUERY_TIMEOUT_S,
                                 check=False,
+                                creationflags=creation_flags(),
                         )
                 except (OSError, subprocess.TimeoutExpired):
                         return {}

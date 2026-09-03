@@ -22,6 +22,7 @@ from pathlib import Path
 
 from duo.core.engine import is_wsl
 from duo.core.paths import apks_dir, icons_dir, tools_dir
+from duo.core.winproc import creation_flags
 
 #: Pinned aapt2 build from Google Maven (same artifact AGP uses).
 AAPT2_VERSION = "9.4.0-15978811"
@@ -55,6 +56,7 @@ class Adb:
                         errors="replace",
                         timeout=timeout,
                         check=False,
+                        creationflags=creation_flags(),
                 )
                 if result.returncode != 0:
                         detail = (result.stderr or "").strip()
@@ -312,6 +314,7 @@ def _aapt2_output(aapt2: Path, argv: list[str]) -> str | None:
                         errors="replace",
                         timeout=_RUN_TIMEOUT_S,
                         check=False,
+                        creationflags=creation_flags(),
                 )
         except (OSError, subprocess.TimeoutExpired):
                 return None
@@ -387,6 +390,7 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
                 errors="replace",
                 timeout=_RUN_TIMEOUT_S,
                 check=False,
+                creationflags=creation_flags(),
         )
         fields = parse_badging(result.stdout or "")
 

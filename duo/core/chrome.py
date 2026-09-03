@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from duo.core.paths import data_dir, logs_dir
+from duo.core.winproc import creation_flags
 
 #: The overlay source shipped inside the package resources.
 OVERLAY_SOURCE = Path(__file__).resolve().parent.parent / "resources" / "chrome_overlay.cs"
@@ -128,6 +129,7 @@ def wsl_to_windows_path(path: str) -> str:
                         errors="replace",
                         timeout=_WSLPATH_TIMEOUT_S,
                         check=False,
+                        creationflags=creation_flags(),
                 )
         except (OSError, subprocess.TimeoutExpired) as exc:
                 raise ChromeError(f"wslpath failed for {path}: {exc}") from exc
@@ -176,6 +178,7 @@ def ensure_built(to_windows: Callable[[str], str] = wsl_to_windows_path) -> Path
                         errors="replace",  # csc emits localized (GBK) warnings
                         timeout=_COMPILE_TIMEOUT_S,
                         check=False,
+                        creationflags=creation_flags(),
                 )
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                 if build_is_fresh(exe, stamp_file, stamp) or exe.is_file():
@@ -215,7 +218,10 @@ class ChromeOverlay:
                 # close right after the spawn (same pattern as Session.start).
                 with open(log_path, "ab") as log_file:
                         self._proc = subprocess.Popen(
-                                self.command, stdout=log_file, stderr=subprocess.STDOUT
+                                self.command,
+                                stdout=log_file,
+                                stderr=subprocess.STDOUT,
+                                creationflags=creation_flags(),
                         )
                 return log_path
 
