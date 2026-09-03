@@ -95,6 +95,9 @@ namespace DuoChrome
         [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
         [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
         [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
+        [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(
+            int x1, int y1, int x2, int y2, int w, int h);
+        [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
         [DllImport("user32.dll")] public static extern bool UpdateLayeredWindow(
             IntPtr h, IntPtr dstDc, IntPtr dstPt, ref SIZE size, IntPtr srcDc,
             ref POINT srcPt, uint crKey, ref BLENDFUNCTION blend, uint flags);
@@ -135,15 +138,17 @@ namespace DuoChrome
         private static int Main(string[] argv)
         {
             string title = null, serial = null, adb = null;
+            bool home = false;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
                 else if (argv[i] == "--serial") serial = argv[i + 1];
                 else if (argv[i] == "--adb") adb = argv[i + 1];
+                else if (argv[i] == "--home") home = argv[i + 1] == "1";
             }
             if (title == null || serial == null || adb == null)
             {
-                Log.Write("usage: --title <t> --serial <s> --adb <path>");
+                Log.Write("usage: --title <t> --serial <s> --adb <path> [--home 0|1]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -159,7 +164,7 @@ namespace DuoChrome
                 Log.Write("fatal crash: " + e.ExceptionObject);
             };
             Log.Write("overlay start title=" + title + " serial=" + serial);
-            using (Controller c = new Controller(title, serial, adb))
+            using (Controller c = new Controller(title, serial, adb, home))
             {
                 Application.Run();
             }
@@ -173,7 +178,7 @@ namespace DuoChrome
     // -------------------------------------------------------------------------
     internal sealed class NavButton
     {
-        public readonly Rectangle Circle;
+        public Rectangle Circle;
         public readonly Action Fire;
         public readonly int Kind;          // 0 = chevron, 1 = ring, 2..4 = win glyphs
         public bool Hover;
@@ -405,7 +410,7 @@ namespace DuoChrome
             return 0;
         }
 
-        protected void WireInput()
+        protected virtual void WireInput()
         {
             MouseMove += delegate(object s, MouseEventArgs e)
             {
@@ -459,7 +464,7 @@ namespace DuoChrome
             };
         }
 
-        private int HitIndex(Point p)
+        protected int HitIndex(Point p)
         {
             for (int i = 0; i < Buttons.Count; i++)
                 if (Buttons[i].Hit(p)) return i;
@@ -474,26 +479,80 @@ namespace DuoChrome
     {
         public const int LogicalHeight = 44;
         private const int LogicalButton = 36;
-        private const int LogicalGap = 112;
+        private const int HoldMs = 550;
 
-        public ChinWindow(Controller owner)
-            : base(owner, 0, (int)(10 * ScaleOf()))
+        private readonly Timer _hold;
+        private bool _firedHold;
+
+        public ChinWindow(Controller owner, bool home)
+            : base(owner, 0, (int)(18 * ScaleOf()))
         {
             int btn = (int)(LogicalButton * Dpi);
-            int gap = (int)(LogicalGap * Dpi);
             int h = (int)(LogicalHeight * Dpi);
             Size = new Size(600, h);           // width resynced by the controller
-            int total = 2 * btn + gap;
-            int x0 = (600 - total) / 2;
-            for (int i = 0; i < 2; i++)
+            // mBack homage: one centered ring. Tap = BACK; press-and-hold =
+            // HOME (physical mirroring only - a virtual display has no
+            // launcher, so holding there does nothing).
+            Buttons.Add(new NavButton(
+                new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
+                1, delegate { Ctrl.AdbKey(4); }));
+            _hold = new Timer { Interval = HoldMs };
+            _hold.Tick += delegate
             {
-                int kind = i;                  // 0 chevron, 1 ring
-                int code = i == 0 ? 4 : 3;     // keyevent BACK / HOME
-                Buttons.Add(new NavButton(
-                    new Rectangle(x0 + i * (btn + gap), (h - btn) / 2, btn, btn),
-                    kind, delegate { owner.AdbKey(code); }));
-            }
+                _hold.Stop();
+                _firedHold = true;
+                Log.Write("hold fired");
+                if (home) Ctrl.AdbKey(3);
+            };
             WireInput();
+        }
+
+        protected override void WireInput()
+        {
+            MouseMove += delegate(object s, MouseEventArgs e)
+            {
+                if (Ctrl.Resizing || Ctrl.Moving) return;
+                int hit = HitIndex(e.Location);
+                Cursor = hit >= 0 ? Cursors.Hand
+                    : (ResizeEdgeAt(e.Location) != 0 ? Cursors.SizeNS : Cursors.Default);
+                for (int i = 0; i < Buttons.Count; i++) Buttons[i].Hover = i == hit;
+                Render();
+            };
+            MouseLeave += delegate
+            {
+                foreach (NavButton b in Buttons) b.Hover = false;
+                Render();
+            };
+            MouseClick += delegate(object s, MouseEventArgs e)
+            {
+                if (_firedHold) { _firedHold = false; return; }   // long-press already acted
+                if (HitIndex(e.Location) >= 0) Buttons[0].Fire();
+            };
+            MouseDown += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && HitIndex(e.Location) >= 0)
+                {
+                    _firedHold = false;
+                    _hold.Start();
+                    return;
+                }
+                int edge = ResizeEdgeAt(e.Location);
+                if (edge != 0)
+                {
+                    Ctrl.BeginResize(edge);
+                    Capture = true;
+                }
+            };
+            MouseUp += delegate(object s, MouseEventArgs e)
+            {
+                _hold.Stop();
+                if (e.Button == MouseButtons.Left && (Ctrl.Resizing || Ctrl.Moving))
+                {
+                    Ctrl.EndResize();
+                    Ctrl.EndMove();
+                    Capture = false;
+                }
+            };
         }
 
         protected override int ResizeEdgeAt(Point p)
@@ -534,14 +593,11 @@ namespace DuoChrome
         {
             if (width == Width) return;
             int btn = (int)(LogicalButton * Dpi);
-            int gap = (int)(LogicalGap * Dpi);
             Size = new Size(width, Height);
-            int total = 2 * btn + gap;
-            int x0 = (width - total) / 2;
-            for (int i = 0; i < Buttons.Count; i++)
-                Buttons[i] = new NavButton(
-                    new Rectangle(x0 + i * (btn + gap), (Height - btn) / 2, btn, btn),
-                    Buttons[i].Kind, Buttons[i].Fire);
+            // keep the single mBack ring centered
+            Rectangle was = Buttons[0].Circle;
+            Buttons[0].Circle = new Rectangle(
+                (width - btn) / 2, was.Y, btn, btn);
         }
     }
 
@@ -558,7 +614,7 @@ namespace DuoChrome
         private readonly string[] _glyphs;
 
         public TopWindow(Controller owner)
-            : base(owner, (int)(14 * ScaleOf()), (int)(14 * ScaleOf()))
+            : base(owner, (int)(18 * ScaleOf()), (int)(18 * ScaleOf()))
         {
             float s = ScaleOf();
             int btn = (int)(LogicalButton * s);
@@ -777,10 +833,13 @@ namespace DuoChrome
         private int _ticks;
         private EdgeStrip[] _strips;
 
-        public Controller(string title, string serial, string adb)
+        private readonly bool _homeEnabled;
+
+        public Controller(string title, string serial, string adb, bool home)
         {
             _title = title; _serial = serial; _adb = adb;
-            _chin = new ChinWindow(this);
+            _homeEnabled = home;
+            _chin = new ChinWindow(this, home);
             _top = new TopWindow(this);
             // Force handle creation now: the WinEvent callback below may fire
             // for any window move long before the bars are first shown, and
@@ -998,7 +1057,8 @@ namespace DuoChrome
                 _top.Left = client.Right - _top.Width - S(TopMargin);
                 _top.Top = client.Top + S(TopMargin);
                 _top.Show();
-                Log.Write("top shown");
+                Log.Write("top shown at " + _top.Left + "," + _top.Top
+                    + " " + _top.Width + "x" + _top.Height);
             }
             else if (!showTop && _top.Visible)
             {
@@ -1198,12 +1258,23 @@ namespace DuoChrome
                 _savedRect = WindowRect();
                 Rectangle wa = WorkArea();
                 NativeMethods.RECT insets = FrameInsets();
-                int x = wa.X - insets.Left;
-                int y = wa.Y - insets.Top;
-                int w = wa.Width + insets.Left + insets.Right;
-                int h = wa.Height + insets.Top + insets.Bottom;
-                NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, 0x0014);
-                _maxRect = new Rectangle(x, y, w, h);
+                // Aspect-preserving fit: a portrait phone app must not be
+                // stretched across a landscape work area (iPhone-Mirroring
+                // style maximize - fill one dimension, center the other).
+                int cw = _savedRect.Width - insets.Left - insets.Right;
+                int ch = _savedRect.Height - insets.Top - insets.Bottom;
+                if (cw <= 0 || ch <= 0) { cw = _savedRect.Width; ch = _savedRect.Height; }
+                double windowAr = (double)cw / ch;
+                double waAr = (double)wa.Width / wa.Height;
+                int w, h;
+                if (windowAr > waAr) { w = wa.Width; h = (int)(wa.Width / windowAr); }
+                else { h = wa.Height; w = (int)(wa.Height * windowAr); }
+                int x = wa.X + (wa.Width - w) / 2 - insets.Left;
+                int y = wa.Y + (wa.Height - h) / 2 - insets.Top;
+                int W = w + insets.Left + insets.Right;
+                int H = h + insets.Top + insets.Bottom;
+                NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y, W, H, 0x0014);
+                _maxRect = new Rectangle(x, y, W, H);
                 _fakedMax = true;
                 _maxGraceUntil = Environment.TickCount + MaxGraceMs;
                 Log.Write("fake maximize on " + _maxRect);

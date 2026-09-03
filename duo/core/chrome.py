@@ -93,14 +93,26 @@ def compile_command(csc: str, source_win: str, out_win: str) -> list[str]:
         ]
 
 
-def overlay_command(exe: str, title: str, serial: str, adb_path: str) -> list[str]:
+def overlay_command(exe: str, title: str, serial: str, adb_path: str, home: bool) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
-        The overlay takes plain ``--title/--serial/--adb`` parameters: as a
-        PE binary it receives real UTF-16 argv, so CJK titles need no
-        base64 transport (that workaround was PowerShell-specific).
+        The overlay takes plain ``--title/--serial/--adb/--home`` parameters: as
+        a PE binary it receives real UTF-16 argv, so CJK titles need no
+        base64 transport (that workaround was PowerShell-specific). ``home``
+        enables the long-press-home gesture (physical mirroring only: a
+        virtual display has no launcher to go home to).
         """
-        return [exe, "--title", title, "--serial", serial, "--adb", adb_path]
+        return [
+                exe,
+                "--title",
+                title,
+                "--serial",
+                serial,
+                "--adb",
+                adb_path,
+                "--home",
+                "1" if home else "0",
+        ]
 
 
 def wsl_to_windows_path(path: str) -> str:
@@ -182,13 +194,13 @@ def ensure_built(to_windows: Callable[[str], str] = wsl_to_windows_path) -> Path
 class ChromeOverlay:
         """The overlay child process, bound to one mirroring session."""
 
-        def __init__(self, title: str, serial: str, adb_path: str) -> None:
+        def __init__(self, title: str, serial: str, adb_path: str, home: bool = False) -> None:
                 self._title = title
                 self._serial = serial
                 self._adb_path = adb_path
                 self._exe = ensure_built()
                 self.command: list[str] = overlay_command(
-                        str(self._exe), title, serial, wsl_to_windows_path(adb_path)
+                        str(self._exe), title, serial, wsl_to_windows_path(adb_path), home
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 

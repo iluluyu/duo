@@ -38,7 +38,10 @@ def test_overlay_source_shipped_and_hardened():
         assert "DrawRing" in text
         assert "0xE921" in text and "0xE8BB" in text
         # Navigation keys for the chin (BACK=4, HOME=3).
-        assert "? 4 : 3" in text
+        # mBack chin: tap = BACK (keyevent 4), long-press = HOME (keyevent 3).
+        assert "AdbKey(4)" in text
+        assert "AdbKey(3)" in text
+        assert "--home" in text
         assert "AdbKey" in text
 
 
@@ -61,13 +64,20 @@ def test_compile_command_shape():
 
 
 def test_overlay_command_plain_argv():
-        """The overlay argv uses plain --title/--serial/--adb (no base64)."""
-        argv = overlay_command("/x/DuoChromeOverlay.exe", "不背单词", "4444bd6b", "C:\\a.exe")
+        """The overlay argv uses plain --title/--serial/--adb/--home."""
+        argv = overlay_command("/x/DuoChromeOverlay.exe", "不背单词", "4444bd6b", "C:\\a.exe", True)
         assert argv[0] == "/x/DuoChromeOverlay.exe"
         assert argv[argv.index("--title") + 1] == "不背单词"
         assert argv[argv.index("--serial") + 1] == "4444bd6b"
         assert argv[argv.index("--adb") + 1] == "C:\\a.exe"
+        assert argv[argv.index("--home") + 1] == "1"
         assert "TitleB64" not in " ".join(argv)
+
+
+def test_overlay_command_home_off_for_virtual_displays():
+        """App windows (virtual displays) disable the long-press-home ring."""
+        argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False)
+        assert argv[argv.index("--home") + 1] == "0"
 
 
 def test_build_is_fresh_matches_stamp(tmp_path):
