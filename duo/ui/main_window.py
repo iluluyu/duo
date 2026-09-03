@@ -32,6 +32,9 @@ from duo.core.apps import Adb, app_info
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.paths import data_dir
 
+#: Session key for whole-device mirroring (not an app package).
+MIRROR_KEY = "__device_mirror__"
+
 #: Small curated catalog; filtered against installed packages at startup.
 APP_CATALOG: list[tuple[str, str]] = [
         ("不背单词", "cn.com.langeasy.LangEasyLexis"),
@@ -58,6 +61,12 @@ QPushButton#app-icon {
 QPushButton#app-icon:hover { background: #F0F0F3; }
 QPushButton#app-icon:pressed { background: #E8E8ED; }
 QPushButton#app-icon:disabled { color: #E5E5EA; }
+QPushButton#device-mirror {
+        background: #FFFFFF; border: 1px solid #ECECF0; border-radius: 10px;
+        color: #1D1D1F; font-size: 13px; padding: 9px 0;
+}
+QPushButton#device-mirror:hover { background: #F7F7FA; }
+QPushButton#device-mirror:pressed { background: #F0F0F3; }
 QLabel#running-chip {
         background: #F0F0F3; color: #1D1D1F; font-size: 12px;
         border-radius: 11px; padding: 4px 6px 4px 12px;
@@ -111,12 +120,13 @@ def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
 
         Every panel window gets the borderless chrome. Audio is always
         requested - the CLI arbitrates ownership (single capture) via the
-        audio lock, so the panel stays out of that policy.
+        audio lock, so the panel stays out of that policy. Under PyInstaller
+        ``sys.executable`` IS the frozen duo binary, so sessions spawn as
+        ``Duo.exe mirror ...`` and route through the CLI entry.
         """
-        argv = [
-                sys.executable,
-                "-m",
-                "duo",
+        frozen = getattr(sys, "frozen", False)
+        argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
+        argv += [
                 "mirror",
                 "--app",
                 package,
@@ -126,6 +136,23 @@ def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
         ]
         if portrait:
                 argv.append("--portrait")
+        return argv
+
+
+def build_device_mirror_argv(serial: str) -> list[str]:
+        """The argv for direct device mirroring (no virtual display)."""
+        frozen = getattr(sys, "frozen", False)
+        argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
+        argv += [
+                "mirror",
+                "--display",
+                "mirror",
+                "--serial",
+                serial,
+                "--chrome",
+                "--title",
+                "平板镜像",
+        ]
         return argv
 
 
@@ -146,6 +173,8 @@ def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> Non
                                 [adb_binary, "shell", "pm list packages"],
                                 capture_output=True,
                                 text=True,
+                        encoding="utf-8",
+                        errors="replace",
                                 timeout=8,
                                 check=False,
                         )
@@ -221,6 +250,8 @@ class MainWindow(QMainWindow):
                 column.addWidget(self._build_apps_card())
                 column.addSpacing(6)
                 column.addWidget(self._build_running_card())
+                column.addSpacing(6)
+                column.addWidget(self._build_mirror_card())
                 column.addStretch(1)
 
                 self._status = _label("就绪", "status")
@@ -291,6 +322,15 @@ class MainWindow(QMainWindow):
                         row.addWidget(button)
                 row.addStretch(1)
                 inner.addLayout(row)
+                return card
+
+        def _build_mirror_card(self) -> QFrame:
+                """Direct whole-device mirroring, outside the app grid."""
+                card, inner = self._card()
+                button = QPushButton("镜像设备屏幕")
+                button.setObjectName("device-mirror")
+                button.clicked.connect(self._launch_device_mirror)
+                inner.addWidget(button)
                 return card
 
         def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
@@ -398,6 +438,29 @@ class MainWindow(QMainWindow):
                 orientation = "竖屏" if portrait else "横屏"
                 self._status.setText(f"已启动 {label} · {orientation}")
 
+        def _launch_device_mirror(self) -> None:
+                """Start whole-device mirroring (physical display, no app)."""
+                serial = next(iter(self._monitor.online), "")
+                if not serial:
+                        self._status.setText("设备未连接")
+                        return
+                self._reap_sessions()
+                if MIRROR_KEY in self._sessions:
+                        self._status.setText("设备镜像已在运行")
+                        return
+                argv = build_device_mirror_argv(serial)
+                try:
+                        proc = subprocess.Popen(
+                                argv, start_new_session=True, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                        )
+                except OSError as exc:
+                        self._status.setText(f"启动失败：设备镜像（{exc}）")
+                        return
+                self._sessions[MIRROR_KEY] = proc
+                self._refresh_sessions()
+                self._status.setText("已启动 设备镜像")
+
         def _toggle_portrait(self, button: QPushButton, package: str, label: str) -> None:
                 """Right-click on an app icon flips its remembered orientation."""
                 now = not self._portrait_prefs.get(package, False)
@@ -426,6 +489,7 @@ class MainWindow(QMainWindow):
                         self._running_row.addWidget(_label("暂无窗口", "empty-hint"))
                         return
                 labels = {pkg: label for label, pkg in APP_CATALOG}
+                labels[MIRROR_KEY] = "设备镜像"
                 for package in self._sessions:
                         chip = QFrame()
                         chip.setObjectName("running-chip")
@@ -451,6 +515,7 @@ class MainWindow(QMainWindow):
                         return
                 proc.terminate()
                 labels = {pkg: label for label, pkg in APP_CATALOG}
+                labels[MIRROR_KEY] = "设备镜像"
                 self._status.setText(f"已关闭 {labels.get(package, package)}")
 
         def closeEvent(self, event: QCloseEvent | None) -> None:

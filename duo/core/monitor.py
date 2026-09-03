@@ -78,6 +78,8 @@ def primary_work_area() -> WorkArea:
                         ["powershell.exe", "-NoProfile", "-Command", _PS_QUERY],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=_QUERY_TIMEOUT_S,
                         check=False,
                 )

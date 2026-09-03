@@ -41,6 +41,8 @@ def poll_query(adb_binary: str) -> Callable[[], dict[str, str]]:
                                 [adb_binary, "devices"],
                                 capture_output=True,
                                 text=True,
+                        encoding="utf-8",
+                        errors="replace",
                                 timeout=_QUERY_TIMEOUT_S,
                                 check=False,
                         )

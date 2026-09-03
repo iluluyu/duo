@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from duo.ui.main_window import (
         DEFAULT_PORTRAIT,
+        build_device_mirror_argv,
         build_launch_argv,
         load_portrait_prefs,
         save_portrait_prefs,
@@ -48,6 +50,23 @@ def test_launch_argv_portrait_flag():
         """Portrait is a flag."""
         argv = build_launch_argv("cn.com.langeasy.LangEasyLexis", "S1", portrait=True)
         assert "--portrait" in argv
+
+
+def test_device_mirror_argv():
+        """Direct mirroring uses the mirror display mode with its own title."""
+        argv = build_device_mirror_argv("S1")
+        assert argv[argv.index("--display") + 1] == "mirror"
+        assert argv[argv.index("--title") + 1] == "平板镜像"
+        assert "--chrome" in argv
+        assert "--app" not in argv
+
+
+def test_launch_argv_frozen_routes_through_exe(monkeypatch):
+        """Under PyInstaller the exe itself is the CLI entry."""
+        monkeypatch.setattr("sys.frozen", True, raising=False)
+        argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
+        assert argv[0] == sys.executable
+        assert "-m" not in argv
 
 
 def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
