@@ -50,6 +50,8 @@ def is_wsl() -> bool:
                         ["uname", "-r"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=_PROBE_TIMEOUT_S,
                         check=False,
                 ).stdout.lower()
@@ -81,6 +83,8 @@ def probe(tool: str) -> ToolInfo:
                                 [found, "--version"],
                                 capture_output=True,
                                 text=True,
+                        encoding="utf-8",
+                        errors="replace",
                                 timeout=_PROBE_TIMEOUT_S,
                                 check=False,
                         )

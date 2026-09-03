@@ -124,6 +124,8 @@ def wsl_to_windows_path(path: str) -> str:
                         ["wslpath", "-w", path],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=_WSLPATH_TIMEOUT_S,
                         check=False,
                 )

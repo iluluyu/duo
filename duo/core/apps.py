@@ -51,6 +51,8 @@ class Adb:
                         [self.binary, "-s", self.serial, *args],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=timeout,
                         check=False,
                 )
@@ -306,6 +308,8 @@ def _aapt2_output(aapt2: Path, argv: list[str]) -> str | None:
                         [str(aapt2), *argv],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=_RUN_TIMEOUT_S,
                         check=False,
                 )
@@ -379,6 +383,8 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
                 [str(aapt2), "dump", "badging", str(apk_path)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=_RUN_TIMEOUT_S,
                 check=False,
         )
