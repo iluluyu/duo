@@ -46,3 +46,19 @@ def test_corrupt_lock_is_treated_as_free(tmp_path, monkeypatch):
 def test_pid_alive_zero_is_dead():
         """PID 0 is never alive."""
         assert _pid_alive(0) is False
+
+
+def test_pid_alive_windows_invalid_handle_is_dead(monkeypatch):
+        """Windows raises OSError WinError 6 for dead PIDs - treat as dead."""
+        def boom(pid, sig):
+                raise OSError(6, "handle is invalid")
+        monkeypatch.setattr(audio_lock.os, "kill", boom)
+        assert _pid_alive(999) is False
+
+
+def test_pid_alive_permission_means_alive(monkeypatch):
+        """A permission error means the process exists."""
+        def boom(pid, sig):
+                raise PermissionError(13, "denied")
+        monkeypatch.setattr(audio_lock.os, "kill", boom)
+        assert _pid_alive(999) is True
