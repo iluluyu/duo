@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QFont, QIcon
+from PyQt6.QtGui import QCloseEvent, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
@@ -43,6 +43,11 @@ def package_to_label(package: str) -> str:
         """Human-ish fallback label for uncataloged packages."""
         tail = package.rsplit(".", 1)[-1]
         return tail[:1].upper() + tail[1:]
+
+
+def elide_label(label: str, limit: int = 6) -> str:
+        """Shorten a label to fit under a mini icon."""
+        return label if len(label) <= limit else label[: limit - 1] + "…"
 
 #: Small curated catalog; filtered against installed packages at startup.
 APP_CATALOG: list[tuple[str, str]] = [
@@ -82,6 +87,14 @@ QLabel#running-chip {
 }
 QToolButton#chip-close { background: transparent; border: none; color: #86868B; font-size: 13px; }
 QToolButton#chip-close:hover { color: #1D1D1F; }
+QScrollArea#all-apps { background: transparent; border: none; }
+QWidget#all-apps-host { background: transparent; }
+QToolButton#mini-icon {
+        background: transparent; border: none; border-radius: 10px;
+        font-size: 11px; color: #86868B; padding: 2px;
+}
+QToolButton#mini-icon:hover { background: #F0F0F3; }
+QToolButton#mini-icon:pressed { background: #E8E8ED; }
 QLabel#empty-hint { color: #C7C7CC; font-size: 12px; }
 QLabel#status { color: #86868B; font-size: 12px; }
 """
@@ -359,11 +372,12 @@ class MainWindow(QMainWindow):
                 self._all_grid = QGridLayout(self._all_grid_host)
                 self._all_grid.setContentsMargins(0, 0, 0, 0)
                 self._all_grid.setSpacing(8)
-                self._all_buttons: dict[str, QPushButton] = {}
+                self._all_buttons: dict[str, QToolButton] = {}
                 scroll = QScrollArea()
                 scroll.setObjectName("all-apps")
                 scroll.setWidgetResizable(True)
-                scroll.setFixedHeight(180)
+                scroll.setFixedHeight(190)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                 scroll.setWidget(self._all_grid_host)
                 inner.addWidget(scroll)
                 hint = _label("字母头像为占位，图标后台解析中…", "caption")
@@ -450,19 +464,36 @@ class MainWindow(QMainWindow):
         def _on_all_apps(self, packages: object) -> None:
                 """Fill the grid with letter-avatar buttons (placeholders)."""
                 assert isinstance(packages, list)
-                per_row = 8
+                per_row = 6
                 for index, package in enumerate(packages):
                         short = package.rsplit(".", 1)[-1][:2].upper()
-                        button = QPushButton(short)
+                        label = package_to_label(package)
+                        button = QToolButton()
                         button.setObjectName("mini-icon")
-                        button.setFixedSize(44, 44)
+                        button.setFixedSize(46, 62)
                         button.setIconSize(QSize(34, 34))
-                        button.setToolTip(package)
+                        button.setToolButtonStyle(
+                                Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+                        )
+                        button.setText(elide_label(label))
+                        button.setToolTip(f"{label} · {package}")
                         button.clicked.connect(
                                 lambda _=False, pkg=package, fn=self._launch: fn(
                                         pkg, package_to_label(pkg)
                                 )
                         )
+                        # The avatar "glyph" rides in the icon slot.
+                        avatar = QPixmap(34, 34)
+                        avatar.fill(Qt.GlobalColor.transparent)
+                        painter = QPainter(avatar)
+                        font = painter.font()
+                        font.setPixelSize(15)
+                        font.setBold(True)
+                        painter.setFont(font)
+                        painter.setPen(QColor(0xC7, 0xC7, 0xCC))
+                        painter.drawText(avatar.rect(), Qt.AlignmentFlag.AlignCenter, short)
+                        painter.end()
+                        button.setIcon(QIcon(avatar))
                         self._all_buttons[package] = button
                         self._all_grid.addWidget(
                                 button, index // per_row, index % per_row
@@ -480,8 +511,8 @@ class MainWindow(QMainWindow):
                 icon = QIcon(str(icon_path))
                 if icon.isNull():
                         return
-                button.setText("")
                 button.setIcon(icon)
+                button.setText(elide_label(label))
                 button.setToolTip(f"{label} · {package}")
 
         def _load_icons(self) -> None:
