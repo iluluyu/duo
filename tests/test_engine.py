@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from duo.core import engine
 from duo.core.engine import REQUIRED_TOOLS, ToolInfo, probe
 
 
 def test_required_tools_listing():
         """scrcpy and adb are the two engine dependencies."""
         assert REQUIRED_TOOLS == ("scrcpy", "adb")
+
+
+def test_tool_names_prefers_windows_build_under_wsl(monkeypatch):
+        """Under WSL the .exe variant must be probed first."""
+        monkeypatch.setattr(engine, "is_wsl", lambda: True)
+        assert engine.tool_names("scrcpy") == ("scrcpy.exe", "scrcpy")
+
+
+def test_tool_names_native_linux(monkeypatch):
+        """Outside WSL only the plain name is probed."""
+        monkeypatch.setattr(engine, "is_wsl", lambda: False)
+        assert engine.tool_names("scrcpy") == ("scrcpy",)
 
 
 def test_probe_missing_tool():
