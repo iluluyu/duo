@@ -8,7 +8,6 @@ from pathlib import Path
 from duo.core.apps import (
         parse_badging,
         parse_base_apk_path,
-        parse_device_serials,
         parse_package_list,
 )
 
@@ -38,11 +37,6 @@ application-label-zh-CN:'不背单词'
 application: label='不背单词' icon='res/mipmap-anydpi-v26/ic_launcher_app.xml'
 launchable-activity: name='cn.com.langeasy.LangEasyLexis.activity.SplashActivity'  label='' icon=''
 """
-
-
-def test_parse_device_serials_filters_offline_and_unauthorized():
-        """Only online (state=device) serials are returned."""
-        assert parse_device_serials(DEVICES_OUTPUT) == ["4444bd6b"]
 
 
 def test_parse_package_list_sorted():

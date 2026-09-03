@@ -7,7 +7,8 @@ import sys
 import time
 
 from duo import __version__
-from duo.core.apps import Adb, AdbError, app_info, list_device_serials
+from duo.core.apps import Adb, AdbError, app_info
+from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import (
         REQUIRED_TOOLS,
         DisplaySpec,
@@ -47,7 +48,8 @@ def _pick_serial(explicit: str | None) -> str:
         adb_info = probe("adb")
         if not adb_info.available or adb_info.path is None:
                 raise AdbError("adb not found on PATH (run: duo --check)")
-        serials = list_device_serials(adb_info.path)
+        states = poll_query(adb_info.path)()
+        serials = [s for s, state in states.items() if state == "device"]
         if explicit:
                 if explicit not in serials:
                         found = ", ".join(serials) or "none"
@@ -78,20 +80,31 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 dpi=args.dpi,
         )
         # Display recommendation from the PC monitor when not pinned.
-        window = None
+        engine_window: dict[str, int | None] = {}
         if display.mode != "mirror":
                 area = primary_work_area()
-                if args.portrait:
-                        # Portrait wants a preset tall window, which flex refuses
-                        # (--window-* disabled with --flex-display): fixed WxH mode.
+                portrait = args.portrait or (args.height is not None and args.width is not None
+                        and args.height > args.width)
+                if portrait:
                         rec = recommend_portrait(area, target_dp=args.dp or 640)
                         display = DisplaySpec(
-                                mode="fixed",
+                                mode=display.mode,
                                 width=args.width or rec.display_width,
                                 height=args.height or rec.display_height,
                                 dpi=args.dpi or rec.dpi,
                         )
-                        window = rec.window
+                        # Position the window but never lock its size: the user
+                        # manages window geometry (e.g. PowerToys zones) and
+                        # flex keeps the display following every resize.
+                        if display.mode == "flex" and rec.window is not None:
+                                engine_window = {"window_x": rec.window.x, "window_y": rec.window.y}
+                        else:
+                                engine_window = {
+                                        "window_x": rec.window.x if rec.window else None,
+                                        "window_y": rec.window.y if rec.window else None,
+                                        "window_width": rec.display_width,
+                                        "window_height": rec.display_height,
+                                }
                 else:
                         rec = recommend_landscape(area, target_dp=args.dp or 1280)
                         if args.dpi is None:
@@ -101,8 +114,9 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                         height=display.height,
                                         dpi=rec.dpi,
                                 )
+                        engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"
-                print(f"display: {display.mode} dpi={display.dpi} ({area_text})")
+                print(f"display: {display.mode} dpi={display.dpi} ({area_text})", flush=True)
         video = VideoSpec(bitrate_mbps=args.bitrate, max_fps=args.fps)
         adb = Adb(adb_info.path, serial)
 
@@ -110,7 +124,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
         if title is None and args.app:
                 info = app_info(adb, args.app)
                 title = info.label
-                print(f"app: {info.label} ({info.package} {info.version_name or ''})")
+                print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
 
         engine_args = EngineArgs(
                 serial=serial,
@@ -120,16 +134,35 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 screen_off=not args.no_screen_off,
                 audio=not args.no_audio,
                 window_title=title,
-                window=window,
+                window_x=engine_window.get("window_x"),
+                window_y=engine_window.get("window_y"),
+                window_width=engine_window.get("window_width"),
+                window_height=engine_window.get("window_height"),
         )
         command = engine_args.to_argv(binary=scrcpy_info.path)
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
         session = Session(SessionSpec(command=command, log_path=log_path))
-        print(f"session log: {log_path}")
-        print("starting engine... (Ctrl+C to stop)")
-        return session.run()
+        print(f"session log: {log_path}", flush=True)
+
+        # Hotplug watch: stop the session when the device goes away.
+        changes: list[dict[str, str]] = []
+        monitor = DeviceMonitor(on_change=changes.append, adb_binary=adb_info.path)
+        monitor.start()
+
+        def device_gone() -> bool:
+                states = monitor.states
+                return bool(states) and states.get(serial) != "device"
+
+        print("starting engine... (Ctrl+C to stop)", flush=True)
+        try:
+                code = session.run(should_stop=device_gone)
+        finally:
+                monitor.stop()
+        if code == 2:
+                print("device disconnected - session stopped", flush=True)
+        return code
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -143,6 +176,11 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--check",
                 action="store_true",
                 help="probe scrcpy/adb and report environment status",
+        )
+        parser.add_argument(
+                "--gui",
+                action="store_true",
+                help="launch the Duo panel (requires the gui extra: pip install duo[gui])",
         )
         subparsers = parser.add_subparsers(dest="command")
 
@@ -189,6 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         parser = _build_parser()
         args = parser.parse_args(argv)
 
+        if args.gui:
+                try:
+                        from duo.ui.main_window import run_app
+                except ImportError as exc:
+                        print(f"error: gui extras missing ({exc})", file=sys.stderr)
+                        print("install with: pip install duo[gui]", file=sys.stderr)
+                        return 1
+                return run_app()
         if args.command == "mirror":
                 try:
                         return _run_mirror(args)
