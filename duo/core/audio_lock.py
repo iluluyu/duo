@@ -20,15 +20,20 @@ def _lock_path():
 
 
 def _pid_alive(pid: int) -> bool:
-        """Whether a process with this PID exists (0 means dead)."""
+        """Whether a process with this PID exists (0 means dead).
+
+        ``os.kill(pid, 0)`` is the portable probe: ProcessLookupError means
+        dead, PermissionError means alive-but-foreign, and on Windows a dead
+        PID surfaces as ``OSError`` WinError 6 (invalid handle) - also dead.
+        """
         if pid <= 0:
                 return False
         try:
                 os.kill(pid, 0)
-        except ProcessLookupError:
-                return False
         except PermissionError:
                 return True  # exists, owned by someone else
+        except OSError:
+                return False  # POSIX: no such process; Windows: invalid handle
         return True
 
 
