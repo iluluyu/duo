@@ -139,6 +139,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         engine_args = EngineArgs(
                 serial=serial,
+                adb_binary=adb_info.path,
                 display=display,
                 video=video,
                 app_package=args.app,

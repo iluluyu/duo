@@ -12,6 +12,13 @@ def _argv(**kwargs) -> list[str]:
         return EngineArgs(**kwargs).to_argv()
 
 
+def test_adb_pin_adds_flag_only_when_set():
+        """The adb pin keeps scrcpy off its bundled (version-mismatched) adb."""
+        argv = _argv(serial="s", adb_binary="C:\\tools\\adb.exe")
+        assert "--adb=C:\\tools\\adb.exe" in argv
+        assert "--adb" not in _argv(serial="s")
+
+
 def test_flex_default_matches_verified_preset():
         """The default args reproduce the experiment-verified session shape."""
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")

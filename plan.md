@@ -282,6 +282,7 @@ duo/
     - ✅ Windows 分发形态（开发阶段轻量版）：embeddable Python 便携构建（不装 Python 不进 PATH）→ PyInstaller onefile+windowed → `%LOCALAPPDATA%\Duo\` + 开始菜单/桌面快捷方式 + 注册表 Uninstall 条目 + uninstall.ps1；应用图标 = Apple 蓝圆角方块 + 白色 mBack 圆环（assets/duo.ico，与产品视觉同源）
     - ⚠️ PyInstaller 冻结版五连坑（全部实测）：① `sys.executable` 在冻结 exe 里指向自己，面板 spawn 会话变成再开一个面板（解法：`getattr(sys, 'frozen', False)` 时 argv 直接走 CLI 入口，gui_entry.py 带参路由）；② 原生 Windows subprocess 默认 GBK 解码，UTF-8 中文应用标签直接炸掉后台线程（全部 subprocess 显式 `encoding='utf-8', errors='replace'`）；③ GUI 进程 spawn 控制台程序（adb/scrcpy/csc）会弹新控制台窗，2s 轮询 = 屏幕狂闪（全部 14 处 spawn 统一 `CREATE_NO_WINDOW`，中心化在 `duo/core/winproc.py`）；④ `os.kill(pid, 0)` 在 Windows 对死 PID 抛 `OSError WinError 6` 而非 ProcessLookupError（audio_lock._pid_alive 补 catch OSError = dead）；⑤ `from PIL import Image` 的 ImportError 被 `except ImportError: return None` 静默吞掉，冻结包没 Pillow → 图标全军覆没（pillow 升为正式依赖）
     - ⚠️ 其余经验：`--add-data` 相对路径按 specpath 解析而非 CWD（必须绝对路径）；OneDrive 桌面重定向（GetFolderPath('Desktop') ≠ C:\Users\X\Desktop，两个都要放）；robocopy 同步源码到 C:\duo-build\src 再 pip install --no-deps + PyInstaller
+    - ⚠️ **adb server 拉锯战**（2026-09-04，Find X8 接入暴露）：scrcpy 自带 platform-tools 35（server 40）而 scoop adb 是 37.0.1（server 41）；scrcpy 优先用同目录自带 adb，面板轮询用 scoop adb → 谁后启动谁杀对方 server，设备每 2s 瞬断一次。scrcpy 4.1 已是最新（自带 adb 不会更新），解法 = 引擎给每个 scrcpy 会话显式传 `--adb=<path>` 钉死在解析出的同一个 adb（EngineArgs.adb_binary）
 
 ## 8. 验收清单（v1.0 Definition of Done）
 
