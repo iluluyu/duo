@@ -186,6 +186,7 @@ class EngineArgs:
         """A complete mirroring session, compilable to a scrcpy command."""
 
         serial: str
+        adb_binary: str | None = None       # pin scrcpy to our adb (server wars)
         display: DisplaySpec = DisplaySpec()
         video: VideoSpec = VideoSpec()
         app_package: str | None = None
@@ -205,6 +206,11 @@ class EngineArgs:
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
                 argv = [binary, f"--serial={self.serial}"]
+                if self.adb_binary:
+                        # scrcpy otherwise prefers its own bundled adb; a
+                        # version mismatch makes the two clients kill each
+                        # other's server and devices flap offline.
+                        argv.append(f"--adb={self.adb_binary}")
                 argv += self.display.to_flags()
                 if self.app_package:
                         argv.append(f"--start-app={self.app_package}")
