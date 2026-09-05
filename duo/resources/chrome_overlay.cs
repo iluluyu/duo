@@ -970,7 +970,10 @@ namespace DuoChrome
         }
 
         /// <summary>Place the square over one corner of the visible window
-        /// bounds and stroke the matching superellipse quadrant.</summary>
+        /// bounds and stroke the matching superellipse quadrant. The square
+        /// extends ``o`` px past the corner so the outer shadow arcs stay
+        /// inside the bitmap instead of being hard-cut at the window edge.
+        /// </summary>
         public void SyncTo(Rectangle visible, int radiusPhysical, float dpi)
         {
             int r = Math.Min(radiusPhysical, Math.Min(visible.Width, visible.Height) / 2);
@@ -979,17 +982,21 @@ namespace DuoChrome
                 if (Visible) Hide();
                 return;
             }
-            int pad = (int)Math.Ceiling(3f * dpi);
-            int size = r + pad;
-            int x = (_corner == 0 || _corner == 3) ? visible.Left : visible.Right - size;
-            int y = (_corner == 0 || _corner == 1) ? visible.Top : visible.Bottom - size;
+            int o = (int)Math.Ceiling(12f * dpi);   // outward margin past corner
+            int q = (int)Math.Ceiling(8f * dpi);    // inward margin along edges
+            int size = r + o + q;
+            bool left = (_corner == 0 || _corner == 3);
+            bool top = (_corner == 0 || _corner == 1);
+            int x = left ? visible.Left - o : visible.Right - (size - o);
+            int y = top ? visible.Top - o : visible.Bottom - (size - o);
             Rectangle want = new Rectangle(x, y, size, size);
-            if (Bounds != want) Bounds = want;
+            bool moved = Bounds != want;
+            if (moved) Bounds = want;
             if (!Visible) Show();
-            if (_radius != r || Bounds != want)
+            if (_radius != r || moved)
             {
                 _radius = r;
-                Render(r, dpi);
+                Render(r, dpi, left, top);
             }
         }
 
@@ -999,7 +1006,7 @@ namespace DuoChrome
             _radius = 0;
         }
 
-        private void Render(int r, float dpi)
+        private void Render(int r, float dpi, bool left, bool top)
         {
             if (Width <= 0 || Height <= 0) return;
             using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
@@ -1007,41 +1014,52 @@ namespace DuoChrome
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
-                    // The arc square: for TL the curve center sits at (r, r)
-                    // and bulges toward (0, 0). Same superellipse as the region
-                    // (quartic, tangential joins), drawn as an AA pen stroke.
-                    int w = Width, h = Height;
-                    int cx = (_corner == 0 || _corner == 3) ? r : w - r;
-                    int cy = (_corner == 0 || _corner == 1) ? r : h - r;
-                    int sx = (_corner == 0 || _corner == 3) ? -1 : 1;
-                    int sy = (_corner == 0 || _corner == 1) ? -1 : 1;
-                    using (GraphicsPath path = new GraphicsPath())
-                    {
-                        const int steps = 24;
-                        PointF prev = PointAt(cx, cy, sx, sy, r, 0f);
-                        for (int i = 1; i <= steps; i++)
-                        {
-                            PointF p = PointAt(cx, cy, sx, sy, r,
-                                (float)(Math.PI / 2 * i / steps));
-                            path.AddLine(prev, p);
-                            prev = p;
-                        }
-                        using (Pen pen = new Pen(Color.FromArgb(96, 12, 12, 14),
-                            2.2f * dpi))
-                        {
-                            pen.StartCap = LineCap.Round;
-                            pen.EndCap = LineCap.Round;
-                            pen.Alignment = PenAlignment.Center;
-                            g.DrawPath(pen, path);
-                        }
-                    }
+                    int wx = left ? (int)Math.Ceiling(12f * dpi) : Width - (int)Math.Ceiling(12f * dpi);
+                    int wy = top ? (int)Math.Ceiling(12f * dpi) : Height - (int)Math.Ceiling(12f * dpi);
+                    int cx = wx + (left ? r : -r);
+                    int cy = wy + (top ? r : -r);
+                    int sx = left ? -1 : 1;
+                    int sy = top ? -1 : 1;
+                    // Edge treatment (prior art: SO #4425595 - Win32 regions are
+                    // aliased; "use a bitmap with alpha transparency to simulate
+                    // the anti-aliasing"): a crisp hairline right on the region
+                    // cut, then a soft shadow ramp fading outward so the +-1px
+                    // staircase band dissolves into what reads as a natural
+                    // window shadow. Not copied code - technique reference.
+                    StrokeArc(g, cx, cy, sx, sy, r + 0.2f * dpi, 1.1f * dpi, 150);
+                    StrokeArc(g, cx, cy, sx, sy, r + 1.2f * dpi, 2.2f * dpi, 80);
+                    StrokeArc(g, cx, cy, sx, sy, r + 3.0f * dpi, 3.0f * dpi, 45);
+                    StrokeArc(g, cx, cy, sx, sy, r + 5.2f * dpi, 4.5f * dpi, 22);
                 }
-                // reuse the layered push from EdgeStrip (same mechanics)
                 PushGhostBitmap(bmp);
             }
         }
 
-        private static PointF PointAt(int cx, int cy, int sx, int sy, int r, float t)
+        private static void StrokeArc(Graphics g, int cx, int cy, int sx, int sy,
+            float r, float width, int alpha)
+        {
+            using (GraphicsPath path = new GraphicsPath())
+            {
+                const int steps = 24;
+                PointF prev = PointAt(cx, cy, sx, sy, r, 0f);
+                for (int i = 1; i <= steps; i++)
+                {
+                    PointF p = PointAt(cx, cy, sx, sy, r,
+                        (float)(Math.PI / 2 * i / steps));
+                    path.AddLine(prev, p);
+                    prev = p;
+                }
+                using (Pen pen = new Pen(Color.FromArgb(alpha, 12, 12, 14), width))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.Alignment = PenAlignment.Center;
+                    g.DrawPath(pen, path);
+                }
+            }
+        }
+
+        private static PointF PointAt(int cx, int cy, int sx, int sy, float r, float t)
         {
             float u = (float)Math.Sqrt(Math.Cos(t));
             float v = (float)Math.Sqrt(Math.Sin(t));

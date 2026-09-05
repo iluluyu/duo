@@ -31,8 +31,25 @@
 
 - **`SetWindowRgn` 对 scrcpy SDL3/D3D11 视频窗口可以视觉裁切**——plan.md 2026-09-03 "返回成功但无视觉效果"的记录不成立（当时无像素级证据，或条件不同）。视频在区域内正常渲染（中心块持续为视频内容）。
 - 实现为四次超椭圆 `|x/a|⁴+|y/a|⁴=1` 多边形区域（16 采样/角，G2 连续：轴端切线与直边一致、曲率趋 0）；区域随窗口矩形变化自动重施加（GDI 区域不随窗口缩放）。
-- **已知限制**：GDI 区域是 1-bit 硬边，无抗锯齿；高对比背景下角部边缘可见细锯齿。DWM 阴影随区域轮廓。视觉观感与默认值（32 DIP）适宜性留给 Windows 实拍评审。
-- 中止条件达成记录：未尝试桌面截图盖角、未重写播放器。
+
+### 抗锯齿与单层边框（用户反馈优化，同日）
+
+用户实测反馈：硬边锯齿明显 + 双层边框。依据调研的前人方案优化：
+
+| 来源 | 技术 | 采纳结果 |
+|---|---|---|
+| [SO #4425595](https://stackoverflow.com/questions/4425595/smooth-out-rounded-window-corners)（Trinidad，2010） | "Win32 只有硬边窗口区域；用带 Alpha 透明度的位图叠加**模拟**抗锯齿" | ✅ **采纳技法**（未抄代码）：四角小型点击穿透分层窗口，沿同一条超椭圆画描边 |
+| [MS 文档：窗口圆角](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/apply-rounded-corners) | `DWMWA_WINDOW_CORNER_PREFERENCE`（含 ROUNDSMALL=3，均无自定义半径）、`DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE` | ✅ 区域生效时 DONOTROUND + 去边框色，消除双层边框 |
+| [Windhawk mod "Custom Window Corner Radius"（m417z）](https://windhawk.net/mods/custom-corner-radius) | 注入 dwm.exe 补丁内部半径常量，系统级真 AA | ❌ 需补丁系统进程，用户应用不可接受；也反证 DWM 内部裁切是 AA 的、仅未开放 API |
+| Electron/Chromium 透明窗方案 | 宿主自合成全部内容 | ❌ 等于重写播放器（超出范围） |
+
+最终边缘处理：区域切口上 1.1px 发丝线（α150）+ 向外三层递减软阴影弧（α80/45/22，宽 2.2–4.5px），阶梯带（±1px）被软阴影吞没，读作自然窗口投影；遮罩向角外扩 12 DIP 避免阴影弧被位图边界硬切。
+
+### 已知限制
+
+- 软阴影是描边模拟，非真 AA；直边附近阴影沿窗口外沿短暂延伸（α≤45，随弧端圆帽自然收尾），观感待实拍评审。
+- 默认 48 DIP（小窗 ≈11%、大窗 ≈4% 屏宽，iPhone↔iPad 区间）；测试可至 160。
+- 中止条件达成记录：未尝试桌面截图盖角、未重写播放器、未注入系统进程。
 
 ## 3. 未验证项（移交 Windows 实测）
 
