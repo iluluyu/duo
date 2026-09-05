@@ -70,3 +70,14 @@ def test_log_file_written(tmp_path: Path):
         )
         Session(spec).run()
         assert "engine says hi" in spec.log_path.read_text(encoding="utf-8")
+
+
+def test_env_vars_reach_the_child(tmp_path: Path):
+        """The ADB pin (and WSLENV allowance) survives into the engine child."""
+        spec = SessionSpec(
+                command=[sys.executable, "-c", "import os; print(os.environ.get('ADB', ''))"],
+                log_path=tmp_path / "env.log",
+                env={"ADB": r"C:\\tools\\adb.exe"},
+        )
+        Session(spec).run()
+        assert r"C:\\tools\\adb.exe" in spec.log_path.read_text(encoding="utf-8")

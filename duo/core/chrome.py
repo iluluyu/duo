@@ -90,16 +90,31 @@ def compile_command(csc: str, source_win: str, out_win: str) -> list[str]:
         ]
 
 
-def overlay_command(exe: str, title: str, serial: str, adb_path: str, home: bool) -> list[str]:
+def overlay_command(
+        exe: str,
+        title: str,
+        serial: str,
+        adb_path: str,
+        home: bool,
+        display_mode: str = "flex",
+        video_width: int | None = None,
+        video_height: int | None = None,
+        session_log: str | None = None,
+) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
-        The overlay takes plain ``--title/--serial/--adb/--home`` parameters: as
-        a PE binary it receives real UTF-16 argv, so CJK titles need no
-        base64 transport (that workaround was PowerShell-specific). ``home``
-        enables the long-press-home gesture (physical mirroring only: a
-        virtual display has no launcher to go home to).
+        The overlay takes plain parameters: as a PE binary it receives real
+        UTF-16 argv, so CJK titles need no base64 transport (that workaround
+        was PowerShell-specific). ``home`` enables the long-press-home gesture
+        (physical mirroring only: a virtual display has no launcher).
+
+        ``display_mode`` drives resize policy: mirror/fixed keep the window
+        glued to the video aspect ratio (sizes arrive through ``session_log``
+        as scrcpy ``Texture:`` lines), flex lets the window resize freely and
+        the virtual display follows. ``video_*`` is the initial size when
+        already known (fixed mode only); ``session_log`` is a Windows path.
         """
-        return [
+        argv = [
                 exe,
                 "--title",
                 title,
@@ -109,7 +124,14 @@ def overlay_command(exe: str, title: str, serial: str, adb_path: str, home: bool
                 adb_path,
                 "--home",
                 "1" if home else "0",
+                "--display-mode",
+                display_mode,
         ]
+        if video_width and video_height:
+                argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
+        if session_log:
+                argv += ["--session-log", session_log]
+        return argv
 
 
 def wsl_to_windows_path(path: str) -> str:
@@ -195,13 +217,34 @@ def ensure_built(to_windows: Callable[[str], str] = wsl_to_windows_path) -> Path
 class ChromeOverlay:
         """The overlay child process, bound to one mirroring session."""
 
-        def __init__(self, title: str, serial: str, adb_path: str, home: bool = False) -> None:
+        def __init__(
+                self,
+                title: str,
+                serial: str,
+                adb_path: str,
+                home: bool = False,
+                display_mode: str = "flex",
+                video_width: int | None = None,
+                video_height: int | None = None,
+                session_log: Path | None = None,
+        ) -> None:
                 self._title = title
                 self._serial = serial
                 self._adb_path = adb_path
                 self._exe = ensure_built()
+                log_arg = None
+                if session_log is not None:
+                        log_arg = wsl_to_windows_path(str(session_log))
                 self.command: list[str] = overlay_command(
-                        str(self._exe), title, serial, wsl_to_windows_path(adb_path), home
+                        str(self._exe),
+                        title,
+                        serial,
+                        wsl_to_windows_path(adb_path),
+                        home,
+                        display_mode=display_mode,
+                        video_width=video_width,
+                        video_height=video_height,
+                        session_log=log_arg,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 

@@ -7,6 +7,12 @@
 //                                   (taskbar-safe, emulated) / close
 //   always-on (window visible)   -> chin: "<" back  "O" home (adb keyevents)
 //
+// Resize policy comes from --display-mode: mirror/fixed windows stay glued
+// to the video aspect ratio (live sizes are tailed from the session log,
+// where scrcpy emits "INFO: Texture: WxH" on every change, rotation
+// included - verified live on scrcpy 4.1); flex windows resize freely and
+// the virtual display follows the window.
+//
 // Rendering is per-pixel-alpha layered windows (UpdateLayeredWindow) with
 // hand-made acrylic: the content behind each bar is sampled from the target
 // window itself (PrintWindow PW_RENDERFULLCONTENT), blurred by down/up
@@ -33,6 +39,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
+using Thread = System.Threading.Thread;
 using System.Windows.Forms;
 
 namespace DuoChrome
@@ -74,6 +82,7 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint ga);
@@ -139,17 +148,25 @@ namespace DuoChrome
         private static int Main(string[] argv)
         {
             string title = null, serial = null, adb = null;
+            string mode = "flex", sessionLog = null;
             bool home = false;
+            int videoW = 0, videoH = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
                 else if (argv[i] == "--serial") serial = argv[i + 1];
                 else if (argv[i] == "--adb") adb = argv[i + 1];
                 else if (argv[i] == "--home") home = argv[i + 1] == "1";
+                else if (argv[i] == "--display-mode") mode = argv[i + 1];
+                else if (argv[i] == "--video-w") int.TryParse(argv[i + 1], out videoW);
+                else if (argv[i] == "--video-h") int.TryParse(argv[i + 1], out videoH);
+                else if (argv[i] == "--session-log") sessionLog = argv[i + 1];
             }
             if (title == null || serial == null || adb == null)
             {
-                Log.Write("usage: --title <t> --serial <s> --adb <path> [--home 0|1]");
+                Log.Write("usage: --title <t> --serial <s> --adb <path> [--home 0|1] "
+                    + "[--display-mode mirror|flex|fixed] [--video-w n] [--video-h n] "
+                    + "[--session-log <path>]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -164,8 +181,11 @@ namespace DuoChrome
             {
                 Log.Write("fatal crash: " + e.ExceptionObject);
             };
-            Log.Write("overlay start title=" + title + " serial=" + serial);
-            using (Controller c = new Controller(title, serial, adb, home))
+            Log.Write("overlay start title=" + title + " serial=" + serial
+                + " mode=" + mode + " video=" + videoW + "x" + videoH
+                + (sessionLog == null ? "" : " log=" + sessionLog));
+            using (Controller c = new Controller(
+                title, serial, adb, home, mode, videoW, videoH, sessionLog))
             {
                 Application.Run();
             }
@@ -467,12 +487,15 @@ namespace DuoChrome
                     Capture = false;
                 }
             };
-            MouseUp += delegate(object s, MouseEventArgs e)
+            // A drag that ends by capture loss (alt-tab, modal steal) never
+            // delivers MouseUp - end the gesture here instead of leaving the
+            // controller stuck in resizing state.
+            MouseCaptureChanged += delegate(object s, EventArgs e)
             {
-                if (e.Button == MouseButtons.Left && Ctrl.Resizing)
+                if (!Capture)
                 {
-                    Ctrl.EndResize();
-                    Capture = false;
+                    if (Ctrl.Resizing) Ctrl.EndResize();
+                    if (Ctrl.Moving) Ctrl.EndMove();
                 }
             };
         }
@@ -577,6 +600,15 @@ namespace DuoChrome
                     Capture = false;
                 }
             };
+            MouseCaptureChanged += delegate(object s, EventArgs e)
+            {
+                if (!Capture)
+                {
+                    _hold.Stop();
+                    if (Ctrl.Resizing) Ctrl.EndResize();
+                    if (Ctrl.Moving) Ctrl.EndMove();
+                }
+            };
         }
 
         protected override int ResizeEdgeAt(Point p)
@@ -663,7 +695,7 @@ namespace DuoChrome
         private static Font _glyphFont;
         private readonly string[] _glyphs;
 
-        public TopWindow(Controller owner)
+        public TopWindow(Controller owner, bool fillButton)
             : base(owner, (int)(18 * ScaleOf()), (int)(18 * ScaleOf()))
         {
             GhostBackdrop = true;
@@ -671,22 +703,35 @@ namespace DuoChrome
             int btn = (int)(LogicalButton * s);
             int pad = (int)(LogicalPad * s);
             int gap = (int)(LogicalGap * s);
-            int w = 2 * pad + 4 * btn + 3 * gap;
+            // mirror/fixed windows must never be stretched off-ratio, so the
+            // "fill work area" button exists only in flex mode: min / fit / close.
+            int n = fillButton ? 4 : 3;
+            int w = 2 * pad + n * btn + (n - 1) * gap;
             int h = 2 * pad + btn;
             Size = new Size(w, h);
-            _glyphs = new string[4];
+            _glyphs = new string[n];
             _glyphs[0] = ((char)0xE921).ToString();   // ChromeMinimize
             _glyphs[1] = ((char)0xE740).ToString();   // ChromeFullScreen -> aspect fit
-            _glyphs[2] = ((char)0xE922).ToString();   // ChromeMaximize -> fill work area
-            _glyphs[3] = ((char)0xE8BB).ToString();   // ChromeClose
-            for (int i = 0; i < 4; i++)
+            if (fillButton)
+                _glyphs[2] = ((char)0xE922).ToString();   // ChromeMaximize -> fill work area
+            _glyphs[n - 1] = ((char)0xE8BB).ToString();   // ChromeClose
+            for (int i = 0; i < n; i++)
             {
-                int index = i;
+                int slot = i;
                 Buttons.Add(new NavButton(
-                    new Rectangle(pad + i * (btn + gap), pad, btn, btn), 2 + index,
-                    delegate { owner.TopAction(index); }));
+                    new Rectangle(pad + i * (btn + gap), pad, btn, btn), 2 + i,
+                    delegate { owner.TopAction(ActionFor(fillButton, slot)); }));
             }
             WireInput();
+        }
+
+        /// <summary>Map a visual slot to a TopAction id. With the fill
+        /// button the layout is 1:1 (0 min, 1 fit, 2 fill, 3 close); without
+        /// it the third slot becomes close.</summary>
+        private static int ActionFor(bool fill, int slot)
+        {
+            if (fill) return slot;
+            return slot < 2 ? slot : 3;
         }
 
         protected override int ResizeEdgeAt(Point p)
@@ -726,8 +771,10 @@ namespace DuoChrome
         /// 1 aspect fit, 2 full fill.</summary>
         public void SetMaximized(int mode)
         {
-            _glyphs[1] = ((char)(mode == 1 ? 0xE923 : 0xE740)).ToString();
-            _glyphs[2] = ((char)(mode == 2 ? 0xE923 : 0xE922)).ToString();
+            if (_glyphs.Length > 1)
+                _glyphs[1] = ((char)(mode == 1 ? 0xE923 : 0xE740)).ToString();
+            if (_glyphs.Length > 3)
+                _glyphs[2] = ((char)(mode == 2 ? 0xE923 : 0xE922)).ToString();
         }
 
         protected override void PaintBar(Graphics g)
@@ -801,6 +848,14 @@ namespace DuoChrome
                 if (e.Button != MouseButtons.Left) return;
                 if (_owner.Resizing) { _owner.EndResize(); Capture = false; }
                 else if (_owner.Moving) { _owner.EndMove(); Capture = false; }
+            };
+            MouseCaptureChanged += delegate(object s, EventArgs e)
+            {
+                if (!Capture && (_owner.Resizing || _owner.Moving))
+                {
+                    _owner.EndResize();
+                    _owner.EndMove();
+                }
             };
         }
 
@@ -884,6 +939,7 @@ namespace DuoChrome
         private const int MaxGraceMs = 700;
 
         private readonly string _title, _serial, _adb;
+        private readonly string _displayMode;         // mirror | flex | fixed
         private readonly Timer _tick = new Timer();
         private readonly ChinWindow _chin;
         private readonly TopWindow _top;
@@ -903,28 +959,55 @@ namespace DuoChrome
 
         private readonly bool _homeEnabled;
 
-        public Controller(string title, string serial, string adb, bool home)
+        // Live video size: seeded from argv (fixed mode knows its WxH), then
+        // updated by the session-log tailer (scrcpy "INFO: Texture: WxH"
+        // lines, emitted on every size change including rotation).
+        private int _videoW, _videoH;
+        private int _videoChangedAt;
+        private Thread _logThread;
+        private volatile bool _disposed;
+
+        // Aspect convergence: window rect changes we did not cause (external
+        // window managers, scrcpy's own rotation re-layout) settle for
+        // SettleMs, then mirror/fixed windows are reshaped to the video
+        // aspect inside their current bounds - one-shot, never a loop.
+        private Rectangle _lastRect;
+        private bool _haveLastRect;
+        private int _settleSince = -1;
+        private const int SettleMs = 350;
+
+        public Controller(string title, string serial, string adb, bool home,
+            string displayMode, int videoW, int videoH, string sessionLog)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
+            _displayMode = displayMode == null ? "flex" : displayMode;
+            _videoW = videoW; _videoH = videoH;
+            _videoChangedAt = 0;
             _chin = new ChinWindow(this, home);
-            _top = new TopWindow(this);
+            _top = new TopWindow(this, _displayMode.Equals("flex"));
             // Force handle creation now: the WinEvent callback below may fire
             // for any window move long before the bars are first shown, and
             // BeginInvoke requires an existing handle.
             if (!_chin.IsHandleCreated) { IntPtr h = _chin.Handle; }
             if (!_top.IsHandleCreated) { IntPtr h = _top.Handle; }
-            // Invisible resize hot-zones for all four edges. Created after
-            // the bars so the visible bars stack above them. The sixth strip
-            // (edge 0) is the top-center move grab zone, created last so it
-            // sits above the top resize band.
-            _strips = new EdgeStrip[6];
+            // Invisible resize hot-zones for all four edges AND all four
+            // corners (the chin used to be the only bottom affordance, which
+            // made bottom resizes undiscoverable). Created after the bars so
+            // the visible bars stack above them. The last strip (edge 0) is
+            // the top-center move grab zone, created last so it sits above
+            // the top resize band.
+            _strips = new EdgeStrip[9];
             _strips[0] = new EdgeStrip(this, 10);   // left
             _strips[1] = new EdgeStrip(this, 11);   // right
             _strips[2] = new EdgeStrip(this, 12);   // top
             _strips[3] = new EdgeStrip(this, 13);   // top-left
             _strips[4] = new EdgeStrip(this, 14);   // top-right
-            _strips[5] = new EdgeStrip(this, 0);    // move (top-center)
+            _strips[5] = new EdgeStrip(this, 15);   // bottom
+            _strips[6] = new EdgeStrip(this, 16);   // bottom-left
+            _strips[7] = new EdgeStrip(this, 17);   // bottom-right
+            _strips[8] = new EdgeStrip(this, 0);    // move (top-center)
+            StartLogTailer(sessionLog);
             _tick.Interval = TickMs;
             _tick.Tick += Tick;
             _tick.Start();
@@ -932,6 +1015,7 @@ namespace DuoChrome
 
         public void Dispose()
         {
+            _disposed = true;
             _tick.Stop();
             if (_hook != IntPtr.Zero)
             {
@@ -951,14 +1035,30 @@ namespace DuoChrome
         // mouse capture, so the target's own size-move loop would starve) ----
 
         private bool _resizing;
-        private Rectangle _resizeStart;
+        private Rectangle _resizeStart;          // outer window rect at drag start
+        private Rectangle _resizeStartClient;    // client rect at drag start (screen)
+        private int _chromeL, _chromeT, _chromeR, _chromeB;   // window-client insets
+        private double _startClientW, _startClientH;
         private Point _resizeMouse;
         private int _resizeEdge;
         private int _resizeMoves;
         private int _lastDx = int.MinValue, _lastDy = int.MinValue;
-        private const int MinW = 400, MinH = 400;   // physical px floor
+        private const int LogicalMinW = 320, LogicalMinH = 240;   // DIP, DPI-scaled
 
         public bool Resizing { get { return _resizing; } }
+
+        /// <summary>Whether the window must stay glued to the video aspect
+        /// (mirror and fixed modes with a known size; flex follows freely).
+        private bool RatioLock
+        {
+            get { return _videoW > 0 && _videoH > 0 && !_displayMode.Equals("flex"); }
+        }
+
+        private double VideoAspect()
+        {
+            if (_videoW <= 0 || _videoH <= 0) return 0.0;
+            return (double)_videoW / _videoH;
+        }
 
         public void BeginResize(int edge)
         {
@@ -970,12 +1070,20 @@ namespace DuoChrome
             }
             _resizeEdge = edge;
             _resizeStart = WindowRect();
+            Rectangle client = ClientRect();
+            _resizeStartClient = client;
+            _chromeL = client.Left - _resizeStart.Left;
+            _chromeT = client.Top - _resizeStart.Top;
+            _chromeR = _resizeStart.Right - client.Right;
+            _chromeB = _resizeStart.Bottom - client.Bottom;
+            _startClientW = client.Width;
+            _startClientH = client.Height;
             NativeMethods.POINT pt;
             NativeMethods.GetCursorPos(out pt);
             _resizeMouse = new Point(pt.X, pt.Y);
             _lastDx = int.MinValue; _lastDy = int.MinValue;
             _resizing = true;
-            Log.Write("resize begin edge=" + edge);
+            Log.Write("resize begin edge=" + edge + " ratio=" + (RatioLock ? "on" : "off"));
         }
 
         public void UpdateResize()
@@ -993,13 +1101,89 @@ namespace DuoChrome
             bool top = _resizeEdge == 12 || _resizeEdge == 13 || _resizeEdge == 14;
             bool right = _resizeEdge == 11 || _resizeEdge == 14 || _resizeEdge == 17;
             bool bottom = _resizeEdge == 15 || _resizeEdge == 16 || _resizeEdge == 17;
-            if (left) L = Math.Min(_resizeStart.Left + dx, R - MinW);
-            if (top) T = Math.Min(_resizeStart.Top + dy, B - MinH);
-            if (right) R = Math.Max(_resizeStart.Right + dx, L + MinW);
-            if (bottom) B = Math.Max(_resizeStart.Bottom + dy, T + MinH);
-            bool ok = NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, L, T, R - L, B - T,
+            int minW = S(LogicalMinW), minH = S(LogicalMinH);
+            if (left) L = Math.Min(_resizeStart.Left + dx, R - minW);
+            if (top) T = Math.Min(_resizeStart.Top + dy, B - minH);
+            if (right) R = Math.Max(_resizeStart.Right + dx, L + minW);
+            if (bottom) B = Math.Max(_resizeStart.Bottom + dy, T + minH);
+            Rectangle want = Rectangle.FromLTRB(L, T, R, B);
+            if (RatioLock) want = ConstrainToVideo(want, _resizeEdge);
+            want = ConstrainToWorkArea(want);
+            bool ok = NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                want.Left, want.Top, want.Width, want.Height,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
             if (!ok && _resizeMoves == 1) Log.Write("swp failed");
+        }
+
+        /// <summary>Reshape a raw drag rect so the CLIENT area (where the
+        /// video lives) matches the video aspect. Side drags anchor the
+        /// opposite edge and re-center vertically; corner drags keep the
+        /// opposite corner fixed and let the dominant axis drive.</summary>
+        private Rectangle ConstrainToVideo(Rectangle outer, int edge)
+        {
+            double a = VideoAspect();
+            if (a <= 0) return outer;
+            int cw = outer.Width - _chromeL - _chromeR;
+            int ch = outer.Height - _chromeT - _chromeB;
+            if (cw <= 0 || ch <= 0 || _startClientW <= 0 || _startClientH <= 0)
+                return outer;
+            bool left = edge == 10 || edge == 13 || edge == 16;
+            bool top = edge == 12 || edge == 13 || edge == 14;
+            bool side = (edge == 10 || edge == 11);
+            bool vert = (edge == 12 || edge == 15);
+            int nw, nh;
+            if (side)
+            {
+                nw = cw;
+                nh = (int)Math.Round(nw / a);
+            }
+            else if (vert)
+            {
+                nh = ch;
+                nw = (int)Math.Round(nh * a);
+            }
+            else
+            {
+                double sw = cw / _startClientW;
+                double sh = ch / _startClientH;
+                double s = Math.Abs(sw - 1) >= Math.Abs(sh - 1) ? sw : sh;
+                nw = (int)Math.Round(_startClientW * s);
+                nh = (int)Math.Round(nw / a);
+            }
+            // DPI-scaled minimums without breaking the ratio.
+            int minW = S(LogicalMinW), minH = S(LogicalMinH);
+            if (nw < minW) { nw = minW; nh = (int)Math.Round(nw / a); }
+            if (nh < minH) { nh = minH; nw = (int)Math.Round(nh * a); }
+            int ow = nw + _chromeL + _chromeR;
+            int oh = nh + _chromeT + _chromeB;
+            int x = left ? outer.Right - _chromeR - ow : outer.Left + _chromeL;
+            int y = top ? outer.Bottom - _chromeB - oh : outer.Top + _chromeT;
+            if (side)
+            {
+                double cy = _resizeStart.Top + _chromeT + _startClientH / 2.0;
+                y = (int)Math.Round(cy - oh / 2.0);
+            }
+            if (vert)
+            {
+                double cx = _resizeStart.Left + _chromeL + _startClientW / 2.0;
+                x = (int)Math.Round(cx - ow / 2.0);
+            }
+            return new Rectangle(x, y, ow, oh);
+        }
+
+        /// <summary>Shrink an oversized drag result to fit the monitor work
+        /// area, preserving its proportions and rough center.</summary>
+        private Rectangle ConstrainToWorkArea(Rectangle want)
+        {
+            Rectangle wa = WorkArea();
+            if (want.Width <= wa.Width && want.Height <= wa.Height) return want;
+            double scale = Math.Min((double)wa.Width / want.Width,
+                                    (double)wa.Height / want.Height);
+            int w = Math.Max(S(LogicalMinW), (int)(want.Width * scale));
+            int h = (int)(want.Height * scale);
+            int x = want.Left + (want.Width - w) / 2;
+            int y = want.Top + (want.Height - h) / 2;
+            return new Rectangle(x, y, w, h);
         }
 
         public void EndResize()
@@ -1048,6 +1232,142 @@ namespace DuoChrome
             if (!_moving) return;
             _moving = false;
             Log.Write("move end");
+        }
+
+        // ---- aspect convergence (external changes, rotation, maximize) ----
+
+        /// <summary>Watch for window-rect changes we did not cause (window
+        /// managers, scrcpy's own rotation re-layout, native maximize). Once
+        /// the rect has been stable for SettleMs, ratio-locked windows are
+        /// reshaped once so the client matches the video aspect inside their
+        /// current bounds. Uncovered screen area stays desktop - the
+        /// fullscreen-fit look with no letterbox bars.</summary>
+        private void TrackExternalChange(Rectangle wr)
+        {
+            if (!_haveLastRect || wr != _lastRect)
+            {
+                _lastRect = wr;
+                _haveLastRect = true;
+                _settleSince = Environment.TickCount;
+            }
+            if (_settleSince < 0 || _resizing || _moving || _fakedMax || !RatioLock)
+                return;
+            if (Environment.TickCount - _settleSince < SettleMs) return;
+            _settleSince = -1;                     // one-shot per settle
+            ConvergeToVideoAspect(wr);
+        }
+
+        /// <summary>Reshape the window so its client area exactly matches
+        /// the video aspect, fitted inside the current rect and centered
+        /// there. Tolerates a couple of pixels so SDL size-snapping does not
+        /// trigger endless corrections; skips the window right after a video
+        /// size change while scrcpy may still be re-laying out itself.</summary>
+        private void ConvergeToVideoAspect(Rectangle wr)
+        {
+            double a = VideoAspect();
+            if (a <= 0) return;
+            if (Environment.TickCount - _videoChangedAt < 500) return;
+            Rectangle client = ClientRect();
+            int cxL = client.Left - wr.Left;
+            int cxT = client.Top - wr.Top;
+            int cxR = wr.Right - client.Right;
+            int cxB = wr.Bottom - client.Bottom;
+            int cw = client.Width, ch = client.Height;
+            if (cw <= 0 || ch <= 0) return;
+            double tol = Math.Max(2.0, 0.015 * Math.Min(cw, ch));
+            if (Math.Abs(cw - a * ch) <= tol) return;
+            int nw = (int)Math.Round(Math.Min((double)cw, ch * a));
+            int nh = (int)Math.Round(nw / a);
+            double ccx = client.Left + cw / 2.0;
+            double ccy = client.Top + ch / 2.0;
+            int x = (int)Math.Round(ccx - nw / 2.0) - cxL;
+            int y = (int)Math.Round(ccy - nh / 2.0) - cxT;
+            // A native maximize (Win+Up / snap) letterboxes with black bars;
+            // leave the maximized state, then apply the aspect-fit rect so
+            // the uncovered bands return to visible desktop.
+            if (NativeMethods.IsZoomed(_hwnd))
+                NativeMethods.ShowWindow(_hwnd, 9 /*SW_RESTORE*/);
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                x, y, nw + cxL + cxR, nh + cxT + cxB,
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            Log.Write("converged to video aspect " + nw + "x" + nh);
+        }
+
+        // ---- session log tailer: live video size --------------------------
+
+        private void StartLogTailer(string path)
+        {
+            if (path == null || path.Length == 0) return;
+            _logThread = new Thread(delegate() { TailLoop(path); });
+            _logThread.IsBackground = true;
+            _logThread.Start();
+        }
+
+        private void TailLoop(string path)
+        {
+            FileStream fs = null;
+            for (int waited = 0; fs == null && waited < 60000 && !_disposed;
+                 waited += 500)
+            {
+                try
+                {
+                    fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite);
+                }
+                catch (IOException) { Thread.Sleep(500); }
+                catch (UnauthorizedAccessException) { Thread.Sleep(500); }
+            }
+            if (fs == null)
+            {
+                Log.Write("log tailer gave up: " + path);
+                return;
+            }
+            Log.Write("log tailer attached: " + path);
+            byte[] buf = new byte[4096];
+            Decoder dec = Encoding.UTF8.GetDecoder();
+            StringBuilder line = new StringBuilder();
+            while (!_disposed)
+            {
+                int n;
+                try { n = fs.Read(buf, 0, buf.Length); }
+                catch (IOException) { break; }
+                if (n > 0)
+                {
+                    char[] chars = new char[dec.GetCharCount(buf, 0, n)];
+                    dec.GetChars(buf, 0, n, chars, 0);
+                    for (int i = 0; i < chars.Length; i++)
+                    {
+                        if (chars[i] == '\n')
+                        {
+                            HandleLogLine(line.ToString());
+                            line.Length = 0;
+                        }
+                        else line.Append(chars[i]);
+                    }
+                }
+                else Thread.Sleep(200);
+            }
+        }
+
+        /// <summary>scrcpy emits "INFO: Texture: 2400x3392" on stderr at
+        /// default verbosity on every video size change, rotation included
+        /// (verified live, scrcpy 4.1). The session log captures stderr.</summary>
+        private void HandleLogLine(string s)
+        {
+            int at = s.IndexOf("Texture:");
+            if (at < 0) return;
+            string rest = s.Substring(at + 8).Trim();
+            int x = rest.IndexOf('x');
+            if (x <= 0) return;
+            int w, h;
+            if (!int.TryParse(rest.Substring(0, x).Trim(), out w)) return;
+            if (!int.TryParse(rest.Substring(x + 1).Trim(), out h)) return;
+            if (w <= 0 || h <= 0) return;
+            if (w == _videoW && h == _videoH) return;
+            _videoW = w;
+            _videoH = h;
+            _videoChangedAt = Environment.TickCount;
+            Log.Write("video size from log: " + w + "x" + h);
         }
 
         public void AdbKey(int code)
@@ -1107,6 +1427,7 @@ namespace DuoChrome
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
             {
                 HideBars();          // never linger bars over a dead window
+                HideStrips();        // ...and never leave hot zones behind
                 Discover();
                 return;
             }
@@ -1141,7 +1462,9 @@ namespace DuoChrome
                 HideStrips();
                 return;
             }
-            SyncStrips(WindowRect());
+            Rectangle wr = WindowRect();
+            SyncStrips(wr);
+            TrackExternalChange(wr);
 
             // Per-bar proximity rules, symmetric like a native window's own
             // affordances: capsule reveals near the top edge, the mBack dot
@@ -1188,20 +1511,28 @@ namespace DuoChrome
 
         /// <summary>Keep the edge hot-zones glued to the window frame. The
         /// strips are always on (invisible, topmost): a normal window is
-        /// resizable regardless of focus.</summary>
+        /// resizable regardless of focus. Sizes adapt to small windows
+        /// instead of bailing out below a fixed pixel floor (the old 800px
+        /// cutoff silently disabled resize on small windows).</summary>
         private void SyncStrips(Rectangle wr)
         {
-            if (wr.Width < 2 * MinW || wr.Height < 2 * MinH) return;
-            int edge = S(6);
-            int corner = S(18);
-            Place(_strips[0], wr.Left, wr.Top + corner, edge, wr.Height - 2 * corner);
-            Place(_strips[1], wr.Right - edge, wr.Top + corner, edge, wr.Height - 2 * corner);
-            Place(_strips[2], wr.Left + corner, wr.Top, wr.Width - 2 * corner, edge);
+            int span = Math.Min(wr.Width, wr.Height);
+            if (span < 12) return;
+            int edge = Math.Max(2, Math.Min(S(6), span / 6));
+            int corner = Math.Max(edge + 2, Math.Min(S(18), span / 3));
+            int sideLen = Math.Max(0, wr.Height - 2 * corner);
+            int topLen = Math.Max(0, wr.Width - 2 * corner);
+            Place(_strips[0], wr.Left, wr.Top + corner, edge, sideLen);
+            Place(_strips[1], wr.Right - edge, wr.Top + corner, edge, sideLen);
+            Place(_strips[2], wr.Left + corner, wr.Top, topLen, edge);
             Place(_strips[3], wr.Left, wr.Top, corner, corner);
             Place(_strips[4], wr.Right - corner, wr.Top, corner, corner);
-            int moveW = Math.Min(wr.Width / 3, S(280));
-            int moveH = S(14);
-            Place(_strips[5], wr.Left + (wr.Width - moveW) / 2, wr.Top, moveW, moveH);
+            Place(_strips[5], wr.Left, wr.Bottom - edge, topLen, edge);
+            Place(_strips[6], wr.Left, wr.Bottom - corner, corner, corner);
+            Place(_strips[7], wr.Right - corner, wr.Bottom - corner, corner, corner);
+            int moveW = Math.Max(0, Math.Min(wr.Width / 3, S(280)));
+            int moveH = Math.Max(2, Math.Min(S(14), edge));
+            Place(_strips[8], wr.Left + (wr.Width - moveW) / 2, wr.Top, moveW, moveH);
         }
 
         private static void Place(Form f, int x, int y, int w, int h)
@@ -1389,6 +1720,10 @@ namespace DuoChrome
 
         private void FakeMaximize(bool on, bool fit)
         {
+            // A natively maximized window (Win+Up, snap) must leave the
+            // WS_MAXIMIZE state before any custom geometry sticks.
+            if (NativeMethods.IsZoomed(_hwnd))
+                NativeMethods.ShowWindow(_hwnd, 9 /*SW_RESTORE*/);
             if (on)
             {
                 if (!_fakedMax) _savedRect = WindowRect();
@@ -1397,21 +1732,39 @@ namespace DuoChrome
                 int x, y, w, h;
                 if (fit)
                 {
-                    // Aspect-preserving fit: scale to the largest size that
-                    // fits the work area while keeping the ratio - but keep
-                    // the window anchored where it is (no centering).
-                    int cw = Math.Max(1, _savedRect.Width - insets.Left - insets.Right);
-                    int ch = Math.Max(1, _savedRect.Height - insets.Top - insets.Bottom);
-                    double windowAr = (double)cw / ch;
+                    // Aspect-preserving fit against the VIDEO ratio (not the
+                    // old window shape): the window grows to the largest
+                    // video-ratio rect that fits the work area and centers
+                    // there. The uncovered screen stays pure desktop - no
+                    // window, no letterbox bars: the video reads as a
+                    // floating panel, which is the intended "fullscreen"
+                    // look for ratio-locked modes.
+                    double ratio = VideoAspect();
+                    if (ratio <= 0)
+                    {
+                        int cw = Math.Max(1, _savedRect.Width - insets.Left - insets.Right);
+                        int ch = Math.Max(1, _savedRect.Height - insets.Top - insets.Bottom);
+                        ratio = (double)cw / ch;
+                    }
                     double waAr = (double)wa.Width / wa.Height;
-                    if (windowAr > waAr) { w = wa.Width; h = (int)(wa.Width / windowAr); }
-                    else { h = wa.Height; w = (int)(wa.Height * windowAr); }
-                    x = _savedRect.Left;
-                    y = _savedRect.Top;
+                    if (ratio > waAr)
+                    {
+                        w = wa.Width - insets.Left - insets.Right;
+                        h = (int)Math.Round(w / ratio);
+                    }
+                    else
+                    {
+                        h = wa.Height - insets.Top - insets.Bottom;
+                        w = (int)Math.Round(h * ratio);
+                    }
+                    w += insets.Left + insets.Right;
+                    h += insets.Top + insets.Bottom;
+                    x = wa.X + (wa.Width - w) / 2;
+                    y = wa.Y + (wa.Height - h) / 2;
                 }
                 else
                 {
-                    // True maximize semantics: fill the whole work area.
+                    // True maximize semantics (flex only): fill the work area.
                     x = wa.X - insets.Left;
                     y = wa.Y - insets.Top;
                     w = wa.Width + insets.Left + insets.Right;

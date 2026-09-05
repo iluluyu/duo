@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections.abc import Callable
@@ -19,6 +20,7 @@ class SessionSpec:
         log_path: Path
         max_restarts: int = 3
         restart_delay_s: float = 2.0
+        env: dict[str, str] | None = None   # extra vars (ADB pin) merged over os.environ
 
 
 _POLL_INTERVAL_S = 0.5
@@ -44,11 +46,15 @@ class Session:
         def start(self) -> None:
                 """Spawn the engine process with output redirected to the log."""
                 self.spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+                child_env = None
+                if self.spec.env:
+                        child_env = {**os.environ, **self.spec.env}
                 with open(self.spec.log_path, "ab") as log_file:
                         self._proc = subprocess.Popen(
                                 self.spec.command,
                                 stdout=log_file,
                                 stderr=subprocess.STDOUT,
+                                env=child_env,
                                 creationflags=creation_flags(),
                         )
 

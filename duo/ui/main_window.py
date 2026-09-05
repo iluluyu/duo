@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QCloseEvent, QColor, QFont, QIcon, QPainter, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
@@ -259,8 +259,10 @@ class MainWindow(QMainWindow):
 
         def _build_ui(self) -> None:
                 self.setWindowTitle("Duo")
-                self.setFixedWidth(400)
-                self.setMinimumHeight(520)
+                # Freely resizable: a sensible minimum, no locked width. The
+                # grids below recompute their column counts on resize.
+                self.setMinimumSize(QSize(360, 520))
+                self.resize(420, 660)
 
                 root = QWidget()
                 root.setObjectName("root")
@@ -373,6 +375,8 @@ class MainWindow(QMainWindow):
                 self._all_grid.setContentsMargins(0, 0, 0, 0)
                 self._all_grid.setSpacing(8)
                 self._all_buttons: dict[str, QToolButton] = {}
+                self._all_packages: list[str] = []
+                self._all_per_row = 0
                 scroll = QScrollArea()
                 scroll.setObjectName("all-apps")
                 scroll.setWidgetResizable(True)
@@ -385,19 +389,48 @@ class MainWindow(QMainWindow):
                 inner.addWidget(hint)
                 return card
 
+        @staticmethod
+        def _columns_for(width: int, cell: int, minimum: int, maximum: int) -> int:
+                """Column count that fits ``width`` for ``cell``-wide items."""
+                usable = max(0, width - 24)   # card inner margins
+                per_row = max(minimum, usable // cell)
+                return min(per_row, maximum)
+
+        def _relayout_all_grid(self) -> None:
+                """Re-wrap the all-apps grid for the current panel width."""
+                if not self._all_buttons:
+                        return
+                per_row = self._columns_for(self._all_grid_host.width(), 58, 4, 10)
+                if per_row == self._all_per_row:
+                        return
+                self._all_per_row = per_row
+                while self._all_grid.count():
+                        item = self._all_grid.takeAt(0)
+                        widget = item.widget() if item is not None else None
+                        if widget is not None:
+                                widget.setParent(self._all_grid_host)
+                for index, package in enumerate(self._all_packages):
+                        button = self._all_buttons.get(package)
+                        if button is not None:
+                                self._all_grid.addWidget(
+                                        button, index // per_row, index % per_row
+                                )
+
         def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
                 portrait = self._portrait_prefs.get(package, False)
                 orientation = "竖屏" if portrait else "横屏"
                 button.setToolTip(f"{label} · {orientation}（右键切换）")
 
         def _build_running_card(self) -> QFrame:
-                """Live session chips with quiet close buttons."""
+                """Live session chips with quiet close buttons, wrapping rows."""
                 card, inner = self._card()
                 inner.addWidget(_label("运行中", "section"))
-                self._running_row = QHBoxLayout()
-                self._running_row.setSpacing(8)
-                self._running_row.addWidget(_label("暂无窗口", "empty-hint"))
-                inner.addLayout(self._running_row)
+                self._running_host = QWidget()
+                self._running_host.setObjectName("all-apps-host")
+                self._running_grid = QGridLayout(self._running_host)
+                self._running_grid.setContentsMargins(0, 0, 0, 0)
+                self._running_grid.setSpacing(8)
+                inner.addWidget(self._running_host)
                 return card
 
         # ------------------------------------------------------------ events
@@ -462,10 +495,11 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=work, daemon=True).start()
 
         def _on_all_apps(self, packages: object) -> None:
-                """Fill the grid with letter-avatar buttons (placeholders)."""
+                """Create letter-avatar buttons (placeholders); layout happens
+                in _relayout_all_grid so column count follows the width."""
                 assert isinstance(packages, list)
-                per_row = 6
-                for index, package in enumerate(packages):
+                self._all_packages = list(packages)
+                for package in packages:
                         short = package.rsplit(".", 1)[-1][:2].upper()
                         label = package_to_label(package)
                         button = QToolButton()
@@ -495,9 +529,7 @@ class MainWindow(QMainWindow):
                         painter.end()
                         button.setIcon(QIcon(avatar))
                         self._all_buttons[package] = button
-                        self._all_grid.addWidget(
-                                button, index // per_row, index % per_row
-                        )
+                self._relayout_all_grid()
                 count = len(packages)
                 self._all_hint.setText(
                         f"共 {count} 个应用 · 图标后台解析中（仅首次较慢）"
@@ -613,19 +645,20 @@ class MainWindow(QMainWindow):
         def _refresh_sessions(self) -> None:
                 """Redraw the running chips from the live session map."""
                 self._reap_sessions()
-                while self._running_row.count():
-                        item = self._running_row.takeAt(0)
+                while self._running_grid.count():
+                        item = self._running_grid.takeAt(0)
                         if item is None:
                                 continue
                         widget = item.widget()
                         if widget is not None:
                                 widget.deleteLater()
                 if not self._sessions:
-                        self._running_row.addWidget(_label("暂无窗口", "empty-hint"))
+                        self._running_grid.addWidget(_label("暂无窗口", "empty-hint"), 0, 0)
                         return
                 labels = {pkg: label for label, pkg in APP_CATALOG}
                 labels[MIRROR_KEY] = "设备镜像"
-                for package in self._sessions:
+                per_row = self._columns_for(self._running_host.width(), 150, 1, 6)
+                for index, package in enumerate(self._sessions):
                         chip = QFrame()
                         chip.setObjectName("running-chip")
                         layout = QHBoxLayout(chip)
@@ -640,8 +673,9 @@ class MainWindow(QMainWindow):
                                 lambda _=False, pkg=package: self._stop_session(pkg)
                         )
                         layout.addWidget(close)
-                        self._running_row.addWidget(chip)
-                self._running_row.addStretch(1)
+                        self._running_grid.addWidget(
+                                chip, index // per_row, index % per_row
+                        )
 
         def _stop_session(self, package: str) -> None:
                 """Terminate one session; the CLI's SIGTERM handler cleans up."""
@@ -652,6 +686,12 @@ class MainWindow(QMainWindow):
                 labels = {pkg: label for label, pkg in APP_CATALOG}
                 labels[MIRROR_KEY] = "设备镜像"
                 self._status.setText(f"已关闭 {labels.get(package, package)}")
+
+        def resizeEvent(self, event: QResizeEvent | None) -> None:
+                """Re-wrap the grids when the panel is resized."""
+                super().resizeEvent(event)
+                self._relayout_all_grid()
+                self._refresh_sessions()
 
         def closeEvent(self, event: QCloseEvent | None) -> None:
                 """Stop polling on close."""

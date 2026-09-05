@@ -94,3 +94,14 @@ def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
 def test_gui_importable_without_display():
         """The panel module imports cleanly headless (Qt lazy-loaded)."""
         import duo.ui.main_window as mw  # noqa: F401
+
+
+def test_columns_fit_width_with_bounds():
+        """Column counts follow the available width within sane bounds."""
+        from duo.ui.main_window import MainWindow
+
+        cols = MainWindow._columns_for
+        assert cols(0, 58, 4, 10) == 4          # never below minimum
+        assert cols(120, 58, 4, 10) == 4        # ~2 cells -> clamped up
+        assert cols(360, 58, 4, 10) == 5
+        assert cols(1000, 58, 4, 10) == 10      # capped at maximum

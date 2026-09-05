@@ -12,11 +12,13 @@ def _argv(**kwargs) -> list[str]:
         return EngineArgs(**kwargs).to_argv()
 
 
-def test_adb_pin_adds_flag_only_when_set():
-        """The adb pin keeps scrcpy off its bundled (version-mismatched) adb."""
+def test_adb_pin_never_becomes_an_argv_flag():
+        """The adb pin stays out of argv: scrcpy 4.1 has no --adb option and
+        exits with "unknown option" (live finding 2026-09-05, restart loop).
+        Pinning happens via the ADB environment variable - adb_pin_env()."""
         argv = _argv(serial="s", adb_binary="C:\\tools\\adb.exe")
-        assert "--adb=C:\\tools\\adb.exe" in argv
-        assert "--adb" not in _argv(serial="s")
+        assert not any(a.startswith("--adb") for a in argv)
+        assert not any(a.startswith("--adb") for a in _argv(serial="s"))
 
 
 def test_flex_default_matches_verified_preset():
