@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+
 from duo.core import engine
-from duo.core.engine import REQUIRED_TOOLS, ToolInfo, probe
+from duo.core.engine import REQUIRED_TOOLS, ToolInfo, probe, probe_binary
 
 
 def test_required_tools_listing():
@@ -42,6 +44,22 @@ def test_probe_returns_toolinfo():
         else:
                 assert info.available
                 assert info.version is None or "scrcpy" in info.version.lower()
+
+
+def test_probe_binary_missing_path_unavailable():
+        """A nonexistent explicit path is reported unavailable, not crashed on."""
+        info = probe_binary("/duo-missing-dir/adb.exe", "adb")
+        assert not info.available
+        assert info.path is None
+        assert info.version is None
+
+
+def test_probe_binary_runs_explicit_path():
+        """A runnable binary with exit code 0 counts as available."""
+        info = probe_binary(sys.executable, "python")
+        assert info.available
+        assert info.path == sys.executable
+        assert info.version is not None and "Python" in info.version
 
 
 def test_available_flag_consistency():

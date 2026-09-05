@@ -11,6 +11,7 @@ from duo.core.settings import (
         Settings,
         corner_radius_dip,
         load_settings,
+        resolve_adb_path,
         resolve_tool,
         save_settings,
         validate,
@@ -103,6 +104,14 @@ def test_resolve_tool_settings_win_over_discovery():
         assert resolve_tool("scrcpy", s, "/usr/bin/scrcpy") == r"C:\bin\scrcpy.exe"
         assert resolve_tool("adb", s, "/usr/bin/adb") == "/usr/bin/adb"
         assert resolve_tool("adb", Settings(), None) is None
+
+
+def test_resolve_adb_path_priority():
+        """Panel adb: settings override > PATH discovery > literal fallback."""
+        override = Settings(adb_path=r"C:\o\adb.exe")
+        assert resolve_adb_path(override, "/found/adb", "adb.exe") == r"C:\o\adb.exe"
+        assert resolve_adb_path(Settings(), "/found/adb", "adb.exe") == "/found/adb"
+        assert resolve_adb_path(Settings(), None, "adb.exe") == "adb.exe"
 
 
 def test_validate_clean_instance():

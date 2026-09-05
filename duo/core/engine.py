@@ -18,6 +18,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from duo.core.winproc import creation_flags
@@ -98,6 +99,34 @@ def probe(tool: str) -> ToolInfo:
                 version = lines[0] if lines else None
                 return ToolInfo(name=tool, path=found, version=version)
         return ToolInfo(name=tool, path=None, version=None)
+
+
+def probe_binary(path: str, name: str = "") -> ToolInfo:
+        """Probe an explicit binary path with ``--version`` (settings override).
+
+        Unlike :func:`probe` (PATH discovery), the user-supplied path is used
+        as-is: one argv element, no shell, no joined command strings. Available
+        means the binary ran with exit code 0 and produced a version line.
+        """
+        label = name or Path(path).name
+        try:
+                result = subprocess.run(
+                        [path, "--version"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=_PROBE_TIMEOUT_S,
+                        check=False,
+                        creationflags=creation_flags(),
+                )
+        except (OSError, subprocess.TimeoutExpired):
+                return ToolInfo(name=label, path=None, version=None)
+        lines = (result.stdout or result.stderr).strip().splitlines()
+        if result.returncode != 0:
+                return ToolInfo(name=label, path=None, version=None)
+        version = lines[0] if lines else None
+        return ToolInfo(name=label, path=path, version=version)
 
 
 # ----------------------------------------------------------------------------

@@ -162,6 +162,16 @@ def save_settings(settings: Settings) -> None:
         os.replace(tmp, path)
 
 
+def resolve_adb_path(settings: Settings, discovered: str | None, fallback: str) -> str:
+        """adb binary for the panel: settings override > discovery > fallback.
+
+        Resolving once per process (GUI startup, or after saving settings)
+        keeps device polling, install checks and spawned CLI sessions on the
+        same adb - no mixed server versions killing each other.
+        """
+        return resolve_tool("adb", settings, discovered) or fallback
+
+
 def corner_radius_dip(settings: Settings) -> int:
         """Overlay corner radius for a session (0 = no region).
 
@@ -190,6 +200,7 @@ __all__ = [
         "VALID_CORNER_MODES",
         "corner_radius_dip",
         "load_settings",
+        "resolve_adb_path",
         "resolve_tool",
         "save_settings",
         "settings_path",

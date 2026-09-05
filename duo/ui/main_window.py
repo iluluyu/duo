@@ -15,7 +15,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor, QFont, QIcon, QPainter, QPixmap, QResizeEvent
+from PyQt6.QtGui import (
+        QCloseEvent,
+        QColor,
+        QFont,
+        QIcon,
+        QKeySequence,
+        QPainter,
+        QPixmap,
+        QResizeEvent,
+        QShortcut,
+)
 from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
@@ -32,8 +42,11 @@ from PyQt6.QtWidgets import (
 
 from duo.core.apps import Adb, AdbError, app_info
 from duo.core.devices import DeviceMonitor, poll_query
+from duo.core.engine import probe
 from duo.core.paths import data_dir
+from duo.core.settings import load_settings, resolve_adb_path
 from duo.core.winproc import creation_flags
+from duo.ui.settings_page import SettingsPage
 
 #: Session key for whole-device mirroring (not an app package).
 MIRROR_KEY = "__device_mirror__"
@@ -97,6 +110,12 @@ QToolButton#mini-icon:hover { background: #F0F0F3; }
 QToolButton#mini-icon:pressed { background: #E8E8ED; }
 QLabel#empty-hint { color: #C7C7CC; font-size: 12px; }
 QLabel#status { color: #86868B; font-size: 12px; }
+QToolButton#gear {
+        background: transparent; border: none; border-radius: 10px;
+        color: #86868B; font-size: 17px;
+}
+QToolButton#gear:hover { background: #F0F0F3; color: #1D1D1F; }
+QToolButton#gear:pressed { background: #E8E8ED; }
 """
 
 _STATE_TEXT = {
@@ -186,6 +205,7 @@ class _Bridge(QObject):
         icon_ready = pyqtSignal(str, object)
         all_apps_ready = pyqtSignal(object)
         all_icon_ready = pyqtSignal(str, object, str)
+        adb_resolved = pyqtSignal(str)
 
 
 def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> None:
@@ -238,6 +258,10 @@ class MainWindow(QMainWindow):
                 self._portrait_prefs = load_portrait_prefs()
                 self._sessions: dict[str, subprocess.Popen[bytes]] = {}
                 self._build_ui()
+                self._bridge.adb_resolved.connect(self._on_adb_resolved)
+                shortcut = QShortcut(QKeySequence("Ctrl+,"), self)
+                shortcut.activated.connect(self._open_settings)
+                self._settings_shortcut = shortcut
 
                 self._monitor = DeviceMonitor(
                         on_change=self._bridge.devices_changed.emit,
@@ -270,8 +294,11 @@ class MainWindow(QMainWindow):
                 column.setContentsMargins(24, 28, 24, 20)
                 column.setSpacing(10)
 
-                title = _label("Duo", "title")
-                column.addWidget(title)
+                title_row = QHBoxLayout()
+                title_row.addWidget(_label("Duo", "title"))
+                title_row.addStretch(1)
+                title_row.addWidget(self._build_gear_button())
+                column.addLayout(title_row)
                 column.addSpacing(12)
 
                 column.addWidget(self._build_device_card())
@@ -304,6 +331,17 @@ class MainWindow(QMainWindow):
                 inner.setContentsMargins(18, 16, 18, 16)
                 inner.setSpacing(12)
                 return card, inner
+
+        def _build_gear_button(self) -> QToolButton:
+                """Top-right settings entry: glyph, tooltip, ≥32 DIP click target."""
+                gear = QToolButton()
+                gear.setObjectName("gear")
+                gear.setText("⚙")
+                gear.setToolTip("设置（Ctrl+,）")
+                gear.setAccessibleName("设置")
+                gear.setFixedSize(34, 34)
+                gear.clicked.connect(self._open_settings)
+                return gear
 
         def _build_device_card(self) -> QFrame:
                 card, inner = self._card()
@@ -687,6 +725,54 @@ class MainWindow(QMainWindow):
                 labels[MIRROR_KEY] = "设备镜像"
                 self._status.setText(f"已关闭 {labels.get(package, package)}")
 
+        # ---------------------------------------------------------- settings
+
+        def active_session_count(self) -> int:
+                """Live mirror sessions; drives the settings page engine lock."""
+                self._reap_sessions()
+                return len(self._sessions)
+
+        def _make_settings_page(self) -> SettingsPage:
+                """Build the settings page (locked while sessions are running)."""
+                return SettingsPage(
+                        engine_locked=self.active_session_count() > 0, parent=self
+                )
+
+        def _open_settings(self) -> None:
+                """Open settings; on save, refresh the panel for the next session."""
+                page = self._make_settings_page()
+                if page.exec() == SettingsPage.DialogCode.Accepted:
+                        self._refresh_after_settings()
+
+        def _refresh_after_settings(self) -> None:
+                """Re-resolve adb from the saved settings without blocking the UI."""
+                settings, problems = load_settings()
+
+                def work() -> None:
+                        adb = resolve_adb_path(settings, probe("adb").path, "adb.exe")
+                        self._bridge.adb_resolved.emit(adb)
+
+                threading.Thread(target=work, daemon=True).start()
+                if problems:
+                        self._status.setText(problems[0])
+
+        def _on_adb_resolved(self, adb: str) -> None:
+                """Swap the device monitor to the newly resolved adb, if it moved."""
+                if adb == self._adb_binary:
+                        self._status.setText("设置已保存，新会话生效")
+                        return
+                self._adb_binary = adb
+                self._monitor.stop()
+                self._monitor = DeviceMonitor(
+                        on_change=self._bridge.devices_changed.emit,
+                        query=poll_query(adb),
+                        poll_interval_s=2.0,
+                )
+                self._monitor.poll_now()
+                self._monitor.start()
+                _resolve_installed(adb, self._bridge.apps_resolved.emit)
+                self._status.setText("设置已保存，已切换 adb，新会话生效")
+
         def resizeEvent(self, event: QResizeEvent | None) -> None:
                 """Re-wrap the grids when the panel is resized."""
                 super().resizeEvent(event)
@@ -702,7 +788,13 @@ class MainWindow(QMainWindow):
 def run_app() -> int:
         """Create the panel and run the Qt event loop."""
         app = QApplication(sys.argv)
-        window = MainWindow("adb.exe")
+        # Same resolution as the CLI: settings override > PATH probe > the
+        # literal "adb.exe" fallback, so panel and spawned sessions share adb.
+        settings, problems = load_settings()
+        for problem in problems:
+                print(f"settings: {problem}", file=sys.stderr)
+        adb = resolve_adb_path(settings, probe("adb").path, "adb.exe")
+        window = MainWindow(adb)
         window.show()
         return app.exec()
 
