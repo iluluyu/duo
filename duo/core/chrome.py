@@ -100,6 +100,7 @@ def overlay_command(
         video_width: int | None = None,
         video_height: int | None = None,
         session_log: str | None = None,
+        corner_radius_dip: int = 0,
 ) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
@@ -131,6 +132,8 @@ def overlay_command(
                 argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
         if session_log:
                 argv += ["--session-log", session_log]
+        if corner_radius_dip > 0:
+                argv += ["--corner-radius", str(corner_radius_dip)]
         return argv
 
 
@@ -227,6 +230,7 @@ class ChromeOverlay:
                 video_width: int | None = None,
                 video_height: int | None = None,
                 session_log: Path | None = None,
+                corner_radius_dip: int = 0,
         ) -> None:
                 self._title = title
                 self._serial = serial
@@ -245,6 +249,7 @@ class ChromeOverlay:
                         video_width=video_width,
                         video_height=video_height,
                         session_log=log_arg,
+                        corner_radius_dip=corner_radius_dip,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 

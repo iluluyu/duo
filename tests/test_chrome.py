@@ -55,6 +55,10 @@ def test_overlay_source_shipped_and_hardened():
         # All four edges and corners have their own hot zones.
         assert "new EdgeStrip[9]" in text
         assert "IsZoomed" in text
+        # G2 corners: quartic superellipse polygon region (pixel-verified).
+        assert "--corner-radius" in text
+        assert "CreatePolygonRgn" in text
+        assert "ApplyCornerRegion" in text
 
 
 def test_compile_command_shape():
@@ -108,6 +112,14 @@ def test_overlay_command_carries_display_mode_and_log():
         argv = overlay_command("/x.exe", "t", "s", "a", False)
         assert argv[argv.index("--display-mode") + 1] == "flex"
         assert "--session-log" not in argv
+
+
+def test_overlay_command_corner_radius():
+        """G2 corner radius reaches the overlay; zero stays silent."""
+        argv = overlay_command("/x.exe", "t", "s", "a", False, corner_radius_dip=48)
+        assert argv[argv.index("--corner-radius") + 1] == "48"
+        argv = overlay_command("/x.exe", "t", "s", "a", False, corner_radius_dip=0)
+        assert "--corner-radius" not in argv
 
 
 def test_overlay_command_home_off_for_virtual_displays():

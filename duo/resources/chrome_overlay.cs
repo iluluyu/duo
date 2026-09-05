@@ -76,6 +76,9 @@ namespace DuoChrome
         [StructLayout(LayoutKind.Sequential)]
         public struct SIZE { public int cx, cy; }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PT { public int X, Y; }
+
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
             public static extern IntPtr FindWindowW(string cls, string title);
@@ -107,6 +110,8 @@ namespace DuoChrome
         [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
         [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(
             int x1, int y1, int x2, int y2, int w, int h);
+        [DllImport("gdi32.dll")]
+            public static extern IntPtr CreatePolygonRgn(PT[] pts, int count, int mode);
         [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
         [DllImport("user32.dll")] public static extern bool UpdateLayeredWindow(
             IntPtr h, IntPtr dstDc, IntPtr dstPt, ref SIZE size, IntPtr srcDc,
@@ -150,7 +155,7 @@ namespace DuoChrome
             string title = null, serial = null, adb = null;
             string mode = "flex", sessionLog = null;
             bool home = false;
-            int videoW = 0, videoH = 0;
+            int videoW = 0, videoH = 0, cornerDip = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
@@ -161,6 +166,7 @@ namespace DuoChrome
                 else if (argv[i] == "--video-w") int.TryParse(argv[i + 1], out videoW);
                 else if (argv[i] == "--video-h") int.TryParse(argv[i + 1], out videoH);
                 else if (argv[i] == "--session-log") sessionLog = argv[i + 1];
+                else if (argv[i] == "--corner-radius") int.TryParse(argv[i + 1], out cornerDip);
             }
             if (title == null || serial == null || adb == null)
             {
@@ -185,7 +191,7 @@ namespace DuoChrome
                 + " mode=" + mode + " video=" + videoW + "x" + videoH
                 + (sessionLog == null ? "" : " log=" + sessionLog));
             using (Controller c = new Controller(
-                title, serial, adb, home, mode, videoW, videoH, sessionLog))
+                title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip))
             {
                 Application.Run();
             }
@@ -967,6 +973,14 @@ namespace DuoChrome
         private Thread _logThread;
         private volatile bool _disposed;
 
+        // G2 corners (quartic superellipse, curvature-continuous with the
+        // straight edges): pixel-verified live 2026-09-05 that SetWindowRgn
+        // DOES visually clip the scrcpy video window (block-diff against the
+        // desktop = 1.7 vs 48.8 against the video). The region must be
+        // re-applied after every window-rect change - regions do not scale.
+        private int _cornerDip;   // 0 = off
+        private Rectangle _lastRegionRect;
+
         // Aspect convergence: window rect changes we did not cause (external
         // window managers, scrcpy's own rotation re-layout) settle for
         // SettleMs, then mirror/fixed windows are reshaped to the video
@@ -977,13 +991,14 @@ namespace DuoChrome
         private const int SettleMs = 350;
 
         public Controller(string title, string serial, string adb, bool home,
-            string displayMode, int videoW, int videoH, string sessionLog)
+            string displayMode, int videoW, int videoH, string sessionLog, int cornerDip)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
             _displayMode = displayMode == null ? "flex" : displayMode;
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
+            _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home);
             _top = new TopWindow(this, _displayMode.Equals("flex"));
             // Force handle creation now: the WinEvent callback below may fire
@@ -1249,6 +1264,7 @@ namespace DuoChrome
                 _lastRect = wr;
                 _haveLastRect = true;
                 _settleSince = Environment.TickCount;
+                ApplyCornerRegion();     // regions do not scale: refresh on change
             }
             if (_settleSince < 0 || _resizing || _moving || _fakedMax || !RatioLock)
                 return;
@@ -1291,6 +1307,68 @@ namespace DuoChrome
                 x, y, nw + cxL + cxR, nh + cxT + cxB,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
             Log.Write("converged to video aspect " + nw + "x" + nh);
+        }
+
+        // ---- G2 corner region (quartic superellipse) ----------------------
+
+        /// <summary>Clip the target window with a G2-continuous rounded
+        /// outline: one quadrant of |x/a|^4 + |y/a|^4 = 1 per corner, joined
+        /// tangentially to the straight edges (curvature 0 at the joins).
+        /// Hard-edged (GDI regions are 1-bit); re-applied on every rect change.</summary>
+        private void ApplyCornerRegion()
+        {
+            if (_cornerDip <= 0) return;
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            if (NativeMethods.IsIconic(_hwnd)) return;
+            Rectangle wr = WindowRect();
+            if (wr == _lastRegionRect) return;      // dedupe: re-apply only on change
+            NativeMethods.RECT e;
+            NativeMethods.DwmGetWindowAttribute(_hwnd, 9 /*EXTENDED_FRAME_BOUNDS*/,
+                out e, Marshal.SizeOf(typeof(NativeMethods.RECT)));
+            int x0 = e.Left - wr.Left, y0 = e.Top - wr.Top;
+            int x1 = e.Right - wr.Left, y1 = e.Bottom - wr.Top;
+            if (x1 - x0 < 8 || y1 - y0 < 8) return;
+            int r = Math.Min(S(_cornerDip), Math.Min(x1 - x0, y1 - y0) / 2);
+            if (r <= 1) return;
+            List<NativeMethods.PT> pts = new List<NativeMethods.PT>(80);
+            AddCornerArc(pts, x0 + r, y0 + r, -1, -1, r, true);    // TL: top -> left
+            AddCornerArc(pts, x0 + r, y1 - r, -1, 1, r, false);    // BL: left -> bottom
+            AddCornerArc(pts, x1 - r, y1 - r, 1, 1, r, true);      // BR: bottom -> right
+            AddCornerArc(pts, x1 - r, y0 + r, 1, -1, r, false);    // TR: right -> top
+            NativeMethods.PT[] array = pts.ToArray();
+            IntPtr rgn = NativeMethods.CreatePolygonRgn(array, array.Length, 1 /*ALTERNATE*/);
+            if (rgn != IntPtr.Zero)
+            {
+                NativeMethods.SetWindowRgn(_hwnd, rgn, false);
+                _lastRegionRect = wr;
+            }
+        }
+
+        /// <summary>Append one superellipse quadrant (16 samples). The point
+        /// at parameter t is (cx + sx*r*cos(t)^0.5, cy + sy*r*sin(t)^0.5);
+        /// |cos t|^4-style check: (cos^0.5 t)^4 + (sin^0.5 t)^4 = 1 on the
+        /// curve. ``reverse`` only fixes the traversal direction so the
+        /// polygon stays simple (clockwise around the window).</summary>
+        private static void AddCornerArc(
+            List<NativeMethods.PT> pts, int cx, int cy, int sx, int sy, int r, bool reverse)
+        {
+            const int steps = 16;
+            for (int i = 0; i <= steps; i++)
+            {
+                int k = reverse ? steps - i : i;
+                double t = (Math.PI / 2) * k / steps;
+                double u = Math.Sqrt(Math.Cos(t));
+                double v = Math.Sqrt(Math.Sin(t));
+                NativeMethods.PT p;
+                p.X = cx + (int)Math.Round(sx * r * u);
+                p.Y = cy + (int)Math.Round(sy * r * v);
+                if (pts.Count > 0)
+                {
+                    NativeMethods.PT last = pts[pts.Count - 1];
+                    if (last.X == p.X && last.Y == p.Y) continue;
+                }
+                pts.Add(p);
+            }
         }
 
         // ---- session log tailer: live video size --------------------------
@@ -1697,6 +1775,7 @@ namespace DuoChrome
             int round = 2 /*DWMWCP_ROUND*/;
             NativeMethods.DwmSetWindowAttribute(_hwnd, 33 /*CORNER_PREFERENCE*/, ref round, 4);
             _repaired = true;
+            ApplyCornerRegion();
             Log.Write("window repaired: thickframe+round");
         }
 
