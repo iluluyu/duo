@@ -192,14 +192,24 @@ ApplicationWindow {
             enabled: tile.modelData.installed   // 未安装应用不可启动
             acceptedButtons: Qt.LeftButton | Qt.RightButton
             cursorShape: Qt.PointingHandCursor
+            // 长按已触发标志：pressAndHold 之后部分平台/触屏合成路径仍会
+            // 补发 clicked（长按=切竖屏 + 单击=启动 连发，磁贴被会话启动
+            // 拖入重建），onClicked 必须吞掉并复位；onPressed 复位保证
+            // 下一次按压不受上一次残留影响。
+            property bool held: false
+            onPressed: function () { held = false }
             onClicked: function (mouse) {
+                if (held) { held = false; return }   // 长按收尾，不是单击
                 if (mouse.button === Qt.RightButton)
                     ctrl.togglePortrait(tile.modelData.package)   // 右键切横竖屏
                 else
                     ctrl.startSession(tile.modelData.package)
             }
-            // 触屏长按 = 右键等价；处理了 pressAndHold 后 clicked 不再补发
-            onPressAndHold: ctrl.togglePortrait(tile.modelData.package)
+            // 触屏长按 = 右键等价（单次触发，clicked 由 held 吞掉）
+            onPressAndHold: function (mouse) {
+                held = true
+                ctrl.togglePortrait(tile.modelData.package)
+            }
             Accessible.role: Accessible.Button
             Accessible.name: tile.modelData.label + "（右键切换横竖屏）"
             ToolTip.visible: tileMa.containsMouse

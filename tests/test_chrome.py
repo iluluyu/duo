@@ -31,6 +31,11 @@ def test_overlay_source_shipped_and_hardened():
         # Taskbar-safe emulated maximize with DWM frame insets.
         assert "FrameInsets" in text
         assert "GetMonitorInfoW" in text
+        # FakeMaximize fits the WINDOW's monitor: the work area resolves
+        # from the window rect's center (straddle-proof), never from
+        # MonitorFromWindow (flips to the other monitor at boundaries).
+        assert "straddle-proof" in text
+        assert "SystemInformation.WorkingArea" in text
         # Persistent chin tracks window moves in realtime.
         assert "SetWinEventHook" in text
         # Honor-style GDI+ nav symbols and Fluent window glyphs.
@@ -38,11 +43,16 @@ def test_overlay_source_shipped_and_hardened():
         assert "DrawRing" in text
         assert "0xE921" in text and "0xE8BB" in text
         # Navigation keys for the chin (BACK=4, HOME=3).
-        # mBack chin: tap = BACK (keyevent 4), long-press = HOME (keyevent 3).
+        # mBack chin: tap = BACK (keyevent 4), long-press = HOME (keyevent 3,
+        # physical mirroring only); virtual displays draw a plain back
+        # chevron - the ○ glyph reads as a home button and HOME has nowhere
+        # to go there (AOSP SecondaryDisplayLauncher app picker, see
+        # docs/window-experience.md §7).
         assert "AdbKey(4)" in text
         assert "AdbKey(3)" in text
         assert "--home" in text
         assert "AdbKey" in text
+        assert "mirror ? 1 : 0" in text
         # Ratio-locked resize: display mode channel, live video sizes tailed
         # from the session log ("INFO: Texture: WxH"), aspect convergence,
         # DIP minimums and capture-loss guards on every drag surface.

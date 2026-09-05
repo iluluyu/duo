@@ -238,6 +238,15 @@ class PanelController(QObject):
                 self.allAppsReady.connect(self._merge_all_apps)
                 self.iconReady.connect(self._apply_icon)
                 self.appInfoReady.connect(self._apply_app_info)
+                # Icon bursts flush as ONE appsChanged emit: the QML
+                # QVariantList model rebuilds the whole grid (and destroys
+                # every delegate, blanking async images) per emit - the
+                # per-icon emits of the first sweep read as tiles vanishing
+                # under the user's finger mid long-press.
+                self._dirty_icons: set[str] = set()
+                self._icon_flush = QTimer(self)
+                self._icon_flush.setSingleShot(True)
+                self._icon_flush.timeout.connect(self._flush_icon_batch)
 
                 self._monitor = DeviceMonitor(
                         on_change=self._devicesPolled.emit,
@@ -523,8 +532,20 @@ class PanelController(QObject):
 
         @pyqtSlot(str, object)
         def _apply_icon(self, package: str, icon_path: object) -> None:
-                """Adopt one resolved icon path (queued from the icon worker)."""
+                """Adopt one resolved icon path (queued from the icon worker).
+
+                The model patch lands immediately; the ``appsChanged`` emit
+                is deferred to a single-shot timer so a whole icon burst
+                notifies once (same contract as ``_apply_app_info``).
+                """
                 if icon_path and self._patch_app_entry(package, icon=_icon_url(icon_path)):
+                        self._dirty_icons.add(package)
+                        self._icon_flush.start()
+
+        def _flush_icon_batch(self) -> None:
+                """One grid rebuild per icon burst, not one per icon."""
+                if self._dirty_icons:
+                        self._dirty_icons.clear()
                         self.appsChanged.emit()
 
         @pyqtSlot(object)
