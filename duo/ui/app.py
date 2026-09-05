@@ -8,12 +8,18 @@ the QML engine as the ``ctrl`` / ``settingsApi`` context properties, loads
 ``qml/Main.qml`` and runs the event loop.
 
 SettingsApi implements the contract SettingsPage.qml was written against:
-``load()`` mirrors the Settings fields, ``save(map)`` validates and
-persists atomically while returning the problem list (empty = saved), and
-``probe()`` runs a tool check on a background thread, reporting via the
-``probeDone`` signal. While a mirror session lives, the QML page binds
-``engineLocked`` off the controller, so the engine rows lock exactly like
-the widgets page did.
+``load()`` mirrors the Settings fields, ``loadProblems()`` reports what was
+wrong with settings.json (the page shows it as its red bar, like the
+widgets page did), ``save(map)`` validates and persists atomically while
+returning the problem list (empty = saved), and ``probe()`` runs a tool
+check on a background thread, reporting via the ``probeDone`` signal.
+While a mirror session lives, the QML page binds ``engineLocked`` off the
+controller, so the engine rows lock exactly like the widgets page did.
+
+Frozen packaging (PyInstaller one-exe): the QML sidecar files must ship
+inside the bundle - pass ``--add-data duo/ui/qml`` (Main.qml,
+SettingsPage.qml, Style.qml, qmldir) or ``QML_MAIN`` below has nothing to
+load.
 """
 
 from __future__ import annotations
@@ -39,6 +45,8 @@ from duo.core.settings import (
 from duo.ui.controller import PanelController
 
 #: The panel document (qmldir next to it declares the Style singleton).
+#: Frozen builds must include the directory (PyInstaller
+#: ``--add-data duo/ui/qml``); __file__-relative lookup fails otherwise.
 QML_MAIN = Path(__file__).with_name("qml") / "Main.qml"
 
 
@@ -84,6 +92,17 @@ class SettingsApi(QObject):
                         "corner_size_dip": settings.corner_size_dip,
                         "glass_enabled": settings.glass_enabled,
                 }
+
+        @pyqtSlot(result="QVariantList")
+        def loadProblems(self) -> list[str]:
+                """Problems found in settings.json (missing = no problems).
+
+                The page shows these in its red bar on open, like the
+                widgets page's ``_load`` did - run_app's stderr line is
+                invisible in windowed frozen builds.
+                """
+                _settings, problems = load_settings()
+                return problems
 
         @pyqtSlot("QVariantMap", result="QVariantList")
         def save(self, values: dict[str, object]) -> list[str]:

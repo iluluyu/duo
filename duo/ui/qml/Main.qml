@@ -5,7 +5,8 @@
 //        runningSessions[{key,label,running,portrait}] / engineLocked(bool) /
 //        apps[{package,label,icon,installed}]（icon 为 file URL 串或空串）
 //   槽   startSession(package) / startMirror() / stopSession(key) /
-//        refreshInstalled() / resolveAdb()
+//        refreshInstalled() / togglePortrait(package) / resolveAdb()
+// 交互：磁贴点击启动；右键/长按切换横竖屏（对齐 widgets 版目录图标）
 // 设置页：齿轮按钮或 Ctrl+, 把 SettingsPage.qml push 上 StackView；
 //   保存成功（accepted）→ ctrl.resolveAdb()（对齐旧 widgets 版
 //   _refresh_after_settings 语义：adb 变了就切监控 + 刷新已装列表），
@@ -25,8 +26,12 @@ ApplicationWindow {
     title: "Duo"
     color: Style.bg
 
-    // 当前设备（devices[0] 即主设备；无设备为 null）
-    readonly property var device: ctrl.devices.length > 0 ? ctrl.devices[0] : null
+    // 主设备 = 首个在线设备（widgets 版 _on_devices 的 online[0]，与
+    // startSession/startMirror 实际选中的 monitor.online[0] 同一台；
+    // devices[0] 可能是另一台离线/未授权设备）
+    readonly property var device: ctrl.devices.find(function (d) { return d.online; }) ?? null
+    // 无在线设备时回退展示首个离线/未授权设备（状态点转警示色提示原因）
+    readonly property var fallbackDevice: device ?? ctrl.devices[0] ?? null
     // 已安装应用数（决定网格 vs 空态）
     readonly property int installedCount: ctrl.apps.filter(function (a) { return a.installed; }).length
 
@@ -95,7 +100,8 @@ ApplicationWindow {
                     radius: sh.rad + 1; color: "#09000000" }
     }
 
-    // 应用磁贴：圆形图标（icon 为空 → 首字占位）+ 短标签，未安装降透明
+    // 应用磁贴：圆形图标（icon 为空 → 首字占位）+ 短标签；未安装降透明
+    // 且禁点（widgets 版 setEnabled(False)）；右键/长按切换横竖屏
     component AppTile: Item {
         id: tile
         required property var modelData   // {package,label,icon,installed}
@@ -155,14 +161,25 @@ ApplicationWindow {
             id: tileMa
             anchors.fill: parent
             hoverEnabled: true
+            enabled: tile.modelData.installed   // 未安装应用不可启动
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
             cursorShape: Qt.PointingHandCursor
-            onClicked: ctrl.startSession(tile.modelData.package)
+            onClicked: function (mouse) {
+                if (mouse.button === Qt.RightButton)
+                    ctrl.togglePortrait(tile.modelData.package)   // 右键切横竖屏
+                else
+                    ctrl.startSession(tile.modelData.package)
+            }
+            // 触屏长按 = 右键等价；处理了 pressAndHold 后 clicked 不再补发
+            onPressAndHold: ctrl.togglePortrait(tile.modelData.package)
             Accessible.role: Accessible.Button
-            Accessible.name: tile.modelData.label
+            Accessible.name: tile.modelData.label + "（右键切换横竖屏）"
+            ToolTip.visible: tileMa.containsMouse
+            ToolTip.text: tile.modelData.label + "（右键切换横竖屏）"
         }
     }
 
-    // 运行中芯片：标签 + 停止 ✕，可换行
+    // 运行中芯片：标签 + 方向（点击切换，镜像会话除外）+ 停止 ✕，可换行
     component SessionChip: Rectangle {
         id: chip
         required property var modelData   // {key,label,running,portrait}
@@ -188,6 +205,36 @@ ApplicationWindow {
                 font.pixelSize: 12
                 color: Style.ink
                 anchors.verticalCenter: parent.verticalCenter
+            }
+            // 方向标签：点击 = ctrl.togglePortrait(key)（影响下次启动）。
+            // 设备镜像无横竖屏概念，隐藏。
+            AbstractButton {
+                id: orientBtn
+                visible: chip.modelData.key !== ctrl.mirrorKey
+                implicitHeight: 22
+                implicitWidth: orientLabel.implicitWidth + 14
+                anchors.verticalCenter: parent.verticalCenter
+                contentItem: Text {
+                    id: orientLabel
+                    text: chip.modelData.portrait ? "竖屏" : "横屏"
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    color: Style.ink2
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 11
+                    color: orientBtn.pressed ? Style.pressWash
+                                             : (orientBtn.hovered ? Style.hoverWash : "transparent")
+                    Behavior on color { ColorAnimation { duration: Style.durFast } }
+                }
+                onClicked: ctrl.togglePortrait(chip.modelData.key)
+                Accessible.role: Accessible.Button
+                Accessible.name: "切换 " + chip.modelData.label
+                                 + " 横竖屏，当前" + orientLabel.text
+                ToolTip.visible: hovered
+                ToolTip.text: "点击切换下次启动方向"
             }
             AbstractButton {
                 id: stopBtn
@@ -314,23 +361,25 @@ ApplicationWindow {
                     anchors.leftMargin: 14
                     spacing: 10
 
-                    // 在线状态点（#34C759 仅用于运行/在线语义）
+                    // 在线状态点（#34C759 仅用于运行/在线语义）：在线绿，
+                    // 有设备但离线/未授权/recovery → 琥珀警示，无设备灰
                     Rectangle {
                         width: 10; height: 10; radius: 5
                         anchors.verticalCenter: parent.verticalCenter
-                        color: root.device !== null && root.device.online ? Style.running : "#C7C7CC"
+                        color: root.device !== null ? Style.running
+                                                    : (root.fallbackDevice !== null ? Style.warn : "#C7C7CC")
                     }
                     Column {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 2
                         Text {
-                            text: root.device !== null ? root.device.stateText : "未连接设备"
+                            text: root.fallbackDevice !== null ? root.fallbackDevice.stateText : "未连接设备"
                             font.pixelSize: 15
                             font.weight: Font.DemiBold
                             color: Style.ink
                         }
                         Text {
-                            text: root.device !== null ? root.device.serial : "连接设备后可启动应用与投屏"
+                            text: root.fallbackDevice !== null ? root.fallbackDevice.serial : "连接设备后可启动应用与投屏"
                             font.pixelSize: 12
                             color: Style.ink2
                         }
@@ -494,6 +543,7 @@ ApplicationWindow {
                 visible: opacity > 0.01
                 onHasMessageChanged: expired = false
                 Timer {
+                    id: toastTimer
                     interval: 2500
                     running: toast.hasMessage
                     onTriggered: toast.expired = true
@@ -507,6 +557,8 @@ ApplicationWindow {
                     text: ctrl.statusText
                     font.pixelSize: 13
                     color: "#FFFFFF"
+                    // 2.5s 内连发时后一条要重置自己的完整时限
+                    onTextChanged: toastTimer.restart()
                 }
             }
         }

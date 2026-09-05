@@ -160,7 +160,11 @@ def test_apps_model_tracks_installed_icons_and_extras(no_adb, prefs_stub, qapp):
         # A third-party listing extends the model; app info fills the label.
         controller.allAppsReady.emit(["org.foo.bar"])
         assert "org.foo.bar" in {e["package"] for e in controller.apps}
-        controller.appInfoReady.emit("org.foo.bar", None, "Bar 应用")
+        # The batch hop patches the model and rebuilds once (not per app).
+        rebuilds: list[int] = []
+        controller.appsChanged.connect(lambda: rebuilds.append(1))
+        controller.appInfoReady.emit([("org.foo.bar", None, "Bar 应用")])
+        assert len(rebuilds) == 1
         by_package = {e["package"]: e for e in controller.apps}
         assert by_package["org.foo.bar"]["label"] == "Bar 应用"
 
