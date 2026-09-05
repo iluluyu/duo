@@ -1440,7 +1440,6 @@ namespace DuoChrome
                 _lastRect = wr;
                 _haveLastRect = true;
                 _settleSince = Environment.TickCount;
-                ApplyCornerRegion();     // regions do not scale: refresh on change
             }
             if (_settleSince < 0 || _resizing || _moving || _fakedMax || !RatioLock)
                 return;
@@ -1521,6 +1520,8 @@ namespace DuoChrome
                 {
                     _regionOff = true;
                     NativeMethods.SetWindowRgn(_hwnd, IntPtr.Zero, false);
+                    Log.Write("region defer sz=" + sz.Width + "x" + sz.Height
+                        + " dip=" + _cornerDip);
                 }
                 return;
             }
@@ -1541,6 +1542,12 @@ namespace DuoChrome
                 _regionOff = false;
                 _lastAppliedSize = sz;
                 ApplySingleFrameStyle();
+                Log.Write("region applied " + sz.Width + "x" + sz.Height
+                    + " r=" + r);
+            }
+            else
+            {
+                Log.Write("region: CreatePolygonRgn failed");
             }
         }
 
@@ -1723,7 +1730,9 @@ namespace DuoChrome
             }
             if (++_ticks % 100 == 0)
             {
-                Log.Write("alive #" + _ticks);
+                Log.Write("alive #" + _ticks + " cornerDip=" + _cornerDip
+                    + " regionOff=" + _regionOff
+                    + " appliedSz=" + _lastAppliedSize);
                 // SDL can re-assert its own styles on some events; keep the
                 // resize frame alive without user-visible work.
                 if (_hwnd != IntPtr.Zero && NativeMethods.IsWindow(_hwnd))
@@ -1771,15 +1780,27 @@ namespace DuoChrome
                 NativeMethods.GetForegroundWindow(), 2 /*GA_ROOT*/) == _hwnd;
             bool engaged = foreground || rootAtCursor == _hwnd
                 || overBars || overStrips || _resizing || _moving;
+            Rectangle wr = WindowRect();
+            // Window-state duties run regardless of engagement: the corner
+            // region must settle even when the cursor is away, and the
+            // aspect convergence must see external changes while idle.
+            TrackExternalChange(wr);
+            ApplyCornerRegion();   // per-tick: settles the deferred region
             if (!engaged)
             {
                 HideBars();
-                HideStrips();
+                HideStrips();      // strips AND corner masks
                 return;
             }
-            Rectangle wr = WindowRect();
             SyncStrips(wr);
-            TrackExternalChange(wr);
+            // The move strip sits inside the top resize strip's rect; z-order
+            // decides which one gets the click. Re-assert the move strip on
+            // top every tick so a z-order shuffle can never deaden dragging.
+            if (_strips[8].Visible)
+            {
+                NativeMethods.SetWindowPos(_strips[8].Handle, IntPtr.Zero /*HWND_TOP*/,
+                    0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // NOSIZE|NOMOVE|NOACTIVATE
+            }
             SyncMasks();
 
             // Per-bar proximity rules, symmetric like a native window's own

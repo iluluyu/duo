@@ -38,11 +38,11 @@
 
 ### 3. P1 — 增加最小设置页
 
-- [ ] 新增 Qt-free `duo/core/settings.py`：JSON 读取、校验、原子保存；沿用 `data_dir()`，保留旧的按应用横竖屏偏好。
-- [ ] 接入自定义 scrcpy / adb 路径，留空自动探测；GUI、CLI、设备轮询、scrcpy、overlay 使用同一解析结果，缺引擎时仍可打开设置。
-- [ ] 新增 `duo/ui/settings_page.py`，主面板右上角齿轮进入，返回后保留原页面状态。
-- [ ] 仅提供：两项路径 + 检测、FPS / 码率 / DPI、圆角模式 / 大小、玻璃效果开关。
-- [ ] 本页圆角预览即时更新；保存后新会话生效。G2 未通过验证时禁用该选项并给出简短原因，不提供无效滑块。
+- [x] 新增 Qt-free `duo/core/settings.py`：JSON 读取（永不抛异常，缺字段/坏类型/超范围→字段默认+问题清单）、校验、原子保存（tmp+os.replace）；沿用 `data_dir()`，保留旧 gui_prefs.json。✅ 9 项测试。
+- [x] CLI 贯通：`mirror` 的 fps/bitrate/dpi/corner-radius 改为 None 默认，优先级 CLI > settings > 内置默认；scrcpy/adb 路径支持 settings 覆盖（`resolve_tool`），`--adb` 非法旗标已改为 `ADB` 环境变量钉死。
+- [ ] 新增 `duo/ui/settings_page.py` 设置页（两组：引擎路径+检测/画质/圆角/玻璃开关，预览即时、保存后新会话生效），主面板右上角齿轮 + Ctrl+, 进入。
+- [ ] `run_app()` 的 `adb.exe` 硬编码改为 settings/probe 解析。
+- [ ] 本页圆角预览即时更新；G2 已验证可用（默认 g2/48），设置页暴露 corner_mode/大小。
 
 **完成标准**：含中文/空格的路径可用；非法值不会覆盖有效配置；重启保留设置；修改 adb 不引发不同版本 server 相互重启。已有会话运行时不切换引擎路径，提示先关闭会话。
 
