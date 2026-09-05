@@ -184,6 +184,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         video_width=display.width if display.mode == "fixed" else None,
                         video_height=display.height if display.mode == "fixed" else None,
                         session_log=log_path,
+                        corner_radius_dip=args.corner_radius,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
@@ -268,6 +269,13 @@ def _build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="borderless window with hover-revealed edge controls "
                 "(min/max/close, back/home overlay)",
+        )
+        mirror.add_argument(
+                "--corner-radius",
+                type=int,
+                default=48,
+                help="G2 corner radius in DIP for chrome windows, iPhone-like "
+                "squircle by default (0 disables, up to ~160 for testing)",
         )
 
         return parser
