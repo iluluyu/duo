@@ -18,10 +18,26 @@ import QtQuick.Effects
 ApplicationWindow {
     id: root
 
-    width: 420
-    height: 660
-    minimumWidth: 360
-    minimumHeight: 520
+    // ============ 混合 DPI 双屏：舒适缩放 + 按屏幕可用尺寸自适应 ============
+    // Qt6 默认开启 per-monitor High-DPI 缩放（app.py 不设任何 QT_* 缩放
+    // 覆盖）：下面所有 px 值都是 DIP，由 Qt 按每屏 DPR 渲染——这解释了
+    // "4K 屏（125-200% 缩放）布局正确"。而 100% 缩放的屏（DPR=1.0，常见
+    // 于 2K 屏）对固定 DIP 设计不做任何放大，12-13px 字号原样渲染，观感
+    // 拥挤。uiScale 给低 DPR 屏一档最高 125% 的舒适缩放：DPR≥1.25 的屏
+    // 恒为 1.0（4K 现状不变），DPR=1.0 的屏取 1.25（与 Windows 对 2K 屏
+    // 的建议缩放一致）。绑定到窗口所在屏，跨屏拖动时随每屏 DPR 实时重算。
+    readonly property real uiScale: Math.max(1.0, Math.min(1.25, 1.25 / Screen.devicePixelRatio))
+
+    // 屏幕可用尺寸（DIP）；offscreen/无工作区平台返回不设限的大值，
+    // 让测试与出图不被钳制。
+    function availWidthDip() { return Screen.availableWidth > 0 ? Screen.availableWidth : 1000000 }
+    function availHeightDip() { return Screen.availableHeight > 0 ? Screen.availableHeight : 1000000 }
+
+    // 初始/最小尺寸 = 设计值 × 舒适档位，再钳制到所在屏可用范围。
+    width: Math.min(Math.round(420 * uiScale), Math.round(availWidthDip() * 0.92))
+    height: Math.min(Math.round(660 * uiScale), Math.round(availHeightDip() * 0.92))
+    minimumWidth: Math.min(Math.round(360 * uiScale), Math.round(availWidthDip() * 0.92))
+    minimumHeight: Math.min(Math.round(520 * uiScale), Math.round(availHeightDip() * 0.92))
     visible: true
     title: "Duo"
     color: Style.bg
@@ -45,10 +61,22 @@ ApplicationWindow {
         onActivated: root.openSettings()
     }
 
-    StackView {
-        id: stack
-        anchors.fill: parent
-        initialItem: panelComp
+    // 内容缩放层：子树内布局坐标保持未缩放 DIP（面板/设置页零改动），
+    // 整层按 uiScale 从左上角放大后恰好铺满窗口。文字与矢量按最终尺寸
+    // 栅格化，缩放后不糊。手动调整过窗口大小时用户接管尺寸，缩放档位
+    // 仍随所在屏跟随。
+    Item {
+        id: zoomLayer
+        width: Math.ceil(parent.width / root.uiScale)
+        height: Math.ceil(parent.height / root.uiScale)
+        scale: root.uiScale
+        transformOrigin: Item.TopLeft
+
+        StackView {
+            id: stack
+            anchors.fill: parent
+            initialItem: panelComp
+        }
     }
 
     Component {

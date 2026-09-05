@@ -9,7 +9,11 @@ window (FindWindow by title, GetWindowRect, styles, z-order):
     cursor near the top edge    -> top-right capsule: minimize / maximize
                                    (taskbar-safe, emulated) / close
     window active               -> persistent chin: mBack ring, tap = back,
-                                   long-press = home (physical mirroring)
+                                   long-press = home (physical mirroring) or
+                                   session close (virtual displays: they have
+                                   no launcher - HOME there raises the system
+                                   launcher's all-apps picker on the mirrored
+                                   display, the "confusing app selector")
 
 The overlay itself is the C# program ``duo/resources/chrome_overlay.cs``,
 compiled on first use with the .NET Framework ``csc.exe`` that every Windows
@@ -106,8 +110,11 @@ def overlay_command(
 
         The overlay takes plain parameters: as a PE binary it receives real
         UTF-16 argv, so CJK titles need no base64 transport (that workaround
-        was PowerShell-specific). ``home`` enables the long-press-home gesture
-        (physical mirroring only: a virtual display has no launcher).
+        was PowerShell-specific). ``home`` marks a device-mirroring session
+        (no ``--app``): the chin's long-press sends HOME there. On virtual
+        displays (flex/fixed) the long-press instead CLOSES the session
+        window - a virtual display has no launcher, and keyevent 3 raises
+        the system launcher's all-apps picker on the mirrored display.
 
         ``display_mode`` drives resize policy: mirror/fixed keep the window
         glued to the video aspect ratio (sizes arrive through ``session_log``

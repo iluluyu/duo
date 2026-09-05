@@ -137,6 +137,10 @@ class SettingsApi(QObject):
 
 def run_app() -> int:
         """Create the QML panel, resolve adb once, run the Qt event loop."""
+        # High-DPI 契约：Qt6 默认开启 per-monitor High-DPI 缩放，这里刻意
+        # 不设 QT_ENABLE_HIGHDPI_SCALING / QT_SCALE_FACTOR 等任何覆盖，让
+        # QML 里的 px 值保持 DIP 语义、按每屏 DPR 渲染（混合 DPI 双屏下
+        # 100% 缩放屏的舒适档位在 Main.qml 的 uiScale 处理）。
         app = QGuiApplication(sys.argv)
         # Same resolution as the CLI: settings override > PATH probe > the
         # literal "adb.exe" fallback, so panel and spawned sessions share adb.

@@ -189,10 +189,15 @@ def _run_mirror(args: argparse.Namespace) -> int:
         if args.chrome:
                 if not title:
                         raise ChromeError("--chrome needs a window title: pass --app or --title")
-                # Long-press-home only makes sense when mirroring the real
-                # display; a virtual display has no launcher behind the app.
-                # mirror/fixed windows keep the video aspect ratio (sizes
-                # stream from the session log); flex windows resize freely.
+                # Chin ring long-press: HOME on physical mirroring; on
+                # virtual displays (flex/fixed) it CLOSES the session window
+                # instead - a virtual display has no launcher, and keyevent 3
+                # there raises the system launcher's all-apps picker on the
+                # mirrored display (the "confusing app selector"; the C#
+                # overlay gates on display-mode, so flex-without-app closes
+                # too). mirror/fixed windows keep the video aspect ratio
+                # (sizes stream from the session log); flex windows resize
+                # freely.
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,
