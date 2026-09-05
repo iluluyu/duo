@@ -90,6 +90,7 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint ga);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
@@ -846,9 +847,15 @@ namespace DuoChrome
             };
             MouseMove += delegate(object s, MouseEventArgs e)
             {
-                // Resize/move tracking is poll-driven (Tick): window ops
-                // under a captured cursor synthesize WM_MOUSEMOVE, so doing
-                // work here would form a self-perpetuating feedback storm.
+                // Event-driven gesture tracking: with the capture held this
+                // strip keeps receiving WM_MOUSEMOVE through the whole drag
+                // (even when the moving target re-synthesizes them under a
+                // stationary cursor). Both UpdateMove and UpdateResize
+                // dedupe on the cursor position, so a synthesized no-op
+                // message cannot self-perpetuate a feedback storm. The Tick
+                // poll remains as a fallback, not the driver.
+                if (Edge == 0) _owner.UpdateMove();
+                else _owner.UpdateResize();
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -978,6 +985,15 @@ namespace DuoChrome
                 if (e.Button != MouseButtons.Left) return;
                 _owner.BeginMove();
                 Capture = true;
+            };
+            // Direct-drive the window follow from mouse input: the 20Hz Tick
+            // alone made real drags rubber-band. The capture keeps these
+            // events flowing for the whole gesture, and UpdateMove dedupes
+            // the WM_MOUSEMOVE a moving target synthesizes under a
+            // stationary cursor, so no feedback storm is possible.
+            MouseMove += delegate(object s, MouseEventArgs e)
+            {
+                _owner.UpdateMove();
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -1481,6 +1497,10 @@ namespace DuoChrome
                 want.Left, want.Top, want.Width, want.Height,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
             if (!ok && _resizeMoves == 1) Log.Write("swp failed");
+            // Drag-rate chrome follow: the top edge just moved, so re-glue
+            // the grip pill now instead of letting it trail by up to one
+            // 50ms tick (SyncTo dedupes no-op moves, the tick stays safe).
+            if (_grip.Visible) SyncGrip(ClientRect());
         }
 
         /// <summary>Reshape a raw drag rect so the CLIENT area (where the
@@ -1565,6 +1585,9 @@ namespace DuoChrome
 
         private bool _moving;
         private Point _moveStart, _moveMouse;
+        private int _lastMoveX = int.MinValue, _lastMoveY = int.MinValue;
+        private int _moveMoves;
+        private IntPtr _gripAbove;   // HWND observed in front of the grip pill
 
         public bool Moving { get { return _moving; } }
 
@@ -1582,6 +1605,8 @@ namespace DuoChrome
             NativeMethods.GetCursorPos(out pt);
             _moveMouse = new Point(pt.X, pt.Y);
             _moving = true;
+            _lastMoveX = int.MinValue; _lastMoveY = int.MinValue;
+            _moveMoves = 0;
             Log.Write("move begin");
         }
 
@@ -1590,16 +1615,40 @@ namespace DuoChrome
             if (!_moving) return;
             NativeMethods.POINT pt;
             NativeMethods.GetCursorPos(out pt);
-            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
-                _moveStart.X + pt.X - _moveMouse.X, _moveStart.Y + pt.Y - _moveMouse.Y,
+            int x = _moveStart.X + pt.X - _moveMouse.X;
+            int y = _moveStart.Y + pt.Y - _moveMouse.Y;
+            // Dedupe: under a held capture, WM_MOUSEMOVE is re-synthesized
+            // whenever the target (or our own strips) shifts under a
+            // stationary cursor. Skipping the no-op SetWindowPos breaks that
+            // feedback loop - same contract as UpdateResize's dx/dy guard.
+            if (x == _lastMoveX && y == _lastMoveY) return;
+            _lastMoveX = x; _lastMoveY = y;
+            _moveMoves++;
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y,
                 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            // Drag-rate chrome follow: re-glue the grip pill to the new
+            // client top-center immediately, or it visibly trails the
+            // window and snaps back once the 20Hz tick catches up.
+            if (_grip.Visible) SyncGrip(ClientRect());
         }
 
         public void EndMove()
         {
             if (!_moving) return;
             _moving = false;
-            Log.Write("move end");
+            Log.Write("move end moves=" + _moveMoves);
+        }
+
+        /// <summary>Position the grip pill over the top-center of
+        /// ``client`` (GripWindow.SyncTo also shows it while hidden - that
+        /// reveal belongs to the tick's engagement rules). Shared by the
+        /// drag paths (UpdateMove/UpdateResize, guarded on Visible so a
+        /// hidden pill is never resurrected mid-gesture) and TickInner,
+        /// which keeps calling it as the idle fallback; SyncTo dedupes
+        /// no-op moves either way.</summary>
+        private void SyncGrip(Rectangle client)
+        {
+            _grip.SyncTo(client.Left + client.Width / 2, client.Top);
         }
 
         // ---- aspect convergence (external changes, rotation, maximize) ----
@@ -1922,7 +1971,10 @@ namespace DuoChrome
 
         private void TickInner()
         {
-            // Poll-driven resize/move tracking (see EdgeStrip.MouseMove note).
+            // Gestures are event-driven from MouseMove (see EdgeStrip and
+            // GripWindow); this poll is only a fallback for stalled events,
+            // and both updates dedupe so the fallback is a no-op when the
+            // event path is already current.
             if (_resizing) UpdateResize();
             else if (_moving) UpdateMove();
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
@@ -1986,8 +2038,21 @@ namespace DuoChrome
             // tick so a z-order shuffle can never deaden dragging.
             if (_grip.Visible)
             {
-                NativeMethods.SetWindowPos(_grip.Handle, IntPtr.Zero /*HWND_TOP*/,
-                    0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // NOSIZE|NOMOVE|NOACTIVATE
+                // Re-assert HWND_TOP only when something actually moved in
+                // front of the pill: the unconditional per-tick assertion
+                // woke the window manager 20x/s during drags for no effect
+                // 99% of the time. The cache is written right after each
+                // assertion (grip pinned at band top), so any later state
+                // with a different HWND in front of the grip means a real
+                // shuffle happened (ours or another app's) and is corrected
+                // on this tick - at most one tick late, same as before.
+                IntPtr above = NativeMethods.GetWindow(_grip.Handle, 3 /*GW_HWNDPREV*/);
+                if (above != _gripAbove)
+                {
+                    NativeMethods.SetWindowPos(_grip.Handle, IntPtr.Zero /*HWND_TOP*/,
+                        0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // NOSIZE|NOMOVE|NOACTIVATE
+                    _gripAbove = NativeMethods.GetWindow(_grip.Handle, 3 /*GW_HWNDPREV*/);
+                }
             }
             SyncMasks();
 
@@ -2021,7 +2086,7 @@ namespace DuoChrome
             if (showTop)
             {
                 bool wasGrip = _grip.Visible;
-                _grip.SyncTo(client.Left + client.Width / 2, client.Top);
+                SyncGrip(client);
                 if (!wasGrip)
                     Log.Write("grip shown at " + _grip.Left + "," + _grip.Top
                         + " " + _grip.Width + "x" + _grip.Height);
