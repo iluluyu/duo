@@ -943,6 +943,7 @@ namespace DuoChrome
     {
         private readonly int _corner;        // 0=TL 1=TR 2=BR 3=BL (clockwise)
         private int _radius;                 // physical px, 0 = hidden
+        private float _dpi;                  // last rendered scale
 
         public CornerMask(int corner)
         {
@@ -990,12 +991,16 @@ namespace DuoChrome
             int x = left ? visible.Left - o : visible.Right - (size - o);
             int y = top ? visible.Top - o : visible.Bottom - (size - o);
             Rectangle want = new Rectangle(x, y, size, size);
-            bool moved = Bounds != want;
-            if (moved) Bounds = want;
+            // Moves only reposition the layered surface (no re-push); the
+            // bitmap is re-rendered solely on size / radius / DPI change.
+            Rectangle old = Bounds;
+            bool sizeChanged = old.Size != want.Size;
+            if (old != want) Bounds = want;
             if (!Visible) Show();
-            if (_radius != r || moved)
+            if (_radius != r || _dpi != dpi || sizeChanged)
             {
                 _radius = r;
+                _dpi = dpi;
                 Render(r, dpi, left, top);
             }
         }
@@ -1140,7 +1145,10 @@ namespace DuoChrome
         // desktop = 1.7 vs 48.8 against the video). The region must be
         // re-applied after every window-rect change - regions do not scale.
         private int _cornerDip;   // 0 = off
-        private Rectangle _lastRegionRect;
+        private Size _lastRegionSize;    // last size seen (defers through churn)
+        private Size _lastAppliedSize;   // size the region currently matches
+        private bool _regionOff;         // region cleared while resizing
+        private int _regionSettleAt;     // tick deadline before re-applying
         private Rectangle _visibleRect;          // DWM visible bounds (screen)
         private readonly CornerMask[] _masks = new CornerMask[4];
 
@@ -1482,20 +1490,41 @@ namespace DuoChrome
         /// <summary>Clip the target window with a G2-continuous rounded
         /// outline: one quadrant of |x/a|^4 + |y/a|^4 = 1 per corner, joined
         /// tangentially to the straight edges (curvature 0 at the joins).
-        /// Hard-edged (GDI regions are 1-bit); re-applied on every rect change.</summary>
+        /// Hard-edged (GDI regions are 1-bit).
+        ///
+        /// Perf contract: regions are window-relative, so MOVES never need a
+        /// re-apply (position-only changes are deduped away). During size
+        /// churn the region is removed outright (square corners, zero stale-
+        /// clip flicker) and re-applied once 300ms after the size settles -
+        /// SetWindowRgn storms while dragging were the stutter source.</summary>
         private void ApplyCornerRegion()
         {
             if (_cornerDip <= 0) return;
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
             if (NativeMethods.IsIconic(_hwnd)) return;
             Rectangle wr = WindowRect();
-            if (wr == _lastRegionRect) return;      // dedupe: re-apply only on change
             NativeMethods.RECT e;
             NativeMethods.DwmGetWindowAttribute(_hwnd, 9 /*EXTENDED_FRAME_BOUNDS*/,
                 out e, Marshal.SizeOf(typeof(NativeMethods.RECT)));
             int x0 = e.Left - wr.Left, y0 = e.Top - wr.Top;
             int x1 = e.Right - wr.Left, y1 = e.Bottom - wr.Top;
             _visibleRect = new Rectangle(e.Left, e.Top, x1 - x0, y1 - y0);
+            Size sz = wr.Size;
+            if (sz != _lastRegionSize)
+            {
+                _lastRegionSize = sz;
+                _regionSettleAt = Environment.TickCount + 300;
+            }
+            if (Environment.TickCount < _regionSettleAt)
+            {
+                if (!_regionOff)
+                {
+                    _regionOff = true;
+                    NativeMethods.SetWindowRgn(_hwnd, IntPtr.Zero, false);
+                }
+                return;
+            }
+            if (!_regionOff && _lastAppliedSize == sz) return;   // applied already
             if (x1 - x0 < 8 || y1 - y0 < 8) return;
             int r = Math.Min(S(_cornerDip), Math.Min(x1 - x0, y1 - y0) / 2);
             if (r <= 1) return;
@@ -1509,10 +1538,10 @@ namespace DuoChrome
             if (rgn != IntPtr.Zero)
             {
                 NativeMethods.SetWindowRgn(_hwnd, rgn, false);
-                _lastRegionRect = wr;
+                _regionOff = false;
+                _lastAppliedSize = sz;
                 ApplySingleFrameStyle();
             }
-            SyncMasks();
         }
 
         /// <summary>While the G2 region owns the outline, kill the two extra
@@ -1531,10 +1560,19 @@ namespace DuoChrome
         }
 
         /// <summary>Stroke the AA hairline over the region's stair-stepped
-        /// corner edges (small click-through layered squares).</summary>
+        /// corner edges (small click-through layered squares). Called every
+        /// tick: moves only reposition the squares (no re-render); the masks
+        /// stay hidden while the region is temporarily off (resize).</summary>
         private void SyncMasks()
         {
-            if (_cornerDip <= 0 || _hwnd == IntPtr.Zero) return;
+            if (_cornerDip <= 0 || _hwnd == IntPtr.Zero || _regionOff)
+            {
+                foreach (CornerMask mask in _masks)
+                {
+                    if (mask.Visible) mask.HideMask();
+                }
+                return;
+            }
             if (_visibleRect.Width <= 0 || _visibleRect.Height <= 0) return;
             float dpi = _masks[0].DeviceDpi / 96f;
             int r = Math.Min(S(_cornerDip),
@@ -1742,6 +1780,7 @@ namespace DuoChrome
             Rectangle wr = WindowRect();
             SyncStrips(wr);
             TrackExternalChange(wr);
+            SyncMasks();
 
             // Per-bar proximity rules, symmetric like a native window's own
             // affordances: capsule reveals near the top edge, the mBack dot
