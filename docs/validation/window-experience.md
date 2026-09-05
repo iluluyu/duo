@@ -61,7 +61,21 @@
 
 ## 4. 过程坑（给验证者）
 
-- `Form.Show()` 后无消息泵 → WM_PAINT 不处理，背板永远黑色；pwsh 7 默认 MTA，WinForms 背板直接静默失败 → 改用"最小化窗口采桌面参考"彻底绕开背板
+- `Form.Show()` 后无消息泵 → WM_PAINT 不处理，背板永远黑色；pwsh 7 默认 MTA，WinForms 背板直接静默失败 → 改用“最小化窗口采桌面参考”彻底绕开背板
 - WinPS 5.1 对 `@($w-9,8)` 嵌套数组字面量 + `New-Object TypeName(a,b)` 有解析陷阱；pwsh 7 + `::new()` + 整数预计算规避
 - WSL `terminate()` 不杀 Windows 侧子进程 → 探测残留 scrcpy；收尾必须 `taskkill.exe`
 - PowerShell stderr 是本地化 GBK，`text=True` 默认 UTF-8 解码会炸：`errors="replace"` 或丢弃
+
+## 5. G2 回退记录（2026-09-05）
+
+用户实测反馈（预览 1–7 轮，提交序列 8df005f → cc05092）：
+
+| 症状 | 处置过程 | 结果 |
+|---|---|---|
+| 硬边锯齿 + 双层边框 | 描边遮罩 + `DWMWA_BORDER_COLOR=NONE`/`DONOTROUND` | 有改善，但描边模拟仍不达标 |
+| 缩放卡顿 | 区域去重、缩放期摘除+300ms settle、遮罩仅尺寸变化重渲染（c4b2753） | 部分缓解，未根治 |
+| 拖不动窗口 | 顶边热区 z 序被盖住（move 条与顶边条重叠）；区域逻辑位于 engaged 分支内导致永不落回 | 已修（cc05092：z 序每 tick 断言 + 区域逻辑移出 engaged） |
+| 画面只显示一半 | 区域与 SDL 重布局/收敛竞争，未定位到根因 | 未解决 |
+| 圆角观感“走偏” | 阴影弧收窄后仍不理想 | 用户决策回退 |
+
+**决策**：默认 `corner_mode="system"`（Windows 系统圆角），G2 代码保留为选开实验项（`--corner-radius` / `corner_mode="g2"`），转长期目标。回退提交 `79cd93a`。重启条件见 docs/window-experience.md §3.4。
