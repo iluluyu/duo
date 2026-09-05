@@ -205,7 +205,10 @@ class PanelController(QObject):
         statusChanged = pyqtSignal(str)
         sessionsChanged = pyqtSignal(list)           # list of session maps
         allAppsReady = pyqtSignal(list)              # third-party packages
-        appInfoReady = pyqtSignal(str, object, str)  # package, icon, label
+        # Resolved metadata for a whole batch: list of
+        # (package, icon path|None, label). One hop per background sweep so
+        # the QML grid rebuilds once, not once per app.
+        appInfoReady = pyqtSignal(object)
         adbBinaryChanged = pyqtSignal(str)
         portraitChanged = pyqtSignal(str, bool)
         engineLockedChanged = pyqtSignal(bool)
@@ -304,6 +307,12 @@ class PanelController(QObject):
         def adbBinary(self) -> str:
                 """adb shared by device polling, install checks and spawns."""
                 return self._adb_binary
+
+        @pyqtProperty(str, constant=True)
+        def mirrorKey(self) -> str:
+                """Session key for whole-device mirroring (QML hides its
+                portrait toggle: a physical display has no orientation)."""
+                return MIRROR_KEY
 
         @pyqtProperty(bool, notify=engineLockedChanged)
         def engineLocked(self) -> bool:
@@ -515,24 +524,38 @@ class PanelController(QObject):
         @pyqtSlot(str, object)
         def _apply_icon(self, package: str, icon_path: object) -> None:
                 """Adopt one resolved icon path (queued from the icon worker)."""
-                if icon_path:
-                        self._update_app_entry(package, icon=_icon_url(icon_path))
+                if icon_path and self._patch_app_entry(package, icon=_icon_url(icon_path)):
+                        self.appsChanged.emit()
 
-        @pyqtSlot(str, object, str)
-        def _apply_app_info(self, package: str, icon_path: object, label: str) -> None:
-                """Adopt resolved metadata: real label, icon when available."""
-                fields: dict[str, str] = {"label": label}
-                if icon_path:
-                        fields["icon"] = _icon_url(icon_path)
-                self._update_app_entry(package, **fields)
+        @pyqtSlot(object)
+        def _apply_app_info(self, batch: object) -> None:
+                """Adopt resolved metadata for a batch of apps (worker hop).
 
-        def _update_app_entry(self, package: str, **fields: str) -> None:
-                """Patch one model entry and notify the QML bindings."""
+                Every entry lands in the model before the single
+                ``appsChanged`` emit, so QML rebuilds the grid once per
+                sweep instead of once per app (the widgets-era grid only
+                swapped icons in place; a QVariantList model cannot).
+                """
+                assert isinstance(batch, list)
+                changed = False
+                for package, icon_path, label in batch:
+                        fields: dict[str, str] = {"label": label}
+                        if icon_path:
+                                fields["icon"] = _icon_url(icon_path)
+                        changed = self._patch_app_entry(package, **fields) or changed
+                if changed:
+                        self.appsChanged.emit()
+
+        def _patch_app_entry(self, package: str, **fields: str) -> bool:
+                """Patch one model entry in place; False = unknown package.
+
+                Emits nothing: callers batch patches and notify once.
+                """
                 for entry in self._apps:
                         if str(entry["package"]) == package:
                                 entry.update(fields)
-                                self.appsChanged.emit()
-                                return
+                                return True
+                return False
 
         def _set_status(self, text: str) -> None:
                 self._status_text = text
@@ -577,11 +600,16 @@ class PanelController(QObject):
                         self.allAppsReady.emit(packages)
                         # Sequential background resolution: real icon + label
                         # per app (cached in the data dir after first pass).
+                        # The whole sweep accumulates and hops ONCE: N per-app
+                        # emits would mean N full grid rebuilds in QML.
+                        batch: list[tuple[str, object, str]] = []
                         for package in packages:
                                 try:
                                         info = app_info(adb, package)
                                 except Exception:
                                         continue
-                                self.appInfoReady.emit(package, info.icon_path, info.label)
+                                batch.append((package, info.icon_path, info.label))
+                        if batch:
+                                self.appInfoReady.emit(batch)
 
                 threading.Thread(target=work, daemon=True).start()

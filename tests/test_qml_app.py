@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import duo.ui.controller as controller_mod  # noqa: E402
 from duo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
-from duo.ui.controller import PanelController  # noqa: E402
+from duo.ui.controller import MIRROR_KEY, PanelController  # noqa: E402
 
 SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 
@@ -198,6 +198,42 @@ def test_settings_api_save_reports_problems(settings_file, qapp):
         assert not Path(settings_file).exists()
 
 
+def test_settings_api_folds_whole_js_doubles(settings_file, qapp):
+        """QML numbers are always JS doubles; _number folds whole ones to int.
+
+        Without the fold, json writes ``120.0`` and validate() would reject
+        every int field coming back from the QML page.
+        """
+        api = SettingsApi()
+        problems = api.save({
+                "scrcpy_path": "",
+                "adb_path": "",
+                "fps": 120.0,
+                "bitrate_mbps": 8.0,
+                "dpi": 400.0,
+                "corner_mode": "system",
+                "corner_size_dip": 64.0,
+                "glass_enabled": True,
+        })
+        assert problems == []
+        raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
+        assert raw["fps"] == 120 and isinstance(raw["fps"], int)
+        assert raw["corner_size_dip"] == 64
+        loaded = api.load()
+        assert loaded["fps"] == 120 and isinstance(loaded["fps"], int)
+        assert loaded["dpi"] == 400 and isinstance(loaded["dpi"], int)
+
+
+def test_settings_api_load_problems(settings_file, qapp):
+        """Corrupt settings.json surfaces via loadProblems() (the red bar)."""
+        api = SettingsApi()
+        assert api.loadProblems() == []          # missing file: no problems
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text("{not json", encoding="utf-8")
+        problems = api.loadProblems()
+        assert problems and "settings.json" in problems[0]
+
+
 # --------------------------------------------------- ④ controller → QML bind
 
 
@@ -228,7 +264,7 @@ def test_controller_bindings_drive_qml(qapp, no_adb, prefs_stub, settings_file):
                 assert mirror.property("enabled") is True
                 exit_code: list[int | None] = [None]
                 proc = SimpleNamespace(poll=lambda: exit_code[0], terminate=lambda: None)
-                controller._sessions["__device_mirror__"] = proc  # type: ignore[assignment]
+                controller._sessions[MIRROR_KEY] = proc  # type: ignore[assignment]
                 controller._emit_sessions()
                 _pump(50)
                 assert controller.engineLocked is True
@@ -294,3 +330,44 @@ def test_settings_page_save_accepts_with_real_api(settings_page):
         assert meta.indexOfMethod("saveChanges()") >= 0
         meta.invokeMethod(settings_page, "saveChanges")
         assert accepted == [True]
+
+
+def test_settings_page_cancel_discards_changes(settings_page, settings_file):
+        """取消 = 回填 + cancelled()：改动既不保留也不落盘（旧 widgets 行为）。"""
+        cancelled: list[bool] = []
+        settings_page.cancelled.connect(lambda: cancelled.append(True))
+        adb_field = settings_page.findChild(QObject, "adbPathField")
+        assert adb_field is not None
+        adb_field.setProperty("text", r"C:\临时\adb.exe")
+        meta = settings_page.metaObject()
+        assert meta.indexOfMethod("cancelChanges()") >= 0
+        meta.invokeMethod(settings_page, "cancelChanges")
+        assert adb_field.property("text") == ""
+        assert cancelled == [True]
+        assert not Path(settings_file).exists()
+
+
+def test_settings_page_dpi_auto_disables_number_box(settings_page):
+        """DPI 自动开 = 数字框禁用（自动跟随显示），关 = 可编辑。"""
+        dpi_auto = settings_page.findChild(QObject, "dpiAutoSwitch")
+        dpi_box = settings_page.findChild(QObject, "dpiBox")
+        assert dpi_auto is not None and dpi_box is not None
+        assert dpi_auto.property("checked") is True
+        assert dpi_box.property("enabled") is False
+        dpi_auto.setProperty("checked", False)
+        assert dpi_box.property("enabled") is True
+        dpi_auto.setProperty("checked", True)
+        assert dpi_box.property("enabled") is False
+
+
+def test_settings_page_engine_locked_disables_engine_rows(settings_page):
+        """engineLocked（会话运行中）禁用引擎路径行（QML 页同 widgets 版）。"""
+        adb_field = settings_page.findChild(QObject, "adbPathField")
+        assert adb_field is not None
+        assert adb_field.property("enabled") is True
+        settings_page.setProperty("engineLocked", True)
+        _pump(30)
+        assert adb_field.property("enabled") is False
+        settings_page.setProperty("engineLocked", False)
+        _pump(30)
+        assert adb_field.property("enabled") is True

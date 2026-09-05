@@ -8,6 +8,8 @@
 //       load() -> QVariantMap             键同 duo/core/settings.py 的 Settings 字段：
 //                                         scrcpy_path / adb_path / fps / bitrate_mbps /
 //                                         dpi / corner_mode / corner_size_dip / glass_enabled
+//       loadProblems() -> QVariantList    读取 settings.json 的问题清单（空 = 正常）；
+//                                         页面打开时经 problemBar 红条展示（同 widgets 版）
 //       save(QVariantMap) -> QVariantList 问题清单（空数组 = 已保存）
 //       probe(tool: str, path: str)       异步检测；完成后发：
 //         signal probeDone(string tool, bool ok, string detail)
@@ -34,21 +36,25 @@ Item {
     signal accepted()
     signal cancelled()
 
+    // Esc 关页 = 取消（QDialog reject 的既有习惯；Shortcut 不依赖焦点；
+    // sequences 复数形式，避免 StandardKey.Cancel 多键绑定的告警）
+    Shortcut {
+        sequences: [StandardKey.Cancel]
+        onActivated: root.cancelChanges()
+    }
+
     // --------------------------------------------------------------- 页面状态
     // 引擎锁：Main.qml 绑 ctrl.engineLocked；true 时引擎路径行禁用 + 提示条
     property bool engineLocked: false
-    property var problems: []          // save() 返回的问题清单（红条内容）
+    property var problems: []          // save()/loadProblems() 的问题清单（红条内容）
     property string cornerMode: "system"   // system | g2 | none
     property bool glassOn: true            // 液态玻璃
 
-    // 内容完整展示所需高度（独立出图时自动加高窗口用；应用内由
-    // StackView 尺寸 + 滚动接管）
-    readonly property real contentNeededHeight: contentCol.implicitHeight + 104
-
     // ------------------------------------------------------------ 真实合同调用
-    // 打开/取消时用 load() 回填（取消即放弃改动）
+    // 打开/取消时用 load() 回填（取消即放弃改动）；载入问题一并上红条。
     // 回填；缺省值同旧 widgets 页（load 永不 raise，缺失键走默认）
     function reloadFromApi() {
+        root.problems = settingsApi.loadProblems()
         var m = settingsApi.load()
         scrcpyRow.text = (m.scrcpy_path == null) ? "" : m.scrcpy_path
         adbRow.text = (m.adb_path == null) ? "" : m.adb_path
@@ -85,6 +91,12 @@ Item {
         }
         root.problems = []
         root.accepted()
+    }
+
+    // 取消：回填放弃改动 + 发 cancelled（返回键、取消按钮、Esc 共用）
+    function cancelChanges() {
+        root.reloadFromApi()
+        root.cancelled()
     }
 
     // FileDialog 返回 URL，转本地路径（file:///C:/x → C:/x，file:///home → /home）
@@ -137,10 +149,7 @@ Item {
                                     : (backBtn.hovered ? Style.hoverWash : "transparent")
                 Behavior on color { ColorAnimation { duration: 140 } }
             }
-            onClicked: {
-                root.reloadFromApi()   // 返回即放弃改动
-                root.cancelled()
-            }
+            onClicked: root.cancelChanges()
         }
         Text {
             text: "设置"
@@ -173,7 +182,7 @@ Item {
             width: scroller.availableWidth
             spacing: 10
 
-            // 保存问题红条（空清单时隐藏）
+            // 保存/载入问题红条（空清单时隐藏）
             Rectangle {
                 id: problemBar
                 objectName: "problemBar"
@@ -184,7 +193,7 @@ Item {
                 border.width: 1
                 border.color: Qt.alpha(Style.danger, 0.35)
                 height: visible ? problemText.implicitHeight + 20 : 0
-                Accessible.name: "保存问题"
+                Accessible.name: "设置问题"
                 Text {
                     id: problemText
                     anchors.top: parent.top
@@ -291,6 +300,7 @@ Item {
                         }
                         NumberBox {
                             id: dpiBox
+                            objectName: "dpiBox"
                             width: parent.width
                             from: 120
                             to: 640
@@ -536,10 +546,7 @@ Item {
                 text: "取消"
                 width: 76
                 Accessible.name: "取消"
-                onClicked: {
-                    root.reloadFromApi()   // 放弃改动：用 mock load 回填
-                    root.cancelled()
-                }
+                onClicked: root.cancelChanges()   // 放弃改动：回填 + cancelled
             }
             PrimaryButton {
                 objectName: "saveButton"
@@ -585,6 +592,10 @@ Item {
             MultiEffect {
                 anchors.fill: cardBg
                 source: cardBg
+                // TODO(观感)：MultiEffect 与可见的 cardBg 兄弟节点叠加，GPU
+                // 后端上半透明卡被画两次（透明度复合后偏深），与跳过着色器的
+                // 软件后端观感不一致。低风险修法：把源换成一份 visible:false
+                // 的快照（ShaderEffectSource）再喂给 MultiEffect。
                 shadowEnabled: true
                 shadowColor: Style.cardShadow
                 shadowBlur: 0.65
@@ -821,7 +832,8 @@ Item {
         width: parent.width
         spacing: 6
 
-        Item {  // 行首字段名，行尾短结果标签（绿“可用 · 版本”/红“未找到”）
+        Item {  // 行首字段名，行尾短结果标签（绿“✓ 版本/✓ 可执行”，
+                // 红“✗ 无法运行…/✗ 未在 PATH…”）
             width: parent.width
             height: 20
             CaptionText {
@@ -903,11 +915,16 @@ Item {
                 if (doneTool !== prow.tool)
                     return
                 prow.probing = false
+                // 文案对齐 widgets 版：区分“填了路径但无法运行”与
+                // “PATH 里没有，可手动填写”两种可指导性错误
                 if (ok) {
-                    prow.statusText = "可用 · " + detail
+                    prow.statusText = detail !== "" ? "✓ " + detail : "✓ 可执行"
                     prow.statusColor = Style.success
+                } else if (field.text.trim() !== "") {
+                    prow.statusText = "✗ 无法运行，请检查路径"
+                    prow.statusColor = Style.danger
                 } else {
-                    prow.statusText = "未找到"
+                    prow.statusText = "✗ 未在 PATH 找到，可手动填写路径"
                     prow.statusColor = Style.danger
                 }
             }
