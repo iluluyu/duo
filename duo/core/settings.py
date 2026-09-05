@@ -38,7 +38,9 @@ class Settings:
         fps: int | None = 90
         bitrate_mbps: int | None = 30
         dpi: int | None = None
-        corner_mode: str = "g2"        # g2 = pixel-verified quartic region
+        corner_mode: str = "system"    # system = DWM default rounding;
+                                         # g2 = quartic region, long-term goal
+                                         # (edge quality/clipping unresolved)
         corner_size_dip: int = 48      # iPhone/iPad-like squircle proportion
         glass_enabled: bool = True
 
@@ -161,7 +163,12 @@ def save_settings(settings: Settings) -> None:
 
 
 def corner_radius_dip(settings: Settings) -> int:
-        """Overlay corner radius for a session (0 = no region)."""
+        """Overlay corner radius for a session (0 = no region).
+
+        Only the experimental ``g2`` mode requests a region; ``system``
+        (the default) and ``none`` keep the window untouched so Windows'
+        own DWM rounding applies.
+        """
         if settings.corner_mode != "g2":
                 return 0
         return settings.corner_size_dip
