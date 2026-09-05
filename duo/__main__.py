@@ -292,7 +292,8 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--corner-radius",
                 type=int,
                 default=None,
-                help="G2 corner radius in DIP (settings/48, iPhone-like squircle; 0 disables)",
+                help="experimental G2 corner radius in DIP; default follows "
+                     "settings (system rounding). 0 disables, 48 = iPhone-like",
         )
 
         return parser

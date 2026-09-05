@@ -39,6 +39,14 @@ def test_missing_file_gives_defaults(tmp_path, monkeypatch):
         assert loaded == Settings()
 
 
+def test_default_corner_mode_is_system_rounding():
+        """Out of the box we keep Windows' own DWM rounding: the G2 region
+        path stays opt-in until its edge quality is solved (long-term goal)."""
+        fresh = Settings()
+        assert fresh.corner_mode == "system"
+        assert corner_radius_dip(fresh) == 0
+
+
 def test_corrupt_file_falls_back_with_problem(tmp_path, monkeypatch):
         monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
         (tmp_path / "s.json").write_text("{not json", encoding="utf-8")

@@ -1025,16 +1025,12 @@ namespace DuoChrome
                     int cy = wy + (top ? r : -r);
                     int sx = left ? -1 : 1;
                     int sy = top ? -1 : 1;
-                    // Edge treatment (prior art: SO #4425595 - Win32 regions are
-                    // aliased; "use a bitmap with alpha transparency to simulate
-                    // the anti-aliasing"): a crisp hairline right on the region
-                    // cut, then a soft shadow ramp fading outward so the +-1px
-                    // staircase band dissolves into what reads as a natural
-                    // window shadow. Not copied code - technique reference.
-                    StrokeArc(g, cx, cy, sx, sy, r + 0.2f * dpi, 1.1f * dpi, 150);
-                    StrokeArc(g, cx, cy, sx, sy, r + 1.2f * dpi, 2.2f * dpi, 80);
-                    StrokeArc(g, cx, cy, sx, sy, r + 3.0f * dpi, 3.0f * dpi, 45);
-                    StrokeArc(g, cx, cy, sx, sy, r + 5.2f * dpi, 4.5f * dpi, 22);
+                    // The region underneath is binary, so broad shadow ramps make
+                    // the edge look like a dirty halo and become visibly detached
+                    // during resize. Keep only a narrow, low-alpha anti-alias pass;
+                    // the mask must hide the staircase, not paint a fake shadow.
+                    StrokeArc(g, cx, cy, sx, sy, r + 0.15f * dpi, 1.35f * dpi, 105);
+                    StrokeArc(g, cx, cy, sx, sy, r + 1.0f * dpi, 1.6f * dpi, 45);
                 }
                 PushGhostBitmap(bmp);
             }
