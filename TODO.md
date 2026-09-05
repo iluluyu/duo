@@ -69,9 +69,22 @@
 - [ ] **需 Windows 实测**：`scripts/build_windows.ps1` 构建 `dist\Duo\`，按同文档「打包构建与产物校验」清单核对（QML/overlay 资源入包、Duo.exe 直启与带参路由、设置持久化、图标）。
 - [ ] **需 Windows 实测**：按 [docs/validation/window-experience.md](docs/validation/window-experience.md) §3 清单实测并回填验证记录（拖拽手感、DPI、多窗口、断线清理、打包版行为）。
 
+### 7. P1 — 虚拟屏 HOME 语义与直达应用（调研完成，待实现）
+
+> 2026-09-05 真机调研（OPD2409 / Android 16 / scrcpy 4.1）完成，根因与方案见 [docs/window-experience.md §7](docs/window-experience.md)。要点：选择器 = AOSP SecondaryDisplayLauncher（`CATEGORY_SECONDARY_HOME` 唯一 handler），HOME 键全局落物理屏（display 定向注入已证伪），`--start-app` 无 `+` 在应用已运行时不落虚拟屏（真实 bug）。
+
+- [ ] `engine.py`：flex/fixed 会话默认加 `--no-vd-system-decorations`；`--start-app` 一律带 `+` 前缀；更新 argv 断言测试（两个旗标都不能只断言源码包含关键字，要断言拼装结果）。
+- [ ] 会话日志解析 display id（`[server] INFO: New display: ... (id=N)`，尾读通道现成），面板"运行中点应用"改走 `am start --display N -n <resolved>`（resolve-activity 预解析），不重建会话；日志缺失时降级提示。
+- [ ] chin ○ / HOME 按钮语义保持：虚拟屏上永不发 keyevent 3（长按=关窗现状不变），tooltip 注明"HOME = 回 Duo 面板"；scrcpy 内置 MOD+h/中键的焦点漂移记为已知限制。
+- [ ] **需 Windows 实测**：空 flex 会话（无 `--app`）在 decorations 关闭后整屏无帧，确认 Texture 通道静默时窗口/overlay 的降级体验，再决定空 flex 是否保留 decorations（现默认关）。
+- [ ] **需 Windows 实测**：中文输入乱象是否复现（uhid 键盘下候选窗落物理屏），决定是否加 `--display-ime-policy=local`。
+
+**完成标准**：flex/fixed 会话从启动到退出全程不出现 SecondaryDisplayLauncher（应用选择器）；重复开会话（应用已在物理屏运行）仍能直达应用；HOME/chin 语义有 UI 说明。
+
 ## 当前基线
 
 - 2026-09-05：Task 1 全部落地（比例锁定/热区/收敛/日志尾读）；G2 圆角已验证可裁切但**已回退**（见上）；设置核心层（settings.py + CLI 贯通）完成。默认系统圆角，无区域/遮罩开销。
+- 2026-09-05：虚拟屏 HOME 语义真机调研完成（纯调研，未改行为）：选择器根因 = `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` + AOSP SecondaryDisplayLauncher；HOME 全局拦截无解；`--start-app` 需 `+` 前缀。方案与成本/风险见 docs/window-experience.md §7，任务列入上方 §7。
 - `.venv/bin/python -m pytest -q`：**85 passed**；ruff / mypy 全绿。仍不证明 Windows 交互（拖拽手感、收敛观感、DPI）通过——见验证清单。
 - 旧 `plan.md` 的“已完成”与当前用户反馈存在差异：以当前 Windows 复现和新证据为准。
 

@@ -182,3 +182,57 @@ KISS 生效策略：设置页内预览即时；保存后新会话读取。已有
 自动测试建议：`python -m pytest -q`、`ruff check duo tests`；Windows 编译并测试真实 C# 几何函数，补充交互脚本。现有 CI 安装 `.[dev]`，但 GUI 测试导入 PyQt6，需检查干净环境并补 `.[dev,gui]` 安装或明确分拆 GUI 测试。历史 lint 问题应单列，不混入本轮全仓格式化。
 
 本轮已运行：`.venv/bin/python -m pytest -q`，**74 passed**；ruff / mypy 全绿；C# overlay 经 csc.exe 现场编译通过；真实 mirror 会话冒烟验证（尺寸通道 1.5s 生效、ADB 钉死无重启循环）。未运行 Windows 交互验证（拖拽手感/收敛观感/DPI）、G2 原型或视觉性能验证。
+
+## 7. 虚拟屏 HOME 语义（2026-09-05 真机调研）
+
+> 用户反馈：flex 虚拟屏里出现混乱的"应用选择器"、HOME 行为诡异。本节为**纯调研**（不改产品行为），在 OPD2409 / ColorOS Android 16 (SDK 36) / scrcpy 4.1 真机上实测，全部结论来自实机 dumpsys/截图/日志，非文档转述。复现命令见 §7.5，实验后已清理设备现场。
+
+### 7.1 根因链（全部实测）
+
+1. **scrcpy `--new-display` 创建的虚拟屏带系统装饰标志**。`dumpsys display displays` 实测该屏 flags：`FLAG_PRESENTATION, FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS, FLAG_TRUSTED, FLAG_OWN_DISPLAY_GROUP, FLAG_ALWAYS_UNLOCKED, FLAG_DESTROY_CONTENT_ON_REMOVAL`。
+2. **带 `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` 的副屏会自动拉起 per-display home**，解析走 `android.intent.category.SECONDARY_HOME`（非普通 CATEGORY_HOME）。本机**唯一** handler 是 `com.android.launcher/com.android.launcher3.secondarydisplay.SecondaryDisplayLauncher`（`cmd package query-activities -c android.intent.category.SECONDARY_HOME` 仅 1 条）。这是 **AOSP Launcher3 内置的副屏选择器**：实测画面 = 整屏壁纸 + 右下角一个孤零零九宫格按钮，与 ColorOS 桌面完全两个世界——这就是用户看到的"应用选择器"。它**不是**可配置的系统桌面，ColorOS 主 launcher 不参与副屏。
+3. **HOME 键是全局拦截，与来源 display 无关**。在虚拟屏上注入 `input -d <id> keyevent KEYCODE_HOME`（等效 scrcpy MOD+h / 中键 / 任何"发 HOME"按钮）：焦点与全局 resumed **立即跳到 display 0 的物理桌面**（`topDisplayFocusedRootTask=Task{#1 type=home}`），而虚拟屏画面不变（前后截图仅时钟级像素差）——应用失去焦点进入 paused，用户视角即"HOME 没反应 / 应用假死"。因此**任何 display 定向的 HOME 注入都无解**（定向注入已实测同样漂移；HOME 由 PhoneWindowManager 全局截获，落到物理屏）。overlay 现行"虚拟屏上 chin 长按 = 关窗"是当前唯一正确的 HOME 替代语义，调研反而补强了它的依据（见 `chrome_overlay.cs` `ChinHold()` 注释）。
+4. **`--start-app`（无 `+`）在应用已有存活 task 时不落虚拟屏**。实测：不背单词已在物理屏运行时，二次会话 `--start-app=pkg` 日志声称 `Starting app ... on display 157...`，但 task 留在原处（"delivered to running instance"），157 上 resumed 的仍是选择器。加 `+` 前缀（force-stop 后启动）后 task 稳定落在新屏并 resumed。这正是"背单词模式开第二次只见选择器"的产品级 bug。
+5. **会话退出 = 虚拟屏内容销毁**（默认 `FLAG_DESTROY_CONTENT_ON_REMOVAL`；实测退出后 task 记录消失、应用进程转缓存）。`--no-vd-destroy-content` 可改为搬回物理屏（设备端"服务器"语义），本轮不动默认值。
+6. 附带实测：从虚拟屏会话中 `am start --display <id>` 可**跨屏搬移已存在的 task**（QQ 从 display 0 搬到 158 并 resumed）；虚拟屏销毁后 task 回落到 display 0。
+
+### 7.2 逐项结论（对照调研提纲）
+
+| 方向 | 结论 |
+|---|---|
+| ① Android 虚拟屏 launcher 行为（Android 16） | 副屏 home = `CATEGORY_SECONDARY_HOME` 唯一 handler（AOSP SecondaryDisplayLauncher），非 OEM 桌面；HOME 全局落 display 0；副屏 task 随屏销毁。 |
+| ② scrcpy 4.1 旗标 | `--new-display[=WxH/DPI]`、`--flex-display`（无尺寸时默认 1280x960/160）；`--start-app=+pkg/?名`（`+`=先 force-stop）；`--no-vd-system-decorations`（关掉系统装饰 → **选择器永不出现**，无应用时整屏无帧）；`--no-vd-destroy-content`（退出改搬回物理屏）；`--display-ime-policy=local`（输入法落在虚拟屏，默认 fallback=物理屏）；无"运行时切应用"控制消息。 |
+| ③ adb 控制面 | `am start --display <id>` 可启动/搬移应用到虚拟屏 ✅；`input keyevent -d <id>` 对 HOME 无效（全局拦截，见 §7.1.3）❌；`cmd package set-home-activity` 改的是**全局默认 launcher**（会动用户物理桌面，禁用）❌；`settings global` 无 per-display home 键 ❌。→ **adb 侧无法给虚拟屏配独立 home**。 |
+| ④ Duo KISS 方案 | 见 §7.3。 |
+
+### 7.3 推荐方案（含成本/风险）
+
+| # | 方案 | 成本 | 风险 |
+|---|---|---|---|
+| R1 | **引擎两行**：flex/fixed 会话默认 `--no-vd-system-decorations`；`--start-app` 一律带 `+` 前缀。选择器从根上消失（无装饰 → 系统不建 home task，实测 159 号屏无 type=home task、应用直达） | `engine.py` 两处小改 + argv 断言测试更新 | 无应用会话**整屏无帧**（官方文档明示），Texture 尺寸通道静默、窗口黑屏——空 flex 体验需产品确认（见 TODO 任务 7）；`+` 会 force-stop 应用（丢运行态，对背单词类无害）；OEM 差异需一台非 ColorOS 设备抽查 |
+| R2 | **HOME 永不注入虚拟屏**：chin ○ 长按 = 关窗（现状保持）；GUI/快捷键上的 HOME 按钮在 flex/fixed 下映射为"回 Duo 面板"而非发键 | 面板路由小改；tooltip 说明 | scrcpy 内置 MOD+h / 中键无法逐键禁用（仅 `--shortcut-mod` 换修饰键），窗口聚焦时按下仍会触发"焦点漂移到物理屏"——画面不变但应用 paused；影响限于 scrcpy 原生快捷键，记录为已知限制 |
+| R3 | **会话内切应用走 adb**：会话日志已输出 `[server] INFO: New display: 1200x1600/280 (id=N)`（stderr → SessionSpec 日志，尾读通道现成），解析出 display id 后 `am start --display N -n <pkg>/<activity>`（`cmd package resolve-activity` 预解析；可搬已运行应用，无需重建会话） | Python 侧正则一行 + spawn adb 一处 | scrcpy 4.1 无运行时切应用消息，adb 通道是唯一正道；需处理 display id 未知（日志缺失）时降级为"提示重建会话" |
+| R4 | **中文输入（待实测）**：uhid 键盘下设备输入法候选窗默认落在物理屏（`--display-ime-policy` 默认 fallback）；若 Windows 实测复现乱象，加 `--display-ime-policy=local` | 一个旗标 | 需真机验证；OEM 输入法对 `local` 的支持未证 |
+
+### 7.4 明确不做
+
+- `cmd package set-home-activity`：改全局默认 launcher，会接管用户物理桌面。
+- 给虚拟屏装第三方 `SECONDARY_HOME` launcher（Fossify Home 等）：多装一个包、风格割裂，且 R1 已让 home task 不再创建；未来若要"虚拟屏完整 Android 桌面"再评估。
+- 任何"display 定向 HOME"：已证伪（§7.1.3），不是实现问题而是系统语义。
+
+### 7.5 复现命令（供验证者）
+
+```bash
+# 无窗口保活地起一个虚拟屏（--no-window 会连视频一起关，必须用 --record 保住管线）
+scrcpy -s <serial> --new-display=1200x1600/280 --no-window --no-audio \
+  --record=exp.mp4 --video-bit-rate=1M --max-fps=5
+adb shell dumpsys display displays | grep -E 'Display id|FLAG_'   # flags / id
+adb shell cmd package query-activities -a android.intent.action.MAIN \
+  -c android.intent.category.SECONDARY_HOME --brief               # 副屏 home 候选
+adb shell input -d <id> keyevent KEYCODE_HOME                     # HOME 漂移复现
+adb shell "dumpsys activity activities | grep topDisplayFocusedRootTask"
+adb shell am start --display <id> -n <pkg>/<activity>             # 应用落屏/搬屏
+adb shell screencap -d $(dumpsys SurfaceFlinger --display-id | awk '/Virtual/{print $2}') /sdcard/x.png
+```
+
+注意：`screencap -d <逻辑id>` 在该 ColorOS 上报 "not valid"，需用 SurfaceFlinger 输出的虚拟屏 id；scrcpy 会话日志的 `New display: ... (id=N)` 行是 R3 的 display id 来源。
