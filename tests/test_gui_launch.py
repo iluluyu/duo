@@ -71,10 +71,10 @@ def test_launch_argv_frozen_routes_through_exe(monkeypatch):
 
 def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
         """Prefs persist as JSON; defaults come back when the file is absent."""
-        from duo.ui import main_window
+        from duo.ui import controller  # prefs logic was migrated here
 
         stub = _StubFile(None)
-        monkeypatch.setattr(main_window, "_prefs_path", lambda: stub)
+        monkeypatch.setattr(controller, "_prefs_path", lambda: stub)
         prefs = load_portrait_prefs()
         assert prefs["cn.com.langeasy.LangEasyLexis"] is True  # default portrait
         prefs["tv.danmaku.bili"] = True
@@ -85,9 +85,9 @@ def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
 
 def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
         """A corrupt prefs file must not take the panel down."""
-        from duo.ui import main_window
+        from duo.ui import controller  # prefs logic was migrated here
 
-        monkeypatch.setattr(main_window, "_prefs_path", lambda: _StubFile("{not json"))
+        monkeypatch.setattr(controller, "_prefs_path", lambda: _StubFile("{not json"))
         assert load_portrait_prefs() == dict(DEFAULT_PORTRAIT)
 
 

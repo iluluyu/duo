@@ -3,19 +3,18 @@
 Design language: Apple-flavoured restraint — one accent colour, hairline
 separators, generous whitespace, no decorative chrome. The panel is a single
 column: device status, app list, one option, one status line.
+
+Since the QML migration the widgets panel owns rendering only: devices,
+catalog, sessions, portrait prefs and adb resolution live in
+:mod:`duo.ui.controller` and reach this window through one PanelController.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
-import threading
-from collections.abc import Callable
-from pathlib import Path
 from string import Template
 
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import (
         QCloseEvent,
         QColor,
@@ -42,36 +41,39 @@ from PyQt6.QtWidgets import (
         QWidget,
 )
 
-from duo.core.apps import Adb, AdbError, app_info
-from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import probe
-from duo.core.paths import data_dir
 from duo.core.settings import load_settings, resolve_adb_path
-from duo.core.winproc import creation_flags
+from duo.ui.controller import (
+        APP_CATALOG,
+        DEFAULT_PORTRAIT,
+        MIRROR_KEY,
+        PanelController,
+        build_device_mirror_argv,
+        build_launch_argv,
+        elide_label,
+        load_portrait_prefs,
+        package_to_label,
+        save_portrait_prefs,
+        session_label,
+)
 from duo.ui.settings_page import SettingsPage
 from duo.ui.tokens import INK_3, QSS_TOKENS
 
-#: Session key for whole-device mirroring (not an app package).
-MIRROR_KEY = "__device_mirror__"
-
-
-def package_to_label(package: str) -> str:
-        """Human-ish fallback label for uncataloged packages."""
-        tail = package.rsplit(".", 1)[-1]
-        return tail[:1].upper() + tail[1:]
-
-
-def elide_label(label: str, limit: int = 6) -> str:
-        """Shorten a label to fit under a mini icon."""
-        return label if len(label) <= limit else label[: limit - 1] + "…"
-
-#: Small curated catalog; filtered against installed packages at startup.
-APP_CATALOG: list[tuple[str, str]] = [
-        ("不背单词", "cn.com.langeasy.LangEasyLexis"),
-        ("哔哩哔哩", "tv.danmaku.bili"),
-        ("微信", "com.tencent.mm"),
-        ("WPS Office", "cn.wps.moffice_eng"),
-        ("微信读书", "com.tencent.weread"),
+#: Names this module used to define itself; they are single-sourced in
+#: controller.py now. Re-exported here so widgets-era imports (tests,
+#: scripts) keep working unchanged.
+__all__ = [
+        "APP_CATALOG",
+        "DEFAULT_PORTRAIT",
+        "MIRROR_KEY",
+        "PanelController",
+        "build_device_mirror_argv",
+        "build_launch_argv",
+        "elide_label",
+        "load_portrait_prefs",
+        "package_to_label",
+        "save_portrait_prefs",
+        "session_label",
 ]
 
 _STYLE_TMPL = """
@@ -85,7 +87,7 @@ QFrame#card {
         border-radius: ${radiusCard}px;
 }
 QFrame#hairline { background: $hairline; max-height: 1px; border: none; }
-QLabel#dot { border-radius: 5px; background: #D2D2D7; }
+QLabel#dot { border-radius: 5px; background: $ink3; }
 QLabel#dot[state="device"] { background: $success; }
 QLabel#dot[state="offline"], QLabel#dot[state="unauthorized"] { background: $warn; }
 QLabel#device-name { color: $ink; font-size: 14px; font-weight: 600; }
@@ -96,7 +98,7 @@ QPushButton#app-icon {
 QPushButton#app-icon:hover { background: $hoverWash; }
 QPushButton#app-icon:pressed { background: $pressWash; }
 QPushButton#app-icon:focus { background: $hoverWash; }
-QPushButton#app-icon:disabled { color: #E5E5EA; }
+QPushButton#app-icon:disabled { color: $ink3; }
 QPushButton#device-mirror {
         background: $accent; border: 1px solid transparent; border-radius: 12px;
         color: #FFFFFF; font-size: 14px; font-weight: 600; padding: 11px 0;
@@ -135,122 +137,6 @@ QToolButton#gear:focus { background: $hoverWash; border-color: $accent; }
 """
 STYLE = Template(_STYLE_TMPL).substitute(QSS_TOKENS)
 
-_STATE_TEXT = {
-        "device": "在线",
-        "offline": "离线",
-        "unauthorized": "未授权 USB 调试",
-        "recovery": "recovery 模式",
-}
-
-#: Per-app portrait defaults (reading/vocabulary apps want a tall phone).
-DEFAULT_PORTRAIT: dict[str, bool] = {
-        "cn.com.langeasy.LangEasyLexis": True,
-        "com.tencent.weread": True,
-}
-
-
-def _prefs_path() -> Path:
-        return data_dir() / "gui_prefs.json"
-
-
-def load_portrait_prefs() -> dict[str, bool]:
-        """Read the persisted per-app portrait choices (missing = defaults)."""
-        try:
-                raw = json.loads(_prefs_path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-                return dict(DEFAULT_PORTRAIT)
-        saved = raw.get("portrait", {})
-        merged = dict(DEFAULT_PORTRAIT)
-        merged.update({k: bool(v) for k, v in saved.items()})
-        return merged
-
-
-def save_portrait_prefs(prefs: dict[str, bool]) -> None:
-        """Persist the per-app portrait choices for the next run."""
-        _prefs_path().parent.mkdir(parents=True, exist_ok=True)
-        _prefs_path().write_text(
-                json.dumps({"portrait": prefs}, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-
-def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
-        """The mirror argv for a panel launch.
-
-        Every panel window gets the borderless chrome. Audio is always
-        requested - the CLI arbitrates ownership (single capture) via the
-        audio lock, so the panel stays out of that policy. Under PyInstaller
-        ``sys.executable`` IS the frozen duo binary, so sessions spawn as
-        ``Duo.exe mirror ...`` and route through the CLI entry.
-        """
-        frozen = getattr(sys, "frozen", False)
-        argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
-        argv += [
-                "mirror",
-                "--app",
-                package,
-                "--serial",
-                serial,
-                "--chrome",
-        ]
-        if portrait:
-                argv.append("--portrait")
-        return argv
-
-
-def build_device_mirror_argv(serial: str) -> list[str]:
-        """The argv for direct device mirroring (no virtual display)."""
-        frozen = getattr(sys, "frozen", False)
-        argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
-        argv += [
-                "mirror",
-                "--display",
-                "mirror",
-                "--serial",
-                serial,
-                "--chrome",
-                "--title",
-                "平板镜像",
-        ]
-        return argv
-
-
-class _Bridge(QObject):
-        """Marshals monitor callbacks into the Qt event loop."""
-
-        devices_changed = pyqtSignal(object)
-        apps_resolved = pyqtSignal(object)
-        icon_ready = pyqtSignal(str, object)
-        all_apps_ready = pyqtSignal(object)
-        all_icon_ready = pyqtSignal(str, object, str)
-        adb_resolved = pyqtSignal(str)
-
-
-def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> None:
-        """Background check of which catalog apps are installed."""
-
-        def work() -> None:
-                try:
-                        result = subprocess.run(
-                                [adb_binary, "shell", "pm list packages"],
-                                capture_output=True,
-                                text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                                timeout=8,
-                                check=False,
-                                creationflags=creation_flags(),
-                        )
-                        installed = {
-                                line.removeprefix("package:").strip()
-                                for line in result.stdout.splitlines()
-                                if line.startswith("package:")
-                        }
-                except (OSError, subprocess.TimeoutExpired):
-                        installed = set()
-                done(installed)
-
-        threading.Thread(target=work, daemon=True).start()
-
 
 def _label(text: str, name: str) -> QLabel:
         """A QLabel with a QSS objectName set explicitly (stub-friendly)."""
@@ -260,41 +146,34 @@ def _label(text: str, name: str) -> QLabel:
 
 
 class MainWindow(QMainWindow):
-        """The Duo launcher panel."""
+        """The Duo launcher panel (rendering only; logic in PanelController)."""
 
         def __init__(self, adb_binary: str) -> None:
                 super().__init__()
-                self._adb_binary = adb_binary
-                self._bridge = _Bridge()
-                self._bridge.devices_changed.connect(self._on_devices)
-                self._bridge.apps_resolved.connect(self._on_apps)
-                self._bridge.all_apps_ready.connect(self._on_all_apps)
-                self._bridge.all_icon_ready.connect(self._on_all_icon)
+                self._controller = PanelController(adb_binary, parent=self)
                 self._installed: set[str] | None = None
                 self._icon_buttons: dict[str, QPushButton] = {}
-                self._portrait_prefs = load_portrait_prefs()
-                self._sessions: dict[str, subprocess.Popen[bytes]] = {}
                 self._build_ui()
-                self._bridge.adb_resolved.connect(self._on_adb_resolved)
+                controller = self._controller
+                controller.devicesChanged.connect(self._on_devices)
+                controller.appsResolved.connect(self._on_apps)
+                controller.iconReady.connect(self._on_icon)
+                controller.allAppsReady.connect(self._on_all_apps)
+                controller.appInfoReady.connect(self._on_all_icon)
+                controller.statusChanged.connect(self._notify)
+                controller.sessionsChanged.connect(self._refresh_sessions)
                 shortcut = QShortcut(QKeySequence("Ctrl+,"), self)
                 shortcut.activated.connect(self._open_settings)
                 self._settings_shortcut = shortcut
+                # The controller started polling in its constructor, before
+                # these slots were connected - render the current state once.
+                self._on_devices(controller.devices)
+                self._refresh_sessions()
 
-                self._monitor = DeviceMonitor(
-                        on_change=self._bridge.devices_changed.emit,
-                        query=poll_query(adb_binary),
-                        poll_interval_s=2.0,
-                )
-                self._monitor.poll_now()
-                self._monitor.start()
-                self._bridge.icon_ready.connect(self._on_icon)
-                _resolve_installed(adb_binary, self._bridge.apps_resolved.emit)
-
-                # Reap dead sessions and refresh the running chips quietly.
-                self._reaper = QTimer(self)
-                self._reaper.setInterval(1200)
-                self._reaper.timeout.connect(self._refresh_sessions)
-                self._reaper.start()
+        @property
+        def _sessions(self):
+                """Compat view of the live session map (controller-owned)."""
+                return self._controller.sessions
 
         # ---------------------------------------------------------------- UI
 
@@ -499,7 +378,7 @@ class MainWindow(QMainWindow):
                 self._all_scroll.setFixedHeight(min(190, height))
 
         def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
-                portrait = self._portrait_prefs.get(package, False)
+                portrait = self._controller.portraitFor(package)
                 orientation = "竖屏" if portrait else "横屏"
                 button.setToolTip(f"{label} · {orientation}（右键切换）")
 
@@ -522,15 +401,16 @@ class MainWindow(QMainWindow):
 
         # ------------------------------------------------------------ events
 
-        def _on_devices(self, states: object) -> None:
-                assert isinstance(states, dict)
-                online = [s for s, state in states.items() if state == "device"]
+        def _on_devices(self, devices: object) -> None:
+                assert isinstance(devices, list)
+                entries = [entry for entry in devices if isinstance(entry, dict)]
+                online = [entry for entry in entries if entry.get("online")]
                 if online:
-                        serial = online[0]
-                        state = states[serial]
+                        head = online[0]
+                        state = str(head.get("state", ""))
                         self._dot.setProperty("state", state)
-                        self._device_name.setText(serial)
-                        self._device_state.setText(_STATE_TEXT.get(state, state))
+                        self._device_name.setText(str(head.get("serial", "")))
+                        self._device_state.setText(str(head.get("stateText", state)))
                 else:
                         self._dot.setProperty("state", "")
                         self._device_name.setText("未检测到设备")
@@ -553,35 +433,9 @@ class MainWindow(QMainWindow):
         def _on_apps(self, installed: object) -> None:
                 assert isinstance(installed, set)
                 self._installed = installed
-                self._on_devices(dict.fromkeys(self._monitor.online, "device"))
-                self._load_icons()
-                self._load_all_apps()
-
-        def _load_all_apps(self) -> None:
-                """Query every third-party package, then resolve icons lazily."""
-
-                def work() -> None:
-                        serial = next(iter(self._monitor.online), None)
-                        if not serial:
-                                return
-                        adb = Adb(self._adb_binary, serial)
-                        try:
-                                packages = adb.third_party_packages()
-                        except (AdbError, OSError):
-                                return
-                        self._bridge.all_apps_ready.emit(packages)
-                        # Sequential background resolution: real icon + label
-                        # per app (cached in the data dir after first pass).
-                        for package in packages:
-                                try:
-                                        info = app_info(adb, package)
-                                except Exception:
-                                        continue
-                                self._bridge.all_icon_ready.emit(
-                                        package, info.icon_path, info.label
-                                )
-
-                threading.Thread(target=work, daemon=True).start()
+                # Status text and icon resolution are controller-side now;
+                # the panel only refreshes button availability.
+                self._on_devices(self._controller.devices)
 
         def _on_all_apps(self, packages: object) -> None:
                 """Create letter-avatar buttons (placeholders); layout happens
@@ -644,26 +498,6 @@ class MainWindow(QMainWindow):
                 button.setText(elide_label(label))
                 button.setToolTip(f"{label} · {package}")
 
-        def _load_icons(self) -> None:
-                """Resolve icons in the background (first run pulls APKs)."""
-                installed = set(self._installed or set())
-
-                def work() -> None:
-                        serial = next(iter(self._monitor.online), None)
-                        if not serial:
-                                return
-                        adb = Adb(self._adb_binary, serial)
-                        for _, package in APP_CATALOG:
-                                if package not in installed:
-                                        continue
-                                try:
-                                        info = app_info(adb, package)
-                                except Exception:
-                                        continue
-                                self._bridge.icon_ready.emit(package, info.icon_path)
-
-                threading.Thread(target=work, daemon=True).start()
-
         def _on_icon(self, package: str, icon_path: object) -> None:
                 """Swap a letter button for the real app icon."""
                 button = self._icon_buttons.get(package)
@@ -676,72 +510,24 @@ class MainWindow(QMainWindow):
                 button.setIcon(icon)
 
         def _launch(self, package: str, label: str) -> None:
-                """Spawn a chrome-clad mirror session and track it."""
-                serial = next(iter(self._monitor.online), "")
-                if not serial:
-                        self._notify("设备未连接")
-                        return
-                self._reap_sessions()
-                if package in self._sessions:
-                        self._notify(f"{label} 已在运行")
-                        return
-                portrait = self._portrait_prefs.get(package, False)
-                argv = build_launch_argv(package, serial, portrait)
-                try:
-                        proc = subprocess.Popen(
-                                argv, start_new_session=True, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=creation_flags(),
-                        )
-                except OSError as exc:
-                        self._notify(f"启动失败：{label}（{exc}）")
-                        return
-                self._sessions[package] = proc
-                self._refresh_sessions()
-                orientation = "竖屏" if portrait else "横屏"
-                self._notify(f"已启动 {label} · {orientation}")
+                """Spawn a session via the controller (labels are derived there)."""
+                self._controller.startSession(package)
 
         def _launch_device_mirror(self) -> None:
-                """Start whole-device mirroring (physical display, no app)."""
-                serial = next(iter(self._monitor.online), "")
-                if not serial:
-                        self._notify("设备未连接")
-                        return
-                self._reap_sessions()
-                if MIRROR_KEY in self._sessions:
-                        self._notify("设备镜像已在运行")
-                        return
-                argv = build_device_mirror_argv(serial)
-                try:
-                        proc = subprocess.Popen(
-                                argv, start_new_session=True, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=creation_flags(),
-                        )
-                except OSError as exc:
-                        self._notify(f"启动失败：设备镜像（{exc}）")
-                        return
-                self._sessions[MIRROR_KEY] = proc
-                self._refresh_sessions()
-                self._notify("已启动 设备镜像")
+                """Start whole-device mirroring via the controller."""
+                self._controller.startMirror()
 
         def _toggle_portrait(self, button: QPushButton, package: str, label: str) -> None:
                 """Right-click on an app icon flips its remembered orientation."""
-                now = not self._portrait_prefs.get(package, False)
-                self._portrait_prefs[package] = now
-                save_portrait_prefs(self._portrait_prefs)
+                self._controller.togglePortrait(package)
                 self._set_app_tooltip(button, label, package)
-                orientation = "竖屏" if now else "横屏"
-                self._notify(f"{label} 将以{orientation}启动")
 
-        def _reap_sessions(self) -> None:
-                """Drop sessions whose process has exited."""
-                for package in [p for p, proc in self._sessions.items() if proc.poll() is not None]:
-                        del self._sessions[package]
-
-        def _refresh_sessions(self) -> None:
-                """Redraw the running chips from the live session map."""
-                self._reap_sessions()
+        def _refresh_sessions(self, sessions: object = None) -> None:
+                """Redraw the running chips from the controller's session list."""
+                entries = (
+                        sessions if isinstance(sessions, list)
+                        else self._controller.runningSessions
+                )
                 while self._running_grid.count():
                         item = self._running_grid.takeAt(0)
                         if item is None:
@@ -749,22 +535,21 @@ class MainWindow(QMainWindow):
                         widget = item.widget()
                         if widget is not None:
                                 widget.deleteLater()
-                if not self._sessions:
+                if not entries:
                         self._running_grid.addWidget(_label("暂无窗口", "empty-hint"), 0, 0)
                         return
-                labels = {pkg: label for label, pkg in APP_CATALOG}
-                labels[MIRROR_KEY] = "设备镜像"
                 per_row = self._columns_for(self._running_host.width(), 150, 1, 6)
-                for index, package in enumerate(self._sessions):
+                for index, entry in enumerate(entries):
                         chip = QFrame()
                         chip.setObjectName("running-chip")
                         chip.setFixedHeight(36)
                         layout = QHBoxLayout(chip)
                         layout.setContentsMargins(14, 0, 4, 0)
                         layout.setSpacing(2)
-                        name = labels.get(package, package)
+                        name = str(entry["label"])
                         text = _label(name, "")
                         layout.addWidget(text)
+                        key = str(entry["key"])
                         close = QToolButton()
                         close.setObjectName("chip-close")
                         close.setText("✕")
@@ -772,29 +557,18 @@ class MainWindow(QMainWindow):
                         close.setToolTip(f"关闭 {name}")
                         close.setAccessibleName(f"关闭 {name}")
                         close.clicked.connect(
-                                lambda _=False, pkg=package: self._stop_session(pkg)
+                                lambda _=False, k=key: self._controller.stopSession(k)
                         )
                         layout.addWidget(close)
                         self._running_grid.addWidget(
                                 chip, index // per_row, index % per_row
                         )
 
-        def _stop_session(self, package: str) -> None:
-                """Terminate one session; the CLI's SIGTERM handler cleans up."""
-                proc = self._sessions.get(package)
-                if proc is None:
-                        return
-                proc.terminate()
-                labels = {pkg: label for label, pkg in APP_CATALOG}
-                labels[MIRROR_KEY] = "设备镜像"
-                self._notify(f"已关闭 {labels.get(package, package)}")
-
         # ---------------------------------------------------------- settings
 
         def active_session_count(self) -> int:
                 """Live mirror sessions; drives the settings page engine lock."""
-                self._reap_sessions()
-                return len(self._sessions)
+                return self._controller.activeSessionCount()
 
         def _make_settings_page(self) -> SettingsPage:
                 """Build the settings page (locked while sessions are running)."""
@@ -809,33 +583,8 @@ class MainWindow(QMainWindow):
                         self._refresh_after_settings()
 
         def _refresh_after_settings(self) -> None:
-                """Re-resolve adb from the saved settings without blocking the UI."""
-                settings, problems = load_settings()
-
-                def work() -> None:
-                        adb = resolve_adb_path(settings, probe("adb").path, "adb.exe")
-                        self._bridge.adb_resolved.emit(adb)
-
-                threading.Thread(target=work, daemon=True).start()
-                if problems:
-                        self._notify(problems[0])
-
-        def _on_adb_resolved(self, adb: str) -> None:
-                """Swap the device monitor to the newly resolved adb, if it moved."""
-                if adb == self._adb_binary:
-                        self._notify("设置已保存，新会话生效")
-                        return
-                self._adb_binary = adb
-                self._monitor.stop()
-                self._monitor = DeviceMonitor(
-                        on_change=self._bridge.devices_changed.emit,
-                        query=poll_query(adb),
-                        poll_interval_s=2.0,
-                )
-                self._monitor.poll_now()
-                self._monitor.start()
-                _resolve_installed(adb, self._bridge.apps_resolved.emit)
-                self._notify("设置已保存，已切换 adb，新会话生效")
+                """Re-resolve adb from the saved settings (controller owns the swap)."""
+                self._controller.resolveAdb()
 
         def resizeEvent(self, event: QResizeEvent | None) -> None:
                 """Re-wrap the grids when the panel is resized."""
@@ -845,7 +594,7 @@ class MainWindow(QMainWindow):
 
         def closeEvent(self, event: QCloseEvent | None) -> None:
                 """Stop polling on close."""
-                self._monitor.stop()
+                self._controller.shutdown()
                 super().closeEvent(event)
 
 
