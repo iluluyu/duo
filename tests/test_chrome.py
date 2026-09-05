@@ -43,6 +43,18 @@ def test_overlay_source_shipped_and_hardened():
         assert "AdbKey(3)" in text
         assert "--home" in text
         assert "AdbKey" in text
+        # Ratio-locked resize: display mode channel, live video sizes tailed
+        # from the session log ("INFO: Texture: WxH"), aspect convergence,
+        # DIP minimums and capture-loss guards on every drag surface.
+        assert "--display-mode" in text
+        assert "--session-log" in text
+        assert "Texture:" in text
+        assert "ConvergeToVideoAspect" in text
+        assert "LogicalMinW" in text and "LogicalMinH" in text
+        assert "MouseCaptureChanged" in text
+        # All four edges and corners have their own hot zones.
+        assert "new EdgeStrip[9]" in text
+        assert "IsZoomed" in text
 
 
 def test_compile_command_shape():
@@ -72,6 +84,30 @@ def test_overlay_command_plain_argv():
         assert argv[argv.index("--adb") + 1] == "C:\\a.exe"
         assert argv[argv.index("--home") + 1] == "1"
         assert "TitleB64" not in " ".join(argv)
+
+
+def test_overlay_command_carries_display_mode_and_log():
+        """Mirror/fixed windows get the mode + live-size channel; fixed also
+        gets its known initial video size; flex gets no video flags."""
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False,
+                display_mode="mirror",
+                session_log=r"C:\logs\\1.log",
+        )
+        assert argv[argv.index("--display-mode") + 1] == "mirror"
+        assert argv[argv.index("--session-log") + 1] == r"C:\logs\\1.log"
+        assert "--video-w" not in argv
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False,
+                display_mode="fixed",
+                video_width=1252,
+                video_height=2088,
+        )
+        assert argv[argv.index("--video-w") + 1] == "1252"
+        assert argv[argv.index("--video-h") + 1] == "2088"
+        argv = overlay_command("/x.exe", "t", "s", "a", False)
+        assert argv[argv.index("--display-mode") + 1] == "flex"
+        assert "--session-log" not in argv
 
 
 def test_overlay_command_home_off_for_virtual_displays():

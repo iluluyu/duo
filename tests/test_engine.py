@@ -50,3 +50,31 @@ def test_available_flag_consistency():
         missing = ToolInfo(name="x", path=None, version=None)
         assert present.available
         assert not missing.available
+
+
+def test_adb_pin_env_native_windows(monkeypatch):
+        """Native Windows pins adb through the ADB variable as-is."""
+        monkeypatch.setattr(engine, "is_wsl", lambda: False)
+        assert engine.adb_pin_env(r"C:\\platform-tools\\adb.exe") == {
+                "ADB": r"C:\\platform-tools\\adb.exe"
+        }
+
+
+def test_adb_pin_env_wsl_translates_and_allowlists(monkeypatch):
+        """Under WSL the path becomes Windows-shaped and ADB joins WSLENV
+        (interop drops unlisted variables), preserving existing entries."""
+        monkeypatch.setattr(engine, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSLENV", "FOO")
+        env = engine.adb_pin_env(
+                "/mnt/c/tools/adb.exe",
+                to_windows=lambda p: r"C:\\tools\\adb.exe",
+        )
+        assert env["ADB"] == r"C:\\tools\\adb.exe"
+        assert env["WSLENV"] == "FOO:ADB"
+        # No duplicate when ADB is already allow-listed.
+        monkeypatch.setenv("WSLENV", "FOO:ADB")
+        env = engine.adb_pin_env(
+                "/mnt/c/tools/adb.exe",
+                to_windows=lambda p: r"C:\\tools\\adb.exe",
+        )
+        assert env["WSLENV"] == "FOO:ADB"

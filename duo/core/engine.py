@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
@@ -206,11 +207,10 @@ class EngineArgs:
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
                 argv = [binary, f"--serial={self.serial}"]
-                if self.adb_binary:
-                        # scrcpy otherwise prefers its own bundled adb; a
-                        # version mismatch makes the two clients kill each
-                        # other's server and devices flap offline.
-                        argv.append(f"--adb={self.adb_binary}")
+                # NOTE: adb_binary deliberately does NOT become an argv flag:
+                # scrcpy 4.1 has no --adb option ("unknown option" + restart
+                # loop, found live 2026-09-05). The pin happens through the
+                # ADB environment variable instead - see adb_pin_env().
                 argv += self.display.to_flags()
                 if self.app_package:
                         argv.append(f"--start-app={self.app_package}")
@@ -241,3 +241,25 @@ class EngineArgs:
                         argv += _int_flag("window-width", self.window_width)
                         argv += _int_flag("window-height", self.window_height)
                 return argv
+
+
+def adb_pin_env(adb_path: str, to_windows: Callable[[str], str] | None = None) -> dict[str, str]:
+        """Environment that pins scrcpy to ``adb_path`` (server-version wars).
+
+        scrcpy locates adb via the ``ADB`` environment variable (it ships its
+        own adb.exe otherwise; a version mismatch makes two clients kill each
+        other's adb server). Under WSL the path must be Windows-shaped and the
+        variable must be allow-listed in ``WSLENV`` to cross the interop
+        boundary - verified live: scrcpy echoes the exact bogus path it was
+        handed, so the mechanism provably reaches the Windows process.
+        """
+        from duo.core.chrome import wsl_to_windows_path
+
+        translate = to_windows or wsl_to_windows_path
+        if is_wsl():
+                win_path = translate(adb_path)
+                wslenv = os.environ.get("WSLENV", "")
+                parts = [p for p in wslenv.split(":") if p and p != "ADB"]
+                parts.append("ADB")
+                return {"ADB": win_path, "WSLENV": ":".join(parts)}
+        return {"ADB": adb_path}

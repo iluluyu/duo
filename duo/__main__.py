@@ -17,6 +17,7 @@ from duo.core.engine import (
         DisplaySpec,
         EngineArgs,
         VideoSpec,
+        adb_pin_env,
         is_wsl,
         probe,
 )
@@ -156,7 +157,13 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
-        session = Session(SessionSpec(command=command, log_path=log_path))
+        session = Session(
+                SessionSpec(
+                        command=command,
+                        log_path=log_path,
+                        env=adb_pin_env(adb_info.path),
+                )
+        )
         print(f"session log: {log_path}", flush=True)
 
         # Window chrome: borderless window + Windows-side hover overlay.
@@ -166,8 +173,17 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         raise ChromeError("--chrome needs a window title: pass --app or --title")
                 # Long-press-home only makes sense when mirroring the real
                 # display; a virtual display has no launcher behind the app.
+                # mirror/fixed windows keep the video aspect ratio (sizes
+                # stream from the session log); flex windows resize freely.
                 overlay = ChromeOverlay(
-                        title=title, serial=serial, adb_path=adb_info.path, home=args.app is None
+                        title=title,
+                        serial=serial,
+                        adb_path=adb_info.path,
+                        home=args.app is None,
+                        display_mode=args.display,
+                        video_width=display.width if display.mode == "fixed" else None,
+                        video_height=display.height if display.mode == "fixed" else None,
+                        session_log=log_path,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
