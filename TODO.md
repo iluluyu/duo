@@ -45,12 +45,14 @@
 
 **完成标准**：含中文/空格的路径可用；非法值不会覆盖有效配置；重启保留设置；修改 adb 不引发不同版本 server 相互重启。已有会话运行时不切换引擎路径，提示先关闭会话。
 
-### 4. P1 — 统一精简玻璃视觉
+### 4. P1 — UI 层重构为 QML（吸收原玻璃视觉任务）
 
-- [ ] 主面板、设置页、镜像控制胶囊统一中性色、单强调色、细亮边、轻阴影和圆角规范。
-- [ ] 玻璃只用于控制层，不模糊镜像内容；支持不透明降级，不引入持续背景动画或高频全窗截图。
-- [ ] 删除重复标题、常驻“就绪”等无用文字；动作使用统一图标，保留 tooltip、键盘焦点及无障碍名称。
-- [ ] 无图标的应用保留短名称；错误/未授权/无设备状态必须可理解，设置项不能只有图标。
+> 2026-09-05 用户决策：widgets 面板重构为 **Python + QML**（PyQt6 自带 QtQuick/Controls2，已验证 offscreen+software 可用）。core 层与视频链路（scrcpy 原生窗口 + C# overlay）不动。
+
+- [ ] 抽取 `duo/ui/controller.py`：QObject 面向 QML（设备列表/应用目录/会话管理/状态信号/竖屏偏好/argv 拼装），逻辑从 main_window.py 迁出，无 widgets 依赖。
+- [ ] QML 主面板：设备卡、应用网格（按宽度算列数）、运行中芯片、状态 toast、齿轮 + `Ctrl+,`；液态玻璃风（半透明面板、细亮边、MultiEffect/FastBlur，不透明降级）。
+- [ ] QML 设置页：引擎/外观两组，行为对齐原 settings_page（引擎锁、后台探测、保存/取消、圆角预览）；`run_app()` 改 QML 引擎；删除 widgets 版 main_window/settings_page 及对应 widget 测试。
+- [ ] offscreen + software 渲染测试；截图自检存档 `docs/validation/assets/`。
 
 ### 5. 验证与交接
 
