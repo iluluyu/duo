@@ -13,6 +13,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from string import Template
 
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
@@ -29,6 +30,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
+        QGraphicsDropShadowEffect,
         QGridLayout,
         QHBoxLayout,
         QLabel,
@@ -47,6 +49,7 @@ from duo.core.paths import data_dir
 from duo.core.settings import load_settings, resolve_adb_path
 from duo.core.winproc import creation_flags
 from duo.ui.settings_page import SettingsPage
+from duo.ui.tokens import INK_3, QSS_TOKENS
 
 #: Session key for whole-device mirroring (not an app package).
 MIRROR_KEY = "__device_mirror__"
@@ -71,52 +74,66 @@ APP_CATALOG: list[tuple[str, str]] = [
         ("微信读书", "com.tencent.weread"),
 ]
 
-STYLE = """
-QMainWindow, QWidget#root { background: #F5F5F7; }
-QLabel#title { color: #1D1D1F; font-size: 22px; font-weight: 600; }
-QLabel#caption { color: #86868B; font-size: 12px; }
-QLabel#section { color: #86868B; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
-QFrame#card { background: #FFFFFF; border-radius: 14px; border: 1px solid #ECECF0; }
+_STYLE_TMPL = """
+QMainWindow, QWidget#root { background: $bg; }
+QLabel#title { color: $ink; font-size: 22px; font-weight: 600; }
+QLabel#caption { color: $ink2; font-size: 12px; }
+QFrame#card {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                    stop:0 $glassTop, stop:1 $glassBottom);
+        border: 1px solid $glassBorder;
+        border-radius: ${radiusCard}px;
+}
+QFrame#hairline { background: $hairline; max-height: 1px; border: none; }
 QLabel#dot { border-radius: 5px; background: #D2D2D7; }
-QLabel#dot[state="device"] { background: #30D158; }
-QLabel#dot[state="offline"], QLabel#dot[state="unauthorized"] { background: #FF9F0A; }
-QLabel#device-name { color: #1D1D1F; font-size: 14px; font-weight: 600; }
+QLabel#dot[state="device"] { background: $success; }
+QLabel#dot[state="offline"], QLabel#dot[state="unauthorized"] { background: $warn; }
+QLabel#device-name { color: $ink; font-size: 14px; font-weight: 600; }
 QPushButton#app-icon {
         background: transparent; border: none; border-radius: 14px;
-        font-size: 18px; font-weight: 600; color: #C7C7CC;
+        font-size: 18px; font-weight: 600; color: $ink3;
 }
-QPushButton#app-icon:hover { background: #F0F0F3; }
-QPushButton#app-icon:pressed { background: #E8E8ED; }
+QPushButton#app-icon:hover { background: $hoverWash; }
+QPushButton#app-icon:pressed { background: $pressWash; }
+QPushButton#app-icon:focus { background: $hoverWash; }
 QPushButton#app-icon:disabled { color: #E5E5EA; }
 QPushButton#device-mirror {
-        background: #FFFFFF; border: 1px solid #ECECF0; border-radius: 10px;
-        color: #1D1D1F; font-size: 13px; padding: 9px 0;
+        background: $accent; border: 1px solid transparent; border-radius: 12px;
+        color: #FFFFFF; font-size: 14px; font-weight: 600; padding: 11px 0;
 }
-QPushButton#device-mirror:hover { background: #F7F7FA; }
-QPushButton#device-mirror:pressed { background: #F0F0F3; }
-QLabel#running-chip {
-        background: #F0F0F3; color: #1D1D1F; font-size: 12px;
-        border-radius: 11px; padding: 4px 6px 4px 12px;
+QPushButton#device-mirror:hover { background: $accentHover; }
+QPushButton#device-mirror:pressed { background: $accentPress; }
+QPushButton#device-mirror:focus { border-color: rgba(255, 255, 255, 190); }
+QFrame#running-chip {
+        background: $glassTop; border: 1px solid $glassBorder;
+        border-radius: 18px;
 }
-QToolButton#chip-close { background: transparent; border: none; color: #86868B; font-size: 13px; }
-QToolButton#chip-close:hover { color: #1D1D1F; }
+QToolButton#chip-close {
+        background: transparent; border: 1px solid transparent; border-radius: 16px;
+        color: $ink2; font-size: 12px;
+}
+QToolButton#chip-close:hover { background: $pressWash; color: $ink; }
+QToolButton#chip-close:focus { border-color: $accent; }
 QScrollArea#all-apps { background: transparent; border: none; }
-QWidget#all-apps-host { background: transparent; }
+QWidget#all-apps-host, QWidget#running-zone { background: transparent; }
 QToolButton#mini-icon {
-        background: transparent; border: none; border-radius: 10px;
-        font-size: 11px; color: #86868B; padding: 2px;
+        background: transparent; border: 1px solid transparent; border-radius: 12px;
+        font-size: 11px; color: $ink2; padding: 2px;
 }
-QToolButton#mini-icon:hover { background: #F0F0F3; }
-QToolButton#mini-icon:pressed { background: #E8E8ED; }
-QLabel#empty-hint { color: #C7C7CC; font-size: 12px; }
-QLabel#status { color: #86868B; font-size: 12px; }
+QToolButton#mini-icon:hover { background: $hoverWash; }
+QToolButton#mini-icon:pressed { background: $pressWash; }
+QToolButton#mini-icon:focus { background: $hoverWash; border-color: $accent; }
+QLabel#empty-hint { color: $ink3; font-size: 12px; }
+QLabel#status { color: $ink2; font-size: 12px; }
 QToolButton#gear {
-        background: transparent; border: none; border-radius: 10px;
-        color: #86868B; font-size: 17px;
+        background: transparent; border: 1px solid transparent; border-radius: 17px;
+        color: $ink2; font-size: 17px;
 }
-QToolButton#gear:hover { background: #F0F0F3; color: #1D1D1F; }
-QToolButton#gear:pressed { background: #E8E8ED; }
+QToolButton#gear:hover { background: $hoverWash; color: $ink; }
+QToolButton#gear:pressed { background: $pressWash; }
+QToolButton#gear:focus { background: $hoverWash; border-color: $accent; }
 """
+STYLE = Template(_STYLE_TMPL).substitute(QSS_TOKENS)
 
 _STATE_TEXT = {
         "device": "在线",
@@ -291,7 +308,7 @@ class MainWindow(QMainWindow):
                 root = QWidget()
                 root.setObjectName("root")
                 column = QVBoxLayout(root)
-                column.setContentsMargins(24, 28, 24, 20)
+                column.setContentsMargins(24, 28, 24, 18)
                 column.setSpacing(10)
 
                 title_row = QHBoxLayout()
@@ -299,38 +316,61 @@ class MainWindow(QMainWindow):
                 title_row.addStretch(1)
                 title_row.addWidget(self._build_gear_button())
                 column.addLayout(title_row)
-                column.addSpacing(12)
+                column.addSpacing(14)
 
                 column.addWidget(self._build_device_card())
-                column.addSpacing(6)
                 column.addWidget(self._build_apps_card())
-                column.addSpacing(6)
-                column.addWidget(self._build_all_apps_card())
-                column.addSpacing(6)
-                column.addWidget(self._build_running_card())
-                column.addSpacing(6)
-                column.addWidget(self._build_mirror_card())
+                column.addWidget(self._build_running_zone())
                 column.addStretch(1)
+                column.addWidget(self._build_mirror_action())
 
-                self._status = _label("就绪", "status")
+                # The status line exists only when something needs saying:
+                # no persistent "ready" text (docs/window-experience.md §5).
+                self._status = _label("", "status")
+                self._status.hide()
                 column.addWidget(self._status)
 
                 self.setCentralWidget(root)
                 self.setStyleSheet(STYLE)
                 font = QFont()
-                families = ["Inter", "SF Pro Text", "Segoe UI", "Noto Sans CJK SC", "sans-serif"]
+                # Windows first per the design contract, then fallbacks.
+                families = ["Segoe UI", "Inter", "SF Pro Text",
+                            "Noto Sans CJK SC", "sans-serif"]
                 font.setFamilies(families)
                 font.setPixelSize(13)
                 self.setFont(font)
+                # Keyboard focus lands on the primary action at launch, not
+                # on the gear (a resting focus ring up there is pure noise).
+                self._mirror_button.setFocus()
+
+        @staticmethod
+        def _apply_shadow(widget: QWidget) -> None:
+                """One soft static shadow; nothing animates (§5)."""
+                effect = QGraphicsDropShadowEffect(widget)
+                effect.setBlurRadius(18)
+                effect.setOffset(0, 5)
+                effect.setColor(QColor(0, 0, 0, 26))
+                widget.setGraphicsEffect(effect)
 
         def _card(self) -> tuple[QFrame, QVBoxLayout]:
-                """A white rounded card with 18px inner padding."""
+                """A glass capsule: smoky translucent white, bright hairline,
+                light shadow."""
                 card = QFrame()
                 card.setObjectName("card")
                 inner = QVBoxLayout(card)
                 inner.setContentsMargins(18, 16, 18, 16)
                 inner.setSpacing(12)
+                self._apply_shadow(card)
                 return card, inner
+
+        @staticmethod
+        def _hairline() -> QFrame:
+                """A 1px quiet divider for use inside a card."""
+                line = QFrame()
+                line.setObjectName("hairline")
+                line.setFrameShape(QFrame.Shape.NoFrame)
+                line.setFixedHeight(1)
+                return line
 
         def _build_gear_button(self) -> QToolButton:
                 """Top-right settings entry: glyph, tooltip, ≥32 DIP click target."""
@@ -344,10 +384,9 @@ class MainWindow(QMainWindow):
                 return gear
 
         def _build_device_card(self) -> QFrame:
+                """Device state speaks for itself: dot, serial, hint.
+                No container title."""
                 card, inner = self._card()
-                section = _label("设备", "section")
-                inner.addWidget(section)
-
                 row = QHBoxLayout()
                 row.setSpacing(12)
                 self._dot = _label("", "dot")
@@ -365,8 +404,10 @@ class MainWindow(QMainWindow):
                 return card
 
         def _build_apps_card(self) -> QFrame:
+                """One container for all launches: the curated row, a
+                hairline, then every user-installed app (letter avatars
+                first, real icons resolving in the background, cached)."""
                 card, inner = self._card()
-                inner.addWidget(_label("应用", "section"))
                 row = QHBoxLayout()
                 row.setSpacing(8)
                 for label, package in APP_CATALOG:
@@ -391,22 +432,7 @@ class MainWindow(QMainWindow):
                         row.addWidget(button)
                 row.addStretch(1)
                 inner.addLayout(row)
-                return card
-
-        def _build_mirror_card(self) -> QFrame:
-                """Direct whole-device mirroring, outside the app grid."""
-                card, inner = self._card()
-                button = QPushButton("镜像设备屏幕")
-                button.setObjectName("device-mirror")
-                button.clicked.connect(self._launch_device_mirror)
-                inner.addWidget(button)
-                return card
-
-        def _build_all_apps_card(self) -> QFrame:
-                """Every user-installed app: letter avatars first, real icons
-                resolving in the background (APK pull + aapt2, cached)."""
-                card, inner = self._card()
-                inner.addWidget(_label("全部应用", "section"))
+                inner.addWidget(self._hairline())
                 self._all_grid_host = QWidget()
                 self._all_grid_host.setObjectName("all-apps-host")
                 self._all_grid = QGridLayout(self._all_grid_host)
@@ -418,14 +444,28 @@ class MainWindow(QMainWindow):
                 scroll = QScrollArea()
                 scroll.setObjectName("all-apps")
                 scroll.setWidgetResizable(True)
-                scroll.setFixedHeight(190)
                 scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
                 scroll.setWidget(self._all_grid_host)
-                inner.addWidget(scroll)
-                hint = _label("字母头像为占位，图标后台解析中…", "caption")
+                self._all_scroll = scroll
+                # Empty state until a device delivers the package list; the
+                # scroll grows to fit rows (capped) once apps arrive.
+                hint = _label("连接设备后显示全部应用", "empty-hint")
                 self._all_hint = hint
-                inner.addWidget(hint)
+                self._all_grid.addWidget(hint, 0, 0)
+                scroll.setFixedHeight(40)
+                inner.addWidget(scroll)
                 return card
+
+        def _build_mirror_action(self) -> QPushButton:
+                """Direct whole-device mirroring: the panel's one accent
+                moment, standing alone without a wrapper card."""
+                button = QPushButton("镜像设备屏幕")
+                button.setObjectName("device-mirror")
+                button.setAccessibleName("镜像设备屏幕")
+                button.clicked.connect(self._launch_device_mirror)
+                self._apply_shadow(button)
+                self._mirror_button = button
+                return button
 
         @staticmethod
         def _columns_for(width: int, cell: int, minimum: int, maximum: int) -> int:
@@ -453,23 +493,32 @@ class MainWindow(QMainWindow):
                                 self._all_grid.addWidget(
                                         button, index // per_row, index % per_row
                                 )
+                # The viewport hugs the rows (capped): no tall blank glass.
+                rows = -(-len(self._all_packages) // per_row)
+                height = 6 + rows * 62 + (rows - 1) * 8
+                self._all_scroll.setFixedHeight(min(190, height))
 
         def _set_app_tooltip(self, button: QPushButton, label: str, package: str) -> None:
                 portrait = self._portrait_prefs.get(package, False)
                 orientation = "竖屏" if portrait else "横屏"
                 button.setToolTip(f"{label} · {orientation}（右键切换）")
 
-        def _build_running_card(self) -> QFrame:
-                """Live session chips with quiet close buttons, wrapping rows."""
-                card, inner = self._card()
-                inner.addWidget(_label("运行中", "section"))
+        def _build_running_zone(self) -> QFrame:
+                """Live session chips as glass pills on the canvas. No
+                container title: a pill with a close button explains itself,
+                and the empty state stays visible while nothing runs."""
+                zone = QFrame()
+                zone.setObjectName("running-zone")
+                inner = QVBoxLayout(zone)
+                inner.setContentsMargins(2, 0, 2, 0)
+                inner.setSpacing(6)
                 self._running_host = QWidget()
                 self._running_host.setObjectName("all-apps-host")
                 self._running_grid = QGridLayout(self._running_host)
                 self._running_grid.setContentsMargins(0, 0, 0, 0)
                 self._running_grid.setSpacing(8)
                 inner.addWidget(self._running_host)
-                return card
+                return zone
 
         # ------------------------------------------------------------ events
 
@@ -496,13 +545,15 @@ class MainWindow(QMainWindow):
                         for package, button in self._icon_buttons.items():
                                 button.setEnabled(enabled and package in self._installed)
 
+        def _notify(self, text: str) -> None:
+                """Show the status line only now that it has something to say."""
+                self._status.setText(text)
+                self._status.setVisible(True)
+
         def _on_apps(self, installed: object) -> None:
                 assert isinstance(installed, set)
                 self._installed = installed
                 self._on_devices(dict.fromkeys(self._monitor.online, "device"))
-                present = [t for t, p in APP_CATALOG if p in installed]
-                text = f"已安装：{', '.join(present)}" if present else "目录中无已安装应用"
-                self._status.setText(text)
                 self._load_icons()
                 self._load_all_apps()
 
@@ -536,7 +587,19 @@ class MainWindow(QMainWindow):
                 """Create letter-avatar buttons (placeholders); layout happens
                 in _relayout_all_grid so column count follows the width."""
                 assert isinstance(packages, list)
+                for button in self._all_buttons.values():
+                        button.deleteLater()
+                self._all_buttons.clear()
                 self._all_packages = list(packages)
+                self._all_per_row = 0
+                if not packages:
+                        # True empty state only; no permanent resolution chatter.
+                        self._all_hint.setText("未发现第三方应用")
+                        self._all_hint.setVisible(True)
+                        self._all_grid.addWidget(self._all_hint, 0, 0)
+                        self._all_scroll.setFixedHeight(40)
+                        return
+                self._all_hint.setVisible(False)
                 for package in packages:
                         short = package.rsplit(".", 1)[-1][:2].upper()
                         label = package_to_label(package)
@@ -562,16 +625,12 @@ class MainWindow(QMainWindow):
                         font.setPixelSize(15)
                         font.setBold(True)
                         painter.setFont(font)
-                        painter.setPen(QColor(0xC7, 0xC7, 0xCC))
+                        painter.setPen(QColor(INK_3))
                         painter.drawText(avatar.rect(), Qt.AlignmentFlag.AlignCenter, short)
                         painter.end()
                         button.setIcon(QIcon(avatar))
                         self._all_buttons[package] = button
                 self._relayout_all_grid()
-                count = len(packages)
-                self._all_hint.setText(
-                        f"共 {count} 个应用 · 图标后台解析中（仅首次较慢）"
-                )
 
         def _on_all_icon(self, package: str, icon_path: object, label: str) -> None:
                 """Swap a letter avatar for the real icon + label."""
@@ -620,11 +679,11 @@ class MainWindow(QMainWindow):
                 """Spawn a chrome-clad mirror session and track it."""
                 serial = next(iter(self._monitor.online), "")
                 if not serial:
-                        self._status.setText("设备未连接")
+                        self._notify("设备未连接")
                         return
                 self._reap_sessions()
                 if package in self._sessions:
-                        self._status.setText(f"{label} 已在运行")
+                        self._notify(f"{label} 已在运行")
                         return
                 portrait = self._portrait_prefs.get(package, False)
                 argv = build_launch_argv(package, serial, portrait)
@@ -635,22 +694,22 @@ class MainWindow(QMainWindow):
                                 creationflags=creation_flags(),
                         )
                 except OSError as exc:
-                        self._status.setText(f"启动失败：{label}（{exc}）")
+                        self._notify(f"启动失败：{label}（{exc}）")
                         return
                 self._sessions[package] = proc
                 self._refresh_sessions()
                 orientation = "竖屏" if portrait else "横屏"
-                self._status.setText(f"已启动 {label} · {orientation}")
+                self._notify(f"已启动 {label} · {orientation}")
 
         def _launch_device_mirror(self) -> None:
                 """Start whole-device mirroring (physical display, no app)."""
                 serial = next(iter(self._monitor.online), "")
                 if not serial:
-                        self._status.setText("设备未连接")
+                        self._notify("设备未连接")
                         return
                 self._reap_sessions()
                 if MIRROR_KEY in self._sessions:
-                        self._status.setText("设备镜像已在运行")
+                        self._notify("设备镜像已在运行")
                         return
                 argv = build_device_mirror_argv(serial)
                 try:
@@ -660,11 +719,11 @@ class MainWindow(QMainWindow):
                                 creationflags=creation_flags(),
                         )
                 except OSError as exc:
-                        self._status.setText(f"启动失败：设备镜像（{exc}）")
+                        self._notify(f"启动失败：设备镜像（{exc}）")
                         return
                 self._sessions[MIRROR_KEY] = proc
                 self._refresh_sessions()
-                self._status.setText("已启动 设备镜像")
+                self._notify("已启动 设备镜像")
 
         def _toggle_portrait(self, button: QPushButton, package: str, label: str) -> None:
                 """Right-click on an app icon flips its remembered orientation."""
@@ -673,7 +732,7 @@ class MainWindow(QMainWindow):
                 save_portrait_prefs(self._portrait_prefs)
                 self._set_app_tooltip(button, label, package)
                 orientation = "竖屏" if now else "横屏"
-                self._status.setText(f"{label} 将以{orientation}启动")
+                self._notify(f"{label} 将以{orientation}启动")
 
         def _reap_sessions(self) -> None:
                 """Drop sessions whose process has exited."""
@@ -699,14 +758,19 @@ class MainWindow(QMainWindow):
                 for index, package in enumerate(self._sessions):
                         chip = QFrame()
                         chip.setObjectName("running-chip")
+                        chip.setFixedHeight(36)
                         layout = QHBoxLayout(chip)
-                        layout.setContentsMargins(0, 0, 6, 0)
-                        layout.setSpacing(4)
-                        text = _label(labels.get(package, package), "")
+                        layout.setContentsMargins(14, 0, 4, 0)
+                        layout.setSpacing(2)
+                        name = labels.get(package, package)
+                        text = _label(name, "")
                         layout.addWidget(text)
                         close = QToolButton()
                         close.setObjectName("chip-close")
                         close.setText("✕")
+                        close.setFixedSize(32, 32)
+                        close.setToolTip(f"关闭 {name}")
+                        close.setAccessibleName(f"关闭 {name}")
                         close.clicked.connect(
                                 lambda _=False, pkg=package: self._stop_session(pkg)
                         )
@@ -723,7 +787,7 @@ class MainWindow(QMainWindow):
                 proc.terminate()
                 labels = {pkg: label for label, pkg in APP_CATALOG}
                 labels[MIRROR_KEY] = "设备镜像"
-                self._status.setText(f"已关闭 {labels.get(package, package)}")
+                self._notify(f"已关闭 {labels.get(package, package)}")
 
         # ---------------------------------------------------------- settings
 
@@ -754,12 +818,12 @@ class MainWindow(QMainWindow):
 
                 threading.Thread(target=work, daemon=True).start()
                 if problems:
-                        self._status.setText(problems[0])
+                        self._notify(problems[0])
 
         def _on_adb_resolved(self, adb: str) -> None:
                 """Swap the device monitor to the newly resolved adb, if it moved."""
                 if adb == self._adb_binary:
-                        self._status.setText("设置已保存，新会话生效")
+                        self._notify("设置已保存，新会话生效")
                         return
                 self._adb_binary = adb
                 self._monitor.stop()
@@ -771,7 +835,7 @@ class MainWindow(QMainWindow):
                 self._monitor.poll_now()
                 self._monitor.start()
                 _resolve_installed(adb, self._bridge.apps_resolved.emit)
-                self._status.setText("设置已保存，已切换 adb，新会话生效")
+                self._notify("设置已保存，已切换 adb，新会话生效")
 
         def resizeEvent(self, event: QResizeEvent | None) -> None:
                 """Re-wrap the grids when the panel is resized."""

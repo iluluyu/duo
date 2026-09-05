@@ -16,14 +16,16 @@ so an old adb and a new adb cannot fight over the server.
 from __future__ import annotations
 
 import threading
+from string import Template
 
 from PyQt6.QtCore import QObject, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPaintEvent, QPen
 from PyQt6.QtWidgets import (
         QCheckBox,
         QDialog,
         QFileDialog,
         QFrame,
+        QGraphicsDropShadowEffect,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -49,6 +51,7 @@ from duo.core.settings import (
         save_settings,
         validate,
 )
+from duo.ui.tokens import DANGER, INK_2, QSS_TOKENS, SUCCESS, WARN
 
 #: Corner modes in display order: (settings value, radio label).
 CORNER_MODES: tuple[tuple[str, str], ...] = (
@@ -60,33 +63,89 @@ CORNER_MODES: tuple[tuple[str, str], ...] = (
 #: Value shown in the DPI box while "自动" is checked (no custom density).
 _DPI_PLACEHOLDER = 480
 
-STYLE = """
-QDialog { background: #F5F5F7; }
-QWidget#settings-content { background: #F5F5F7; }
-QLabel#page-title { color: #1D1D1F; font-size: 20px; font-weight: 600; }
-QLabel#caption { color: #86868B; font-size: 12px; }
-QLabel#problems { color: #FF3B30; font-size: 12px; }
+_STYLE_TMPL = """
+QDialog { background: $bg; }
+QWidget#settings-content { background: transparent; }
+QLabel#page-title { color: $ink; font-size: 20px; font-weight: 600; }
+QLabel#caption { color: $ink2; font-size: 12px; }
+QLabel#problems { color: $danger; font-size: 12px; }
 QToolButton#back {
-        background: transparent; border: none; border-radius: 10px;
-        color: #86868B; font-size: 13px; padding: 6px 10px;
+        background: $glassTop; border: 1px solid $glassBorder;
+        border-radius: 15px; color: $ink; font-size: 13px; padding: 6px 14px;
 }
-QToolButton#back:hover { background: #F0F0F3; color: #1D1D1F; }
+QToolButton#back:hover { background: #FFFFFF; }
+QToolButton#back:pressed { background: $hoverWash; }
+QToolButton#back:focus { border-color: $accent; }
 QGroupBox {
-        background: #FFFFFF; border: 1px solid #ECECF0; border-radius: 14px;
-        margin-top: 10px; padding: 8px 12px 12px 12px;
-        font-size: 11px; font-weight: 600; color: #86868B; letter-spacing: 1px;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                    stop:0 $glassTop, stop:1 $glassBottom);
+        border: 1px solid $glassBorder; border-radius: ${radiusCard}px;
+        margin-top: 0; padding: 34px 14px 14px 14px;
+        font-size: 11px; font-weight: 600; color: $ink2; letter-spacing: 1px;
 }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
+QGroupBox::title {
+        subcontrol-origin: padding; subcontrol-position: top left;
+        left: 2px; top: 12px;
+}
+QLineEdit, QSpinBox {
+        background: #FFFFFF; border: 1px solid $hairline; border-radius: 8px;
+        color: $ink; padding: 4px 8px; min-height: 18px; font-size: 13px;
+        selection-background-color: $accent; selection-color: #FFFFFF;
+}
+QLineEdit:focus, QSpinBox:focus { border-color: $accent; }
+QLineEdit:disabled, QSpinBox:disabled { background: $bg; color: $ink3; }
 QPushButton#secondary {
-        background: #FFFFFF; border: 1px solid #ECECF0; border-radius: 9px;
-        color: #1D1D1F; padding: 7px 12px;
+        background: $glassTop; border: 1px solid $hairline;
+        border-radius: 8px; color: $ink; padding: 6px 14px;
 }
-QPushButton#secondary:hover { background: #F7F7FA; }
+QPushButton#secondary:hover { background: #FFFFFF; }
+QPushButton#secondary:pressed { background: $hoverWash; }
+QPushButton#secondary:focus { border-color: $accent; }
 QPushButton#primary {
-        background: #1D1D1F; border: none; border-radius: 9px;
-        color: #FFFFFF; padding: 7px 18px;
+        background: $accent; border: 1px solid transparent; border-radius: 8px;
+        color: #FFFFFF; padding: 6px 20px; font-weight: 600;
 }
+QPushButton#primary:hover { background: $accentHover; }
+QPushButton#primary:pressed { background: $accentPress; }
+QPushButton#primary:focus { border-color: $ink; }
+QCheckBox, QRadioButton { color: $ink; spacing: 7px; }
+QCheckBox::indicator, QRadioButton::indicator { width: 17px; height: 17px; }
+QCheckBox::indicator {
+        border: 1px solid $hairline; border-radius: 5px; background: #FFFFFF;
+}
+QRadioButton::indicator {
+        border: 1px solid $hairline; border-radius: 9px; background: #FFFFFF;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: $ink3; }
+QCheckBox::indicator:checked { background: $accent; border-color: $accent; }
+QRadioButton::indicator:checked {
+        border-color: $accent;
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                                    stop:0 #FFFFFF, stop:0.42 #FFFFFF,
+                                    stop:0.52 $accent, stop:1 $accent);
+}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+        background: $bg; border-color: $hairline;
+}
+QSlider::groove:horizontal { height: 4px; background: rgba(0, 0, 0, 34); border-radius: 2px; }
+QSlider::sub-page:horizontal { background: $accent; border-radius: 2px; }
+QSlider::handle:horizontal {
+        width: 18px; height: 18px; margin: -7px 0; border-radius: 9px;
+        background: #FFFFFF; border: 1px solid $hairline;
+}
+QSlider::handle:horizontal:hover { border-color: $accent; }
+QSlider::sub-page:horizontal:disabled { background: $ink3; }
+QSlider::handle:horizontal:disabled { background: $bg; }
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+QScrollBar::handle:vertical {
+        background: rgba(0, 0, 0, 38); border-radius: 3px; min-height: 30px;
+}
+QScrollBar::handle:vertical:hover { background: rgba(0, 0, 0, 64); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 """
+STYLE = Template(_STYLE_TMPL).substitute(QSS_TOKENS)
 
 
 def _label(text: str, name: str) -> QLabel:
@@ -127,16 +186,18 @@ class CornerPreview(QWidget):
                 radius = self._corner_radius_px(body.width(), body.height())
                 path = QPainterPath()
                 path.addRoundedRect(QRectF(body), radius, radius)
-                fill = QColor(229, 236, 246, 215) if self._glass else QColor(240, 240, 243)
+                # Same smoky glass the panel capsules use; opaque fallback
+                # when the style switch is off (§5 high-contrast story).
+                fill = QColor(255, 255, 255, 228) if self._glass else QColor(240, 240, 243)
                 painter.fillPath(path, fill)
-                painter.setPen(QPen(QColor(211, 211, 216), 1))
+                painter.setPen(QPen(QColor(0, 0, 0, 24), 1))
                 painter.drawPath(path)
                 captions = {
                         "system": "system · Windows 系统圆角",
                         "g2": f"g2 · {self._size} DIP",
                         "none": "none · 直角",
                 }
-                painter.setPen(QColor(134, 134, 139))
+                painter.setPen(QColor(INK_2))
                 painter.drawText(
                         self.rect().adjusted(0, 0, 0, -10),
                         Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
@@ -171,6 +232,22 @@ class SettingsPage(QDialog):
                 self._bridge.done.connect(self._on_probe_done)
                 self._build_ui()
                 self._load()
+                font = QFont()
+                # Same family stack as the panel (Segoe UI first on Windows).
+                families = ["Segoe UI", "Inter", "SF Pro Text",
+                            "Noto Sans CJK SC", "sans-serif"]
+                font.setFamilies(families)
+                font.setPixelSize(13)
+                self.setFont(font)
+
+        @staticmethod
+        def _apply_shadow(widget: QWidget) -> None:
+                """The one light shadow shared with the panel containers."""
+                effect = QGraphicsDropShadowEffect(widget)
+                effect.setBlurRadius(18)
+                effect.setOffset(0, 5)
+                effect.setColor(QColor(0, 0, 0, 26))
+                widget.setGraphicsEffect(effect)
 
         # ---------------------------------------------------------------- UI
 
@@ -234,6 +311,7 @@ class SettingsPage(QDialog):
                 group = QGroupBox("引擎")
                 inner = QVBoxLayout(group)
                 inner.setSpacing(6)
+                self._apply_shadow(group)
 
                 self._path_row(inner, "scrcpy")
                 self._path_row(inner, "adb")
@@ -241,7 +319,7 @@ class SettingsPage(QDialog):
                 # Engine path swaps are forbidden mid-session (server wars).
                 self._lock_hint = QLabel("镜像会话运行中，引擎路径暂不可改（先关闭会话）")
                 self._lock_hint.setObjectName("caption")
-                self._lock_hint.setStyleSheet("color: #FF9F0A;")
+                self._lock_hint.setStyleSheet(f"color: {WARN};")
                 self._lock_hint.setVisible(self.engine_locked)
                 inner.addWidget(self._lock_hint)
 
@@ -323,6 +401,7 @@ class SettingsPage(QDialog):
                 group = QGroupBox("外观")
                 inner = QVBoxLayout(group)
                 inner.setSpacing(8)
+                self._apply_shadow(group)
 
                 modes = QHBoxLayout()
                 modes.setSpacing(14)
@@ -439,13 +518,13 @@ class SettingsPage(QDialog):
                 status = self._statuses[tool]
                 if info.available:
                         status.setText(f"✓ {info.version}" if info.version else "✓ 可执行")
-                        status.setStyleSheet("color: #30D158;")
+                        status.setStyleSheet(f"color: {SUCCESS};")
                 elif self._edits[tool].text().strip():
                         status.setText("✗ 无法运行，请检查路径")
-                        status.setStyleSheet("color: #FF3B30;")
+                        status.setStyleSheet(f"color: {DANGER};")
                 else:
                         status.setText("✗ 未在 PATH 找到，可手动填写路径")
-                        status.setStyleSheet("color: #FF3B30;")
+                        status.setStyleSheet(f"color: {DANGER};")
 
         def _browse(self, edit: QLineEdit, tool: str) -> None:
                 path, _file_filter = QFileDialog.getOpenFileName(
