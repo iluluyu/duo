@@ -60,6 +60,15 @@
 - [ ] 分别验证源码运行和 Windows 打包版；覆盖 100% / 150% / 200% DPI、两个重叠窗口、断开设备、退出清理。
 - [ ] 回填 `docs/validation/window-experience.md`：环境、命令、自动测试结果、截图/录像、失败项和未测项。只有通过 Windows 实测的任务才能勾选视觉/交互验收。
 
+### 6. Windows QML 上屏验证与打包（本轮任务 2）
+
+> QML 面板已合并（任务 4）；WSL 无显示，上屏与打包产物只能在 Windows 侧实测。本轮先把准备物料入库：`duo.spec`（onedir/win64，datas 含 duo/ui/qml 与 chrome_overlay.cs，`assets/duo.ico` 占位图标）、`scripts/build_windows.ps1`（venv + `.[dev,gui,build]` + pyinstaller）、pyproject `build` extra、windows-setup 验证清单。
+
+- [x] 打包与验证准备：`duo.spec` + `scripts/build_windows.ps1` + `build` extra + 上屏/产物校验清单（本仓完成，无需 Windows）。
+- [ ] **需 Windows 实测**：原生运行 `.venv\Scripts\python -m duo --gui` 上屏，按 [docs/windows-setup.md](docs/windows-setup.md)「QML 面板上屏验证清单」核对：设备列表、投屏开窗/芯片关闭、设置页（齿轮/Ctrl+,）、竖屏长按切换。
+- [ ] **需 Windows 实测**：`scripts/build_windows.ps1` 构建 `dist\Duo\`，按同文档「打包构建与产物校验」清单核对（QML/overlay 资源入包、Duo.exe 直启与带参路由、设置持久化、图标）。
+- [ ] **需 Windows 实测**：按 [docs/validation/window-experience.md](docs/validation/window-experience.md) §3 清单实测并回填验证记录（拖拽手感、DPI、多窗口、断线清理、打包版行为）。
+
 ## 当前基线
 
 - 2026-09-05：Task 1 全部落地（比例锁定/热区/收敛/日志尾读）；G2 圆角已验证可裁切但**已回退**（见上）；设置核心层（settings.py + CLI 贯通）完成。默认系统圆角，无区域/遮罩开销。
