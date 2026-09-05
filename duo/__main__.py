@@ -24,6 +24,11 @@ from duo.core.engine import (
 from duo.core.monitor import primary_work_area, recommend_landscape, recommend_portrait
 from duo.core.paths import logs_dir
 from duo.core.session import Session, SessionSpec
+from duo.core.settings import (
+        corner_radius_dip,
+        load_settings,
+        resolve_tool,
+)
 
 
 def _run_check() -> int:
@@ -47,12 +52,9 @@ def _run_check() -> int:
         return 0
 
 
-def _pick_serial(explicit: str | None) -> str:
+def _pick_serial(explicit: str | None, adb_path: str) -> str:
         """Return the device serial to use, auto-picking when exactly one is online."""
-        adb_info = probe("adb")
-        if not adb_info.available or adb_info.path is None:
-                raise AdbError("adb not found on PATH (run: duo --check)")
-        states = poll_query(adb_info.path)()
+        states = poll_query(adb_path)()
         serials = [s for s, state in states.items() if state == "device"]
         if explicit:
                 if explicit not in serials:
@@ -68,20 +70,36 @@ def _pick_serial(explicit: str | None) -> str:
 
 def _run_mirror(args: argparse.Namespace) -> int:
         """Launch a branded mirroring session for one app."""
-        serial = _pick_serial(args.serial)
+        # Priority everywhere: explicit CLI args > saved settings > defaults.
+        settings, problems = load_settings()
+        for problem in problems:
+                print(f"settings: {problem}", flush=True)
 
-        adb_info = probe("adb")
-        scrcpy_info = probe("scrcpy")
-        if not adb_info.available or adb_info.path is None:
-                raise AdbError("adb not found on PATH (run: duo --check)")
-        if not scrcpy_info.available or scrcpy_info.path is None:
-                raise AdbError("scrcpy not found on PATH (run: duo --check)")
+        adb_path = resolve_tool("adb", settings, probe("adb").path)
+        scrcpy_path = resolve_tool("scrcpy", settings, probe("scrcpy").path)
+        if adb_path is None:
+                raise AdbError("adb not found (set its path in settings or PATH)")
+        if scrcpy_path is None:
+                raise AdbError("scrcpy not found (set its path in settings or PATH)")
+
+        serial = _pick_serial(args.serial, adb_path)
+
+        fps = args.fps if args.fps is not None else (settings.fps or 90)
+        bitrate = (
+                args.bitrate if args.bitrate is not None
+                else (settings.bitrate_mbps or 30)
+        )
+        dpi = args.dpi if args.dpi is not None else settings.dpi
+        corner = (
+                args.corner_radius if args.corner_radius is not None
+                else corner_radius_dip(settings)
+        )
 
         display = DisplaySpec(
                 mode=args.display,
                 width=args.width,
                 height=args.height,
-                dpi=args.dpi,
+                dpi=dpi,
         )
         # Display recommendation from the PC monitor when not pinned.
         engine_window: dict[str, int | None] = {}
@@ -95,7 +113,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 mode=display.mode,
                                 width=args.width or rec.display_width,
                                 height=args.height or rec.display_height,
-                                dpi=args.dpi or rec.dpi,
+                                dpi=dpi or rec.dpi,
                         )
                         # Position the window but never lock its size: the user
                         # manages window geometry (e.g. PowerToys zones) and
@@ -111,7 +129,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 }
                 else:
                         rec = recommend_landscape(area, target_dp=args.dp or 1280)
-                        if args.dpi is None:
+                        if dpi is None:
                                 display = DisplaySpec(
                                         mode=display.mode,
                                         width=display.width,
@@ -121,8 +139,8 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"
                 print(f"display: {display.mode} dpi={display.dpi} ({area_text})", flush=True)
-        video = VideoSpec(bitrate_mbps=args.bitrate, max_fps=args.fps)
-        adb = Adb(adb_info.path, serial)
+        video = VideoSpec(bitrate_mbps=bitrate, max_fps=fps)
+        adb = Adb(adb_path, serial)
 
         title = args.title
         if title is None and args.app:
@@ -140,7 +158,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         engine_args = EngineArgs(
                 serial=serial,
-                adb_binary=adb_info.path,
+                adb_binary=adb_path,
                 display=display,
                 video=video,
                 app_package=args.app,
@@ -153,7 +171,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 window_height=engine_window.get("window_height"),
                 borderless=args.chrome,
         )
-        command = engine_args.to_argv(binary=scrcpy_info.path)
+        command = engine_args.to_argv(binary=scrcpy_path)
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
@@ -161,7 +179,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 SessionSpec(
                         command=command,
                         log_path=log_path,
-                        env=adb_pin_env(adb_info.path),
+                        env=adb_pin_env(adb_path),
                 )
         )
         print(f"session log: {log_path}", flush=True)
@@ -178,20 +196,20 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,
-                        adb_path=adb_info.path,
+                        adb_path=adb_path,
                         home=args.app is None,
                         display_mode=args.display,
                         video_width=display.width if display.mode == "fixed" else None,
                         video_height=display.height if display.mode == "fixed" else None,
                         session_log=log_path,
-                        corner_radius_dip=args.corner_radius,
+                        corner_radius_dip=corner,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
 
         # Hotplug watch: stop the session when the device goes away.
         changes: list[dict[str, str]] = []
-        monitor = DeviceMonitor(on_change=changes.append, adb_binary=adb_info.path)
+        monitor = DeviceMonitor(on_change=changes.append, adb_binary=adb_path)
         monitor.start()
 
         def device_gone() -> bool:
@@ -255,9 +273,9 @@ def _build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="open a tall window on the right with portrait-tuned dpi",
         )
-        mirror.add_argument("--fps", type=int, default=90, help="max fps (default 90)")
+        mirror.add_argument("--fps", type=int, default=None, help="max fps (settings/90)")
         mirror.add_argument(
-                "--bitrate", type=int, default=30, help="video bitrate in Mbps (default 30)"
+                "--bitrate", type=int, default=None, help="video bitrate Mbps (settings/30)"
         )
         mirror.add_argument(
                 "--no-screen-off", action="store_true", help="keep the device screen on"
@@ -273,9 +291,8 @@ def _build_parser() -> argparse.ArgumentParser:
         mirror.add_argument(
                 "--corner-radius",
                 type=int,
-                default=48,
-                help="G2 corner radius in DIP for chrome windows, iPhone-like "
-                "squircle by default (0 disables, up to ~160 for testing)",
+                default=None,
+                help="G2 corner radius in DIP (settings/48, iPhone-like squircle; 0 disables)",
         )
 
         return parser
