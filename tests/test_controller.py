@@ -176,6 +176,51 @@ def test_apps_model_tracks_installed_icons_and_extras(no_adb, prefs_stub, qapp):
         assert by_package["org.foo.bar"]["label"] == "Bar 应用"
 
 
+def test_toggle_portrait_does_not_rebuild_app_model(no_adb, prefs_stub, qapp):
+        """The long-press portrait path never touches the apps model.
+
+        The QML QVariantList grid rebuilds every delegate per
+        ``appsChanged`` emit (async icons blank out); togglePortrait only
+        flips the pref + status, so no rebuild may ride along.
+        """
+        controller = PanelController("/fake/adb.exe")
+        rebuilds: list[int] = []
+        controller.appsChanged.connect(lambda: rebuilds.append(1))
+        controller.togglePortrait("tv.danmaku.bili")
+        assert rebuilds == []
+        assert controller.portraitFor("tv.danmaku.bili") is True
+
+
+def test_icon_burst_notifies_once(no_adb, prefs_stub, qapp):
+        """An icon sweep flushes as ONE appsChanged emit, not one per icon.
+
+        The old per-icon emits fired a 5x full-grid rebuild storm at every
+        startup - tiles visibly vanished under a held press (async images
+        blank while delegates recycle). The deferred flush restores the
+        batch contract the app-info path already follows.
+        """
+        controller = PanelController("/fake/adb.exe")
+        controller._installedResolved.emit({"tv.danmaku.bili", "com.tencent.mm"})
+        rebuilds: list[int] = []
+        controller.appsChanged.connect(lambda: rebuilds.append(1))
+        for package in ("tv.danmaku.bili", "com.tencent.mm", "cn.wps.moffice_eng"):
+                controller.iconReady.emit(package, Path(f"/tmp/{package}.png"))
+        QApplication.processEvents()   # let the single-shot flush timer fire
+        assert len(rebuilds) == 1
+        by_package = {e["package"]: e for e in controller.apps}
+        expected = QUrl.fromLocalFile("/tmp/tv.danmaku.bili.png").toString()
+        assert by_package["tv.danmaku.bili"]["icon"] == expected
+        assert by_package["com.tencent.mm"]["icon"] == \
+                QUrl.fromLocalFile("/tmp/com.tencent.mm.png").toString()
+        # A later, separate burst notifies exactly once more.
+        controller.iconReady.emit("cn.wps.moffice_eng", None)   # no patch, no emit
+        controller.iconReady.emit("tv.danmaku.bili", Path("/tmp/bili-2.png"))
+        QApplication.processEvents()
+        assert len(rebuilds) == 2
+        assert by_package["tv.danmaku.bili"]["icon"] == \
+                QUrl.fromLocalFile("/tmp/bili-2.png").toString()
+
+
 # ------------------------------------------------------------------ defaults
 
 

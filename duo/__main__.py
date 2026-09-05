@@ -189,8 +189,9 @@ def _run_mirror(args: argparse.Namespace) -> int:
         if args.chrome:
                 if not title:
                         raise ChromeError("--chrome needs a window title: pass --app or --title")
-                # Chin ring long-press: HOME on physical mirroring; on
-                # virtual displays (flex/fixed) it CLOSES the session window
+                # Chin long-press (ring glyph on physical mirroring, back
+                # chevron on virtual displays): HOME on mirror; on virtual
+                # displays (flex/fixed) it CLOSES the session window
                 # instead - a virtual display has no launcher, and keyevent 3
                 # there raises the system launcher's all-apps picker on the
                 # mirrored display (the "confusing app selector"; the C#

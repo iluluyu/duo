@@ -8,12 +8,14 @@ window (FindWindow by title, GetWindowRect, styles, z-order):
 
     cursor near the top edge    -> top-right capsule: minimize / maximize
                                    (taskbar-safe, emulated) / close
-    window active               -> persistent chin: mBack ring, tap = back,
-                                   long-press = home (physical mirroring) or
-                                   session close (virtual displays: they have
-                                   no launcher - HOME there raises the system
-                                   launcher's all-apps picker on the mirrored
-                                   display, the "confusing app selector")
+    window active               -> persistent chin: physical mirroring shows
+                                   the mBack ring, tap = back, long-press =
+                                   home; virtual displays show a plain back
+                                   chevron and long-press = session close
+                                   (they have no launcher - HOME there raises
+                                   the system launcher's all-apps picker on
+                                   the mirrored display, the "confusing app
+                                   selector")
 
 The overlay itself is the C# program ``duo/resources/chrome_overlay.cs``,
 compiled on first use with the .NET Framework ``csc.exe`` that every Windows
@@ -116,10 +118,12 @@ def overlay_command(
         window - a virtual display has no launcher, and keyevent 3 raises
         the system launcher's all-apps picker on the mirrored display.
 
-        ``display_mode`` drives resize policy: mirror/fixed keep the window
-        glued to the video aspect ratio (sizes arrive through ``session_log``
-        as scrcpy ``Texture:`` lines), flex lets the window resize freely and
-        the virtual display follows. ``video_*`` is the initial size when
+        ``display_mode`` drives resize policy AND the chin affordance:
+        mirror keeps the window glued to the video aspect ratio (sizes
+        arrive through ``session_log`` as scrcpy ``Texture:`` lines) and
+        shows the ring glyph; flex/fixed let the window resize freely and
+        show a plain back chevron (no home affordance - see above and
+        docs/window-experience.md §7). ``video_*`` is the initial size when
         already known (fixed mode only); ``session_log`` is a Windows path.
         """
         argv = [

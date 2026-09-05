@@ -21,17 +21,19 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 pytest.importorskip("PyQt6.QtQml")
 
-from PyQt6.QtCore import QEventLoop, QObject, QTimer, QUrl  # noqa: E402
+from PyQt6 import sip  # noqa: E402
+from PyQt6.QtCore import QEventLoop, QObject, Qt, QTimer, QUrl  # noqa: E402
 from PyQt6.QtQml import (  # noqa: E402
         QQmlApplicationEngine,
         QQmlComponent,
         QQmlEngine,
 )
+from PyQt6.QtQuick import QQuickItem  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import duo.ui.controller as controller_mod  # noqa: E402
 from duo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
-from duo.ui.controller import MIRROR_KEY, PanelController  # noqa: E402
+from duo.ui.controller import APP_CATALOG, MIRROR_KEY, PanelController  # noqa: E402
 
 SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 
@@ -279,6 +281,59 @@ def test_controller_bindings_drive_qml(qapp, no_adb, prefs_stub, settings_file):
 
 
 # ----------------------------------------------- ⑤ settings page + g2 slider
+
+
+def test_app_tile_held_guard(qapp, no_adb, prefs_stub, settings_file):
+        """App tiles toggle portrait on long-press exactly once.
+
+        The long-press regression: pressAndHold (portrait toggle) plus the
+        platform's echoed click (session launch) hit the same press, and
+        the delegate died in the rebuild storm. The tile MouseArea must
+        carry the ``held`` flag, swallow the echoed click and reset it on
+        the next press; the loaded object exposes the flag.
+        """
+        text = QML_MAIN.read_text(encoding="utf-8")
+        assert "property bool held: false" in text
+        assert "if (held) { held = false; return }" in text   # swallow echoed click
+        assert "onPressed: function () { held = false }" in text   # reset per press
+        assert "held = true" in text                          # set by pressAndHold
+
+        controller = PanelController("/nonexistent/adb-for-tests")
+        engine = _make_engine(controller, SettingsApi())
+        try:
+                root = engine.rootObjects()[0]
+                _pump(150)   # first frame: grid layout + model settle
+                grid = next(
+                        obj for obj in root.findChildren(QObject)
+                        if obj.metaObject().className() == "QQuickGridView"
+                )
+                grid.forceLayout()   # materialize delegates (no exposed
+                _pump(50)            # window offscreen, so force them)
+
+                def walk(item):
+                        yield item
+                        for child in item.childItems():
+                                yield from walk(child)
+
+                tile_areas = [
+                        item for item in walk(sip.cast(grid, QQuickItem))
+                        if "MouseArea" in item.metaObject().className()
+                        and item.property("held") is not None
+                ]
+                assert len(tile_areas) == len(APP_CATALOG), (
+                        "expected one MouseArea per catalog tile",
+                        len(tile_areas),
+                )
+                for ma in tile_areas:
+                        assert ma.property("held") is False
+                        # left + right accepted (start vs portrait toggle)
+                        assert ma.property("acceptedButtons") == (
+                                Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton
+                        )
+        finally:
+                controller.shutdown()
+                engine.deleteLater()
+                _pump(20)
 
 
 @pytest.fixture()

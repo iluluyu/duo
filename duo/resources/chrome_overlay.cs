@@ -521,7 +521,14 @@ namespace DuoChrome
     }
 
     // -------------------------------------------------------------------------
-    // The chin: persistent bottom bar with "<" back and "O" home.
+    // The chin: persistent bottom bar with one centered control. Physical
+    // mirroring shows the mBack ring (tap = back, long-press = home on the
+    // phone's real launcher). Virtual displays (flex/fixed) show a plain
+    // back chevron instead - the ○ reads as a home button, and HOME has
+    // nowhere to go on a virtual display (keyevent 3 raises the AOSP
+    // SecondaryDisplayLauncher app picker there; see ChinHold and
+    // docs/window-experience.md §7). Long-press stays the session close on
+    // virtual displays.
     // -------------------------------------------------------------------------
     internal sealed class ChinWindow : OverlayWindow
     {
@@ -532,20 +539,22 @@ namespace DuoChrome
         private readonly Timer _hold;
         private bool _firedHold;
 
-        public ChinWindow(Controller owner, bool home)
+        public ChinWindow(Controller owner, bool home, string displayMode)
             : base(owner, 0, (int)(18 * ScaleOf()))
         {
             GhostBackdrop = true;
             int btn = (int)(LogicalButton * Dpi);
             int h = (int)(LogicalHeight * Dpi);
             Size = new Size(600, h);           // width resynced by the controller
-            // mBack homage: one centered ring. Tap = BACK; press-and-hold
-            // = Ctrl.ChinHold(): HOME on physical mirroring, session close
-            // on virtual displays (a virtual display has no launcher - see
-            // ChinHold for the tradeoff).
+            // Glyph follows the DISPLAY TYPE, not the home flag: a flex
+            // session without --app runs with home=1 but is still a virtual
+            // display with no launcher to go home to (see ChinHold). The
+            // single control stays centered either way - only the glyph
+            // changes, so no layout or width bookkeeping is needed.
+            bool mirror = displayMode != null && displayMode.Equals("mirror");
             Buttons.Add(new NavButton(
                 new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
-                1, delegate { Ctrl.AdbKey(4); }));
+                mirror ? 1 : 0, delegate { Ctrl.AdbKey(4); }));
             _hold = new Timer { Interval = HoldMs };
             _hold.Tick += delegate
             {
@@ -675,7 +684,8 @@ namespace DuoChrome
                     }
                 }
                 float opacity = (b.Hover || b.Pressed) ? 1.0f : 0.72f;
-                DrawRing(g, cx, cy, opacity);
+                if (b.Kind == 0) DrawChevron(g, cx, cy, opacity);   // virtual: ‹ back
+                else DrawRing(g, cx, cy, opacity);                  // mirror: ○ ring
             }
         }
 
@@ -1362,7 +1372,7 @@ namespace DuoChrome
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
             _cornerDip = cornerDip;
-            _chin = new ChinWindow(this, home);
+            _chin = new ChinWindow(this, home, _displayMode);
             _top = new TopWindow(this, _displayMode.Equals("flex"));
             // Force handle creation now: the WinEvent callback below may fire
             // for any window move long before the bars are first shown, and
@@ -2499,12 +2509,31 @@ namespace DuoChrome
             return new Point(p.X, p.Y);
         }
 
+        /// <summary>Work area of the monitor the WINDOW is on, resolved
+        /// from the window rect's CENTER - the same straddle-proof contract
+        /// as ConstrainToWorkArea. MonitorFromWindow is straddle-sensitive
+        /// (a window overhanging a screen boundary can flip to the other
+        /// monitor), which handed FakeMaximize the wrong screen's work area
+        /// and made "maximize" fit/center on the other screen. Every
+        /// FakeMaximize entry re-resolves from the current rect, so after a
+        /// cross-screen drag the next maximize fits the screen the window
+        /// is actually on.</summary>
         private Rectangle WorkArea()
         {
+            Rectangle wr = WindowRect();
+            NativeMethods.POINT center;
+            center.X = wr.Left + wr.Width / 2;
+            center.Y = wr.Top + wr.Height / 2;
+            IntPtr mon = NativeMethods.MonitorFromPoint(center, 1 /*NEAREST*/);
             NativeMethods.MONITORINFO mi = new NativeMethods.MONITORINFO();
             mi.cbSize = Marshal.SizeOf(typeof(NativeMethods.MONITORINFO));
-            IntPtr mon = NativeMethods.MonitorFromWindow(_hwnd, 1 /*NEAREST*/);
-            NativeMethods.GetMonitorInfoW(mon, ref mi);
+            if (mon == IntPtr.Zero || !NativeMethods.GetMonitorInfoW(mon, ref mi))
+            {
+                // MONITOR_DEFAULTTONEAREST never returns null in practice;
+                // last-ditch fallback keeps the old primary-screen behavior
+                // instead of computing against an empty rectangle.
+                return SystemInformation.WorkingArea;
+            }
             return Rectangle.FromLTRB(
                 mi.rcWork.Left, mi.rcWork.Top, mi.rcWork.Right, mi.rcWork.Bottom);
         }
