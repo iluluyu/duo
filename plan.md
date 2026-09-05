@@ -3,7 +3,7 @@
 > 高效利用 Windows 电脑，让安卓设备成为服务器——熄屏无头运行、虚拟显示、键鼠操控、一键进入安卓应用生态。
 
 - **仓库**: https://github.com/iluluyu/duo
-- **状态**: 🚧 M0 仓库与骨架阶段
+- **状态**: 已有 GUI / 镜像 / Windows overlay 实现；当前优先修复窗口体验，见 [TODO.md](./TODO.md)。本文里程碑状态与实验勾选保留为历史记录，须以新验收证据复核。
 - **技术路线**: scrcpy 引擎 + Python (PyQt6) 自研壳
 - **最后更新**: 2026-09-03
 
@@ -110,7 +110,7 @@ scrcpy \
 
 ```
 duo/
-├── plan.md                  # 本文件：唯一事实来源（single source of truth）
+├── plan.md                  # 长期路线与历史实验；本轮任务以 TODO.md 为准
 ├── README.md
 ├── pyproject.toml
 ├── duo/
