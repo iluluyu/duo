@@ -1,10 +1,10 @@
 """Panel controller: the launcher's logic as a QObject that QML can bind to.
 
 Single source of truth for panel behaviour - devices, the app catalog,
-mirror sessions, portrait preferences and adb resolution - shared by the
-widgets panel (:mod:`duo.ui.main_window`) and the upcoming QML front end.
-Deliberately widgets-free: only QtCore lives here, so QML can bind the
-signals and properties below directly without going through QMainWindow.
+mirror sessions, portrait preferences and adb resolution - consumed by the
+QML front end (:mod:`duo.ui.app` registers it as the ``ctrl`` context
+property). Deliberately widgets-free: only QtCore lives here, so QML binds
+the signals and properties below directly.
 
 Worker threads (adb polls, install checks, icon pulls) never touch bindable
 state directly; they raise private ``_*`` hop signals that Qt delivers on
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6 import QtCore
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
 
 from duo.core.apps import Adb, AdbError, app_info
 from duo.core.devices import DeviceMonitor, poll_query
@@ -50,6 +50,16 @@ def package_to_label(package: str) -> str:
 def elide_label(label: str, limit: int = 6) -> str:
         """Shorten a label to fit under a mini icon."""
         return label if len(label) <= limit else label[: limit - 1] + "…"
+
+
+def _icon_url(path: object) -> str:
+        """Local icon path as a file URL string for QML ``Image.source``.
+
+        ``QUrl.fromLocalFile`` handles Windows drive letters, spaces and
+        non-ASCII; the early ``"file://" + path`` string concatenation
+        silently broke every one of those cases.
+        """
+        return QUrl.fromLocalFile(str(path)).toString() if path else ""
 
 #: Small curated catalog; filtered against installed packages at startup.
 APP_CATALOG: list[tuple[str, str]] = [
@@ -189,6 +199,7 @@ class PanelController(QObject):
 
         # ------------------------------------------------------ QML surface
         devicesChanged = pyqtSignal(list)            # list of device maps
+        appsChanged = pyqtSignal()                   # the apps model mutated
         appsResolved = pyqtSignal(object)            # set of installed packages
         iconReady = pyqtSignal(str, object)          # package, icon path|None
         statusChanged = pyqtSignal(str)
@@ -208,6 +219,7 @@ class PanelController(QObject):
                 super().__init__(parent)
                 self._adb_binary = adb_binary
                 self._devices: dict[str, str] = {}
+                self._apps: list[dict[str, object]] = []
                 self._installed: set[str] | None = None
                 self._portrait_prefs = load_portrait_prefs()
                 self._sessions: dict[str, subprocess.Popen[bytes]] = {}
@@ -219,6 +231,10 @@ class PanelController(QObject):
                 self._devicesPolled.connect(self._apply_devices)
                 self._installedResolved.connect(self._apply_installed)
                 self._adbResolved.connect(self.setAdb)
+                # App-model maintenance for the QML grid (queued from workers).
+                self.allAppsReady.connect(self._merge_all_apps)
+                self.iconReady.connect(self._apply_icon)
+                self.appInfoReady.connect(self._apply_app_info)
 
                 self._monitor = DeviceMonitor(
                         on_change=self._devicesPolled.emit,
@@ -256,6 +272,15 @@ class PanelController(QObject):
         def statusText(self) -> str:
                 """The single status line under the cards."""
                 return self._status_text
+
+        @pyqtProperty(list, notify=appsChanged)
+        def apps(self) -> list[dict[str, object]]:
+                """The QML grid model: catalog first, then third-party apps.
+
+                Entries carry package/label/installed plus ``icon`` as a file
+                URL string (empty until the icon worker delivers a path).
+                """
+                return self._apps
 
         @pyqtProperty(list, notify=sessionsChanged)
         def runningSessions(self) -> list[dict[str, object]]:
@@ -443,8 +468,71 @@ class PanelController(QObject):
                 assert isinstance(installed, set)
                 self._installed = installed
                 self.appsResolved.emit(installed)
+                self._rebuild_apps(installed)
                 self._load_catalog_icons()
                 self._load_all_apps()
+
+        def _rebuild_apps(self, installed: set[str]) -> None:
+                """Rebuild the QML app model: catalog first, then extras.
+
+                Third-party entries gathered from an earlier poll survive
+                with their icons/labels; only their installed flag refreshes.
+                """
+                previous = {str(entry["package"]): entry for entry in self._apps}
+                apps: list[dict[str, object]] = []
+                for label, package in APP_CATALOG:
+                        old = previous.pop(package, None)
+                        apps.append({
+                                "package": package,
+                                "label": label,
+                                "icon": str(old["icon"]) if old else "",
+                                "installed": package in installed,
+                        })
+                for entry in previous.values():
+                        entry["installed"] = str(entry["package"]) in installed
+                        apps.append(entry)
+                self._apps = apps
+                self.appsChanged.emit()
+
+        @pyqtSlot(list)
+        def _merge_all_apps(self, packages: list[str]) -> None:
+                """Extend the model with third-party packages just discovered."""
+                known = {str(entry["package"]) for entry in self._apps}
+                fresh = [
+                        {
+                                "package": package,
+                                "label": package_to_label(package),
+                                "icon": "",
+                                "installed": True,   # a -3 listing IS the installed set
+                        }
+                        for package in packages
+                        if package not in known
+                ]
+                if fresh:
+                        self._apps.extend(fresh)
+                        self.appsChanged.emit()
+
+        @pyqtSlot(str, object)
+        def _apply_icon(self, package: str, icon_path: object) -> None:
+                """Adopt one resolved icon path (queued from the icon worker)."""
+                if icon_path:
+                        self._update_app_entry(package, icon=_icon_url(icon_path))
+
+        @pyqtSlot(str, object, str)
+        def _apply_app_info(self, package: str, icon_path: object, label: str) -> None:
+                """Adopt resolved metadata: real label, icon when available."""
+                fields: dict[str, str] = {"label": label}
+                if icon_path:
+                        fields["icon"] = _icon_url(icon_path)
+                self._update_app_entry(package, **fields)
+
+        def _update_app_entry(self, package: str, **fields: str) -> None:
+                """Patch one model entry and notify the QML bindings."""
+                for entry in self._apps:
+                        if str(entry["package"]) == package:
+                                entry.update(fields)
+                                self.appsChanged.emit()
+                                return
 
         def _set_status(self, text: str) -> None:
                 self._status_text = text

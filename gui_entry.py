@@ -12,7 +12,7 @@ def _main() -> int:
     if len(sys.argv) > 1:
         from duo.__main__ import main
         return main(sys.argv[1:])
-    from duo.ui.main_window import run_app
+    from duo.ui.app import run_app
     return run_app()
 
 

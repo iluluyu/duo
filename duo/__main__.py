@@ -309,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.gui:
                 try:
-                        from duo.ui.main_window import run_app
+                        from duo.ui.app import run_app
                 except ImportError as exc:
                         print(f"error: gui extras missing ({exc})", file=sys.stderr)
                         print("install with: pip install duo[gui]", file=sys.stderr)
