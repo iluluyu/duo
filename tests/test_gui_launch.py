@@ -1,4 +1,9 @@
-"""GUI launch logic: argv composition and per-app portrait preferences."""
+"""GUI launch logic: argv composition and per-app portrait preferences.
+
+These helpers moved from the widgets main_window into duo.ui.controller
+(the QML front end spawns sessions through the same functions); the argv
+and prefs contracts are unchanged.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from duo.ui.main_window import (
+from duo.ui.controller import (
         DEFAULT_PORTRAIT,
         build_device_mirror_argv,
         build_launch_argv,
@@ -92,16 +97,5 @@ def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
 
 
 def test_gui_importable_without_display():
-        """The panel module imports cleanly headless (Qt lazy-loaded)."""
-        import duo.ui.main_window as mw  # noqa: F401
-
-
-def test_columns_fit_width_with_bounds():
-        """Column counts follow the available width within sane bounds."""
-        from duo.ui.main_window import MainWindow
-
-        cols = MainWindow._columns_for
-        assert cols(0, 58, 4, 10) == 4          # never below minimum
-        assert cols(120, 58, 4, 10) == 4        # ~2 cells -> clamped up
-        assert cols(360, 58, 4, 10) == 5
-        assert cols(1000, 58, 4, 10) == 10      # capped at maximum
+        """The QML front end imports cleanly headless (Qt lazy-loaded)."""
+        import duo.ui.app  # noqa: F401

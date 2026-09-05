@@ -20,10 +20,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PyQt6.QtCore")
 
+from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import duo.ui.controller as controller_mod  # noqa: E402
 from duo.ui.controller import (  # noqa: E402
+        APP_CATALOG,
         MIRROR_KEY,
         PanelController,
         build_device_mirror_argv,
@@ -126,6 +128,48 @@ def no_adb(monkeypatch):
 
         monkeypatch.setattr(controller_mod, "_resolve_installed", fake_resolve_installed)
         return checked
+
+
+# ------------------------------------------------------------- QML app model
+
+
+def test_apps_model_starts_from_catalog(no_adb, prefs_stub, qapp):
+        """The QML grid model lists the catalog with installed flags."""
+        controller = PanelController("/fake/adb.exe")
+        assert [entry["package"] for entry in controller.apps] == [
+                package for _, package in APP_CATALOG
+        ]
+        assert all(entry["installed"] is False for entry in controller.apps)
+        assert all(entry["icon"] == "" for entry in controller.apps)
+
+
+def test_apps_model_tracks_installed_icons_and_extras(no_adb, prefs_stub, qapp):
+        """Installed flags, icon URLs and third-party apps all reach the model."""
+        controller = PanelController("/fake/adb.exe")
+        controller._installedResolved.emit({"tv.danmaku.bili"})
+        by_package = {e["package"]: e for e in controller.apps}
+        assert by_package["tv.danmaku.bili"]["installed"] is True
+        assert by_package["com.tencent.mm"]["installed"] is False
+
+        # iconReady hops a Path in; the model stores a QML-ready file URL.
+        controller.iconReady.emit("tv.danmaku.bili", Path("/tmp/bili.png"))
+        by_package = {e["package"]: e for e in controller.apps}
+        expected = QUrl.fromLocalFile("/tmp/bili.png").toString()
+        assert by_package["tv.danmaku.bili"]["icon"] == expected
+
+        # A third-party listing extends the model; app info fills the label.
+        controller.allAppsReady.emit(["org.foo.bar"])
+        assert "org.foo.bar" in {e["package"] for e in controller.apps}
+        controller.appInfoReady.emit("org.foo.bar", None, "Bar 应用")
+        by_package = {e["package"]: e for e in controller.apps}
+        assert by_package["org.foo.bar"]["label"] == "Bar 应用"
+
+        # A later install poll rebuilds the catalog but keeps extras + icons.
+        controller._installedResolved.emit(set())
+        by_package = {e["package"]: e for e in controller.apps}
+        assert by_package["tv.danmaku.bili"]["installed"] is False
+        assert by_package["tv.danmaku.bili"]["icon"] == expected
+        assert by_package["org.foo.bar"]["label"] == "Bar 应用"
 
 
 # ------------------------------------------------------------------ defaults
