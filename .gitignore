@@ -27,3 +27,4 @@ Thumbs.db
 # Duo runtime
 logs/
 *.log
+.pi/
