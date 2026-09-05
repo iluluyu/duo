@@ -933,6 +933,149 @@ namespace DuoChrome
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Corner mask: a tiny click-through layered square per window corner that
+    // strokes the SAME superellipse the region clips along, anti-aliased.
+    // GDI regions are 1-bit (hard staircase); this 2px per-pixel-alpha stroke
+    // covers the +-1px stair band and reads as a designed hairline edge.
+    // -------------------------------------------------------------------------
+    internal sealed class CornerMask : Form
+    {
+        private readonly int _corner;        // 0=TL 1=TR 2=BR 3=BL (clockwise)
+        private int _radius;                 // physical px, 0 = hidden
+
+        public CornerMask(int corner)
+        {
+            _corner = corner;
+            StartPosition = FormStartPosition.Manual;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            AutoScaleMode = AutoScaleMode.None;
+            Bounds = new Rectangle(-20000, -20000, 1, 1);   // parked until synced
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00080000      // WS_EX_LAYERED
+                           | 0x08000000      // WS_EX_NOACTIVATE
+                           | 0x00000080      // WS_EX_TOOLWINDOW
+                           | 0x00000020      // WS_EX_TRANSPARENT: never take clicks
+                           | 0x00000008;     // WS_EX_TOPMOST
+                return cp;
+            }
+        }
+
+        /// <summary>Place the square over one corner of the visible window
+        /// bounds and stroke the matching superellipse quadrant.</summary>
+        public void SyncTo(Rectangle visible, int radiusPhysical, float dpi)
+        {
+            int r = Math.Min(radiusPhysical, Math.Min(visible.Width, visible.Height) / 2);
+            if (r <= 1)
+            {
+                if (Visible) Hide();
+                return;
+            }
+            int pad = (int)Math.Ceiling(3f * dpi);
+            int size = r + pad;
+            int x = (_corner == 0 || _corner == 3) ? visible.Left : visible.Right - size;
+            int y = (_corner == 0 || _corner == 1) ? visible.Top : visible.Bottom - size;
+            Rectangle want = new Rectangle(x, y, size, size);
+            if (Bounds != want) Bounds = want;
+            if (!Visible) Show();
+            if (_radius != r || Bounds != want)
+            {
+                _radius = r;
+                Render(r, dpi);
+            }
+        }
+
+        public void HideMask()
+        {
+            if (Visible) Hide();
+            _radius = 0;
+        }
+
+        private void Render(int r, float dpi)
+        {
+            if (Width <= 0 || Height <= 0) return;
+            using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    // The arc square: for TL the curve center sits at (r, r)
+                    // and bulges toward (0, 0). Same superellipse as the region
+                    // (quartic, tangential joins), drawn as an AA pen stroke.
+                    int w = Width, h = Height;
+                    int cx = (_corner == 0 || _corner == 3) ? r : w - r;
+                    int cy = (_corner == 0 || _corner == 1) ? r : h - r;
+                    int sx = (_corner == 0 || _corner == 3) ? -1 : 1;
+                    int sy = (_corner == 0 || _corner == 1) ? -1 : 1;
+                    using (GraphicsPath path = new GraphicsPath())
+                    {
+                        const int steps = 24;
+                        PointF prev = PointAt(cx, cy, sx, sy, r, 0f);
+                        for (int i = 1; i <= steps; i++)
+                        {
+                            PointF p = PointAt(cx, cy, sx, sy, r,
+                                (float)(Math.PI / 2 * i / steps));
+                            path.AddLine(prev, p);
+                            prev = p;
+                        }
+                        using (Pen pen = new Pen(Color.FromArgb(96, 12, 12, 14),
+                            2.2f * dpi))
+                        {
+                            pen.StartCap = LineCap.Round;
+                            pen.EndCap = LineCap.Round;
+                            pen.Alignment = PenAlignment.Center;
+                            g.DrawPath(pen, path);
+                        }
+                    }
+                }
+                // reuse the layered push from EdgeStrip (same mechanics)
+                PushGhostBitmap(bmp);
+            }
+        }
+
+        private static PointF PointAt(int cx, int cy, int sx, int sy, int r, float t)
+        {
+            float u = (float)Math.Sqrt(Math.Cos(t));
+            float v = (float)Math.Sqrt(Math.Sin(t));
+            return new PointF(cx + sx * r * u, cy + sy * r * v);
+        }
+
+        private void PushGhostBitmap(Bitmap bmp)
+        {
+            IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
+            IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
+            IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
+            IntPtr old = NativeMethods.SelectObject(mem, hbm);
+            try
+            {
+                NativeMethods.SIZE size;
+                size.cx = Width; size.cy = Height;
+                NativeMethods.POINT src;
+                src.X = 0; src.Y = 0;
+                NativeMethods.BLENDFUNCTION blend;
+                blend.BlendOp = 0; blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255; blend.AlphaFormat = 1;
+                NativeMethods.UpdateLayeredWindow(
+                    Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2);
+            }
+            finally
+            {
+                NativeMethods.SelectObject(mem, old);
+                NativeMethods.DeleteObject(hbm);
+                NativeMethods.DeleteDC(mem);
+                NativeMethods.ReleaseDC(IntPtr.Zero, screen);
+            }
+        }
+    }
+
     internal sealed class Controller : IDisposable
     {
         private const int TickMs = 50;
@@ -980,6 +1123,8 @@ namespace DuoChrome
         // re-applied after every window-rect change - regions do not scale.
         private int _cornerDip;   // 0 = off
         private Rectangle _lastRegionRect;
+        private Rectangle _visibleRect;          // DWM visible bounds (screen)
+        private readonly CornerMask[] _masks = new CornerMask[4];
 
         // Aspect convergence: window rect changes we did not cause (external
         // window managers, scrcpy's own rotation re-layout) settle for
@@ -1022,6 +1167,7 @@ namespace DuoChrome
             _strips[6] = new EdgeStrip(this, 16);   // bottom-left
             _strips[7] = new EdgeStrip(this, 17);   // bottom-right
             _strips[8] = new EdgeStrip(this, 0);    // move (top-center)
+            for (int i = 0; i < 4; i++) _masks[i] = new CornerMask(i);
             StartLogTailer(sessionLog);
             _tick.Interval = TickMs;
             _tick.Tick += Tick;
@@ -1041,6 +1187,10 @@ namespace DuoChrome
             foreach (EdgeStrip strip in _strips)
             {
                 strip.Dispose();
+            }
+            foreach (CornerMask mask in _masks)
+            {
+                mask.Dispose();
             }
         }
 
@@ -1327,6 +1477,7 @@ namespace DuoChrome
                 out e, Marshal.SizeOf(typeof(NativeMethods.RECT)));
             int x0 = e.Left - wr.Left, y0 = e.Top - wr.Top;
             int x1 = e.Right - wr.Left, y1 = e.Bottom - wr.Top;
+            _visibleRect = new Rectangle(e.Left, e.Top, x1 - x0, y1 - y0);
             if (x1 - x0 < 8 || y1 - y0 < 8) return;
             int r = Math.Min(S(_cornerDip), Math.Min(x1 - x0, y1 - y0) / 2);
             if (r <= 1) return;
@@ -1341,7 +1492,37 @@ namespace DuoChrome
             {
                 NativeMethods.SetWindowRgn(_hwnd, rgn, false);
                 _lastRegionRect = wr;
+                ApplySingleFrameStyle();
             }
+            SyncMasks();
+        }
+
+        /// <summary>While the G2 region owns the outline, kill the two extra
+        /// frame layers DWM would draw: the 1px border color and the 8px
+        /// system corner rounding (they stack as visible double borders
+        /// around the region cut). The AA corner masks provide the edge.</summary>
+        private void ApplySingleFrameStyle()
+        {
+            if (_hwnd == IntPtr.Zero) return;
+            int none = unchecked((int)0xFFFFFFFE);   // DWMWA_COLOR_NONE
+            NativeMethods.DwmSetWindowAttribute(_hwnd,
+                34 /*DWMWA_BORDER_COLOR*/, ref none, 4);
+            int dontRound = 1;                       // DWMWCP_DONOTROUND
+            NativeMethods.DwmSetWindowAttribute(_hwnd,
+                33 /*DWMWA_CORNER_PREFERENCE*/, ref dontRound, 4);
+        }
+
+        /// <summary>Stroke the AA hairline over the region's stair-stepped
+        /// corner edges (small click-through layered squares).</summary>
+        private void SyncMasks()
+        {
+            if (_cornerDip <= 0 || _hwnd == IntPtr.Zero) return;
+            if (_visibleRect.Width <= 0 || _visibleRect.Height <= 0) return;
+            float dpi = _masks[0].DeviceDpi / 96f;
+            int r = Math.Min(S(_cornerDip),
+                Math.Min(_visibleRect.Width, _visibleRect.Height) / 2);
+            foreach (CornerMask mask in _masks)
+                mask.SyncTo(_visibleRect, r, dpi);
         }
 
         /// <summary>Append one superellipse quadrant (16 samples). The point
@@ -1585,6 +1766,7 @@ namespace DuoChrome
             {
                 if (strip.Visible) strip.Hide();
             }
+            foreach (CornerMask mask in _masks) mask.HideMask();
         }
 
         /// <summary>Keep the edge hot-zones glued to the window frame. The
@@ -1772,8 +1954,14 @@ namespace DuoChrome
             NativeMethods.SetWindowLong(_hwnd, GWL_STYLE, style | WS_THICKFRAME);
             NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0,
                 0x0067 /*NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED|NOOWNERZORDER*/);
-            int round = 2 /*DWMWCP_ROUND*/;
+            int round = _cornerDip > 0 ? 1 /*DWMWCP_DONOTROUND: region owns it*/
+                                       : 2 /*DWMWCP_ROUND*/;
             NativeMethods.DwmSetWindowAttribute(_hwnd, 33 /*CORNER_PREFERENCE*/, ref round, 4);
+            if (_cornerDip > 0)
+            {
+                int none = unchecked((int)0xFFFFFFFE);
+                NativeMethods.DwmSetWindowAttribute(_hwnd, 34 /*BORDER_COLOR*/, ref none, 4);
+            }
             _repaired = true;
             ApplyCornerRegion();
             Log.Write("window repaired: thickframe+round");
