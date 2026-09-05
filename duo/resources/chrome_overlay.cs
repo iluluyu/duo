@@ -6,7 +6,10 @@
 //   cursor in the top edge band  -> top-right capsule: minimize / maximize
 //                                   (taskbar-safe, emulated) / close
 //                                  + top-center pill: visible move grip (drag)
-//   always-on (window visible)   -> chin: "<" back  "O" home (adb keyevents)
+//   always-on (window visible)   -> chin: "<" back (adb keyevent);
+//                                   "O" hold: HOME on physical mirroring,
+//                                   session close on virtual displays
+//                                   (no launcher there - see ChinHold)
 //
 // Resize policy comes from --display-mode: mirror/fixed windows stay glued
 // to the video aspect ratio (live sizes are tailed from the session log,
@@ -102,6 +105,7 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool SetWindowPos(
             IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+        [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
         [DllImport("user32.dll")] public static extern bool GetMonitorInfoW(IntPtr h, ref MONITORINFO mi);
         [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
         [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
@@ -535,9 +539,10 @@ namespace DuoChrome
             int btn = (int)(LogicalButton * Dpi);
             int h = (int)(LogicalHeight * Dpi);
             Size = new Size(600, h);           // width resynced by the controller
-            // mBack homage: one centered ring. Tap = BACK; press-and-hold =
-            // HOME (physical mirroring only - a virtual display has no
-            // launcher, so holding there does nothing).
+            // mBack homage: one centered ring. Tap = BACK; press-and-hold
+            // = Ctrl.ChinHold(): HOME on physical mirroring, session close
+            // on virtual displays (a virtual display has no launcher - see
+            // ChinHold for the tradeoff).
             Buttons.Add(new NavButton(
                 new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
                 1, delegate { Ctrl.AdbKey(4); }));
@@ -546,8 +551,8 @@ namespace DuoChrome
             {
                 _hold.Stop();
                 _firedHold = true;
-                Log.Write("hold fired");
-                if (home) Ctrl.AdbKey(3);
+                Log.Write("hold fired home=" + home);
+                Ctrl.ChinHold();
             };
             WireInput();
         }
@@ -1492,7 +1497,7 @@ namespace DuoChrome
             if (bottom) B = Math.Max(_resizeStart.Bottom + dy, T + minH);
             Rectangle want = Rectangle.FromLTRB(L, T, R, B);
             if (RatioLock) want = ConstrainToVideo(want, _resizeEdge);
-            want = ConstrainToWorkArea(want);
+            want = ConstrainToWorkArea(want, _resizeEdge);
             bool ok = NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
                 want.Left, want.Top, want.Width, want.Height,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
@@ -1559,18 +1564,42 @@ namespace DuoChrome
             return new Rectangle(x, y, ow, oh);
         }
 
-        /// <summary>Shrink an oversized drag result to fit the monitor work
-        /// area, preserving its proportions and rough center.</summary>
-        private Rectangle ConstrainToWorkArea(Rectangle want)
+        /// <summary>Shrink an oversized drag result to fit the work area of
+        /// the monitor under the rect's CENTER.
+        ///
+        /// Multi-monitor contract (mixed-DPI bug fix): MonitorFromWindow is
+        /// straddle-sensitive - for a window spanning two screens it flips
+        /// to the OTHER monitor mid-drag, which used to clamp the window
+        /// into the wrong screen's work area and re-center it, snapping the
+        /// window across the boundary (the reported "card switch at the
+        /// screen edge"). Picking by the center point follows the user's
+        /// drag target instead. And because a clamp may legitimately fire
+        /// while dragging across onto a smaller monitor, the shrunk rect
+        /// stays anchored at the edges NOT being dragged - the dragged
+        /// corner keeps chasing the cursor, nothing teleports.
+        /// Physical pixels throughout: work areas are per-monitor physical,
+        /// and a ratio already mixes with them DPI-free.</summary>
+        private Rectangle ConstrainToWorkArea(Rectangle want, int edge)
         {
-            Rectangle wa = WorkArea();
+            NativeMethods.POINT center;
+            center.X = want.Left + want.Width / 2;
+            center.Y = want.Top + want.Height / 2;
+            IntPtr mon = NativeMethods.MonitorFromPoint(center, 1 /*NEAREST*/);
+            NativeMethods.MONITORINFO mi = new NativeMethods.MONITORINFO();
+            mi.cbSize = Marshal.SizeOf(typeof(NativeMethods.MONITORINFO));
+            if (mon == IntPtr.Zero || !NativeMethods.GetMonitorInfoW(mon, ref mi))
+                return want;
+            Rectangle wa = Rectangle.FromLTRB(
+                mi.rcWork.Left, mi.rcWork.Top, mi.rcWork.Right, mi.rcWork.Bottom);
             if (want.Width <= wa.Width && want.Height <= wa.Height) return want;
             double scale = Math.Min((double)wa.Width / want.Width,
                                     (double)wa.Height / want.Height);
             int w = Math.Max(S(LogicalMinW), (int)(want.Width * scale));
-            int h = (int)(want.Height * scale);
-            int x = want.Left + (want.Width - w) / 2;
-            int y = want.Top + (want.Height - h) / 2;
+            int h = Math.Max(S(LogicalMinH), (int)(want.Height * scale));
+            bool dragLeft = edge == 10 || edge == 13 || edge == 16;
+            bool dragTop = edge == 12 || edge == 13 || edge == 14;
+            int x = dragLeft ? want.Right - w : want.Left;
+            int y = dragTop ? want.Bottom - h : want.Top;
             return new Rectangle(x, y, w, h);
         }
 
@@ -1931,6 +1960,44 @@ namespace DuoChrome
                 Log.Write("keyevent " + code + " sent");
             }
             catch (Exception ex) { Log.Write("keyevent failed: " + ex.Message); }
+        }
+
+        /// <summary>The chin ring's long-press action. Physical mirroring
+        /// (home enabled + display-mode mirror) sends HOME to the phone's
+        /// launcher. A virtual display (flex/fixed) has NO launcher to go
+        /// home to: keyevent 3 there makes Android raise the system
+        /// launcher's all-apps picker on the mirrored display (the reported
+        /// "confusing app selector"), and HOME on the physical display
+        /// instead would wake/alter the phone behind --turn-screen-off.
+        /// Closing the session window is the honest equivalent of "back to
+        /// desktop" on the PC side: scrcpy exits cleanly through WM_CLOSE
+        /// and the CLI tears the session down. (KISS tradeoff over
+        /// display-targeted HOME: `input keyevent --display` needs the
+        /// virtual display id, which scrcpy 4.1 does not surface to us.)
+        /// Note the gate is the DISPLAY TYPE, not the home flag alone:
+        /// `duo mirror --chrome` without --app runs a flex display with
+        /// home=1, and must also close rather than send keyevent 3.</summary>
+        public void ChinHold()
+        {
+            if (_homeEnabled && _displayMode.Equals("mirror"))
+            {
+                AdbKey(3);
+            }
+            else
+            {
+                CloseSessionWindow();
+            }
+        }
+
+        /// <summary>Close the mirrored window (WM_CLOSE): scrcpy exits
+        /// cleanly and the CLI's finally block stops this overlay and
+        /// releases the audio lock. Same path as the capsule's close
+        /// button.</summary>
+        public void CloseSessionWindow()
+        {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            Log.Write("session close requested (virtual-display home)");
+            NativeMethods.PostMessageW(_hwnd, 0x0010 /*WM_CLOSE*/, IntPtr.Zero, IntPtr.Zero);
         }
 
         public void TopAction(int index)
