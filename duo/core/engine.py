@@ -214,20 +214,22 @@ class DisplaySpec:
                         # no-op size nudge at session start to mark
                         # user-resized from tick one, plus a drag-guarded pin
                         # veto for anything that slips through.
-                        # NO system decorations (2026-09-06, decisive A/B on
-                        # com.example.piliplus): a decorated flex display
-                        # ping-pongs orientation at ~2Hz forever (WindowManager
-                        # honors the app's portrait request, scrcpy re-asserts
-                        # the window's landscape shape, repeat) - even on the
-                        # app home page, before any video. Undecorated, the
-                        # display never rotates: mismatched apps letterbox.
-                        # Cost: the AOSP secondary-display launcher page is
-                        # gone (chin long-press best-effort). Stability won.
-                        # Size source: always the original resolution - the
-                        # same-day tier option was withdrawn (user decision).
+                        # Rotation LOCKED at the source (2026-09-06, gated
+                        # on the reproduced storm): decorated flex displays
+                        # ping-pong orientation at ~2Hz (WindowManager honors
+                        # the app's portrait push, scrcpy re-asserts the
+                        # window's landscape shape, repeat) - even on the app
+                        # home page. ``--capture-orientation=@`` locks the
+                        # display capture to its initial orientation: no
+                        # orientation-driven size churn can even start. The
+                        # overlay's nudge + drag-guarded pin veto backstop any
+                        # residual window-level attempt.
+                        # Size source: always the original resolution (tier
+                        # option withdrawn same day, user decision).
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
                         return [new_display, "--flex-display",
+                                "--capture-orientation=@",
                                 "--no-vd-system-decorations"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
