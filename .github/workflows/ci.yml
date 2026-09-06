@@ -20,7 +20,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e .[dev]
+      # gui extra: mypy needs PyQt6 (shipped stubs) resolvable, matching
+      # the local dev venv where the check was authored.
+      - run: pip install -e .[dev,gui]
       # Same gates as local development (scripts + tests included).
       - run: ruff check .
       - run: mypy duo
