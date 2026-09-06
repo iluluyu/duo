@@ -48,6 +48,6 @@ piliplus 首页→视频→全屏来回切窗口纹丝不动（全流程仍需 W
 ## 当前基线（2026-09-06）
 
 - 应用会话：启动固定 2560×1440/480 虚拟屏 + `--no-window-aspect-ratio-lock` + overlay 钉扎
-  （左键豁免+收编）。窗口自由拖改；缩放手势直通系统原生 size loop（flex 专属）；
+  （左键豁免+收编）。窗口自由拖改；缩放异步下发（SWP_ASYNCWINDOWPOS）不阻塞；
   松手稳定 ≥800ms 后虚拟屏就地 `wm size -d` 跟随窗口比例（任务 1，已真机验证）。
 - 测试 179 passed；ruff / mypy 全绿；overlay 经 csc.exe 真机编译通过。
