@@ -292,13 +292,13 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # too). mirror/fixed windows keep the video aspect ratio
                 # (sizes stream from the session log); flex windows resize
                 # freely.
-                # flex 也携带启动显示框（就地跟随的 seed）：无显式尺寸时引擎
-                # 回落 2560x1440（engine.DisplaySpec.to_flags），此值只作
-                # overlay 的启动显示框 seed；镜像模式不传。
+                # 视频尺寸（比例锁 seed）只给 fixed：flex 是自由窗口，
+                # 不锁比例、不携带显示框 seed（2026-09-06 用户拍板：显示不
+                # 跟随窗口、横竖屏由 APP 自主请求，我们零干预）；镜像不传。
                 vd_w = vd_h = None
-                if display.mode in ("flex", "fixed"):
-                        vd_w = display.width or 2560
-                        vd_h = display.height or 1440
+                if display.mode == "fixed":
+                        vd_w = display.width
+                        vd_h = display.height
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,

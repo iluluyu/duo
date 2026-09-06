@@ -8,7 +8,7 @@
 |---|---|---|
 | 整机镜像 | 跟随设备画面，scrcpy 自管 | 等比锁定（`ConvergeToVideoAspect`：外部改窗 350ms 后收敛） |
 | 固定虚拟屏（竖屏等） | 同上 | 同上 |
-| 应用会话（flex） | **纯 Windows 窗口**：拖哪是哪，永不自调；缩放为外部异步 `SetWindowPos`（`SWP_ASYNCWINDOWPOS`，不阻塞于目标窗口重排；曾试 WM_NCLBUTTONDOWN 直通原生 size loop，会阻塞 SDL 渲染线程致拖拽粘滞，已回退） | 自由缩放；松手稳定 ≥800ms 后虚拟屏就地 `wm size -d` 跟随窗口比例（单向离散，无风暴环） |
+| 应用会话（flex） | **纯 Windows 窗口**：拖哪是哪；缩放异步下发（SWP_ASYNCWINDOWPOS，不阻塞于目标窗口重排） | 自由缩放；虚拟屏恒定 2560×1440，方向由 APP 自主请求（app 全屏→转屏→scrcpy 窗口随视频重排），我们零干预（2026-09-06 回退跟随/钉扎） |
 
 **应用会话三层防御**（2026-09-06 定稿）：
 
@@ -65,4 +65,5 @@ adb shell am start --display <id> -n <pkg>/<activity>
 **根因链**：应用方向请求 → WindowManager 旋转虚拟屏（`ROTATES_WITH_CONTENT` 建屏
 即带）→ scrcpy flex 重申窗口形状 → 无限乒乓。scrcpy 4.1 无"可跟随但禁旋转"旗标。
 
-真·跟随（就地 `wm size -d`，已真机验证 2026-09-06）见 TODO.md 任务 1。
+后续：就地跟随已实现并真机验证，同日按用户决策整体回退（信 APP，不跟随不切屏）；
+存档见 TODO.md 任务 1。
