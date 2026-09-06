@@ -44,10 +44,11 @@ def test_flex_default_matches_verified_preset():
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
-        # Decorations are OFF for flex (2026-09-06 decisive A/B on
-        # com.example.piliplus): decorated flex displays ping-pong orientation
-        # at ~2Hz forever; undecorated, apps letterbox and nothing rotates.
+        # Decorations off + rotation locked at the source: the decorated
+        # flex display ping-ponged orientation at ~2Hz (2026-09-06 A/B on
+        # com.example.piliplus); @-locking the capture kills it for good.
         assert "--no-vd-system-decorations" in argv
+        assert "--capture-orientation=@" in argv
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv
@@ -89,6 +90,7 @@ def test_flex_without_dpi_uses_bare_new_display():
         assert not any(a.startswith("--new-display=") for a in argv)
         assert "--flex-display" in argv
         assert "--no-vd-system-decorations" in argv
+        assert "--capture-orientation=@" in argv
 
 
 def test_flex_explicit_size_never_pins_display():
