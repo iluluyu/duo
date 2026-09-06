@@ -3,9 +3,12 @@
 // Runs on the Windows side, spawned by `duo mirror --chrome`. The scrcpy
 // window is borderless; this overlay adds back, on demand:
 //
+//   top caption band (drag)      -> move the window, native title-bar style:
+//                                   everything between the corner resize
+//                                   zones and below the 6px top resize
+//                                   strip drags the window
 //   cursor in the top edge band  -> top-right capsule: minimize / maximize
 //                                   (taskbar-safe, emulated) / close
-//                                  + top-center pill: visible move grip (drag)
 //   always-on (window visible)   -> chin: "<" back (adb keyevent);
 //                                   "O" hold: HOME on physical mirroring,
 //                                   session close on virtual displays
@@ -93,7 +96,6 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint ga);
-        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
@@ -831,7 +833,11 @@ namespace DuoChrome
     /// <summary>An invisible layered hot-zone hugging one window edge.
     /// Pixel alpha is zero everywhere, but layered windows still receive
     /// mouse input, so this is how the borderless scrcpy window regains
-    /// native-feeling resize edges (correct cursors, live feedback).</summary>
+    /// native-feeling resize edges (correct cursors, live feedback).
+    /// Edge 0 is the caption twin: a full-width band directly below the
+    /// top resize strip that MOVES the window - the native title-bar
+    /// layout (top sliver = resize, band = drag, corners = resize) with
+    /// a plain arrow cursor, so drag-anywhere needs zero learning.</summary>
     internal sealed class EdgeStrip : Form
     {
         public readonly int Edge;   // HT code: 10 left .. 17 bottomright
@@ -952,188 +958,6 @@ namespace DuoChrome
                     NativeMethods.DeleteDC(mem);
                     NativeMethods.ReleaseDC(IntPtr.Zero, screen);
                 }
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Top move grip: a small visible pill glued to the top-center of the
-    // client area, advertising the invisible EdgeStrip[8] move hot-zone that
-    // real users never discover on their own. Research basis for making the
-    // drag zone visible BEFORE interaction:
-    //   - Microsoft's title bar design guidance requires drag affordances to
-    //     be discoverable (a caption drag area must announce itself);
-    //   - Electron/Wails frameless windows expose a VISIBLE drag region with
-    //     hover feedback, not a blind hit-zone;
-    //   - Atlassian's drag-and-drop guidelines require a grab handle to be
-    //     visible before interaction.
-    // Same infrastructure as EdgeStrip (per-pixel-alpha layered window,
-    // NOACTIVATE|TOOLWINDOW|TOPMOST) but with real pixels, and deliberately
-    // WITHOUT WS_EX_TRANSPARENT so the pill itself takes the mouse-down.
-    // -------------------------------------------------------------------------
-    internal sealed class GripWindow : Form
-    {
-        private const int LogicalW = 44;    // DIP
-        private const int LogicalH = 5;     // DIP
-        private const int MinWidthPx = 24;  // physical px floor
-        private readonly float _dpi;        // system DPI, probed at construction
-        private Size _rendered;             // size the pushed bitmap matches
-        private readonly Controller _owner;
-
-        public GripWindow(Controller owner)
-        {
-            _owner = owner;
-            StartPosition = FormStartPosition.Manual;
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            AutoScaleMode = AutoScaleMode.None;
-            Bounds = new Rectangle(-20000, -20000, 1, 1);   // parked until synced
-            Cursor = Cursors.SizeAll;    // move affordance, like a native caption
-            Bitmap probe = new Bitmap(1, 1);
-            using (Graphics g = Graphics.FromImage(probe)) _dpi = g.DpiX / 96f;
-            probe.Dispose();
-            // Gesture wiring mirrors EdgeStrip[8] exactly: capture-driven
-            // drag, with a capture-loss tail so an alt-tab or modal steal
-            // can never leave the controller stuck in moving state.
-            MouseDown += delegate(object s, MouseEventArgs e)
-            {
-                if (e.Button != MouseButtons.Left) return;
-                _owner.BeginMove();
-                Capture = true;
-            };
-            // Direct-drive the window follow from mouse input: the 20Hz Tick
-            // alone made real drags rubber-band. The capture keeps these
-            // events flowing for the whole gesture, and UpdateMove dedupes
-            // the WM_MOUSEMOVE a moving target synthesizes under a
-            // stationary cursor, so no feedback storm is possible.
-            MouseMove += delegate(object s, MouseEventArgs e)
-            {
-                _owner.UpdateMove();
-            };
-            MouseUp += delegate(object s, MouseEventArgs e)
-            {
-                if (e.Button != MouseButtons.Left) return;
-                if (_owner.Moving) { _owner.EndMove(); Capture = false; }
-            };
-            MouseCaptureChanged += delegate(object s, EventArgs e)
-            {
-                if (!Capture && _owner.Moving) _owner.EndMove();
-            };
-        }
-
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x00080000      // WS_EX_LAYERED
-                           | 0x08000000      // WS_EX_NOACTIVATE
-                           | 0x00000080      // WS_EX_TOOLWINDOW
-                           | 0x00000008;     // WS_EX_TOPMOST
-                // No WS_EX_TRANSPARENT on purpose: unlike the ghost strips,
-                // the grip must receive mouse input.
-                return cp;
-            }
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            const int WM_GETMINMAXINFO = 0x0024;
-            if (m.Msg == WM_GETMINMAXINFO)
-            {
-                // The 44x5 DIP pill is far below the OS minimum track size;
-                // lift the clamp like the bars do.
-                NativeMethods.MINMAXINFO mmi =
-                    (NativeMethods.MINMAXINFO)Marshal.PtrToStructure(
-                        m.LParam, typeof(NativeMethods.MINMAXINFO));
-                mmi.ptMinTrackSize.X = 1;
-                mmi.ptMinTrackSize.Y = 1;
-                Marshal.StructureToPtr(mmi, m.LParam, false);
-                return;
-            }
-            base.WndProc(ref m);
-        }
-
-        /// <summary>Center the pill at ``centerX`` with its top at ``top``
-        /// (screen px) and keep it visible. Position-only changes just move
-        /// the layered surface; the bitmap is re-rendered only when size or
-        /// DPI actually changed - same dedupe contract as CornerMask.SyncTo.
-        /// </summary>
-        public void SyncTo(int centerX, int top)
-        {
-            int w = Math.Max(MinWidthPx, (int)Math.Round(LogicalW * _dpi));
-            int h = Math.Max(3, (int)Math.Round(LogicalH * _dpi));
-            Rectangle want = new Rectangle(centerX - w / 2, top, w, h);
-            Rectangle old = Bounds;
-            if (old != want) Bounds = want;
-            if (!Visible) Show();
-            if (_rendered != want.Size)
-            {
-                _rendered = want.Size;
-                Render();
-            }
-        }
-
-        private void Render()
-        {
-            if (Width <= 0 || Height <= 0 || !IsHandleCreated) return;
-            using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
-            {
-                using (Graphics g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.PixelOffsetMode = PixelOffsetMode.Half;
-                    float rad = Height / 2f;
-                    using (GraphicsPath path = new GraphicsPath())
-                    {
-                        path.AddArc(0, 0, Height, Height, 90, 180);
-                        path.AddArc(Width - Height, 0, Height, Height, 270, 180);
-                        path.CloseFigure();
-                        // Smoked glass from the TopWindow/ChinWindow family
-                        // (both fill rgb(10,10,12) at alpha 155..180); the
-                        // pill sits lighter (alpha 95) because it is a hint,
-                        // not a button.
-                        using (SolidBrush glass =
-                            new SolidBrush(Color.FromArgb(95, 10, 10, 12)))
-                            g.FillPath(glass, path);
-                    }
-                    // 1px highlight along the top and bottom edges (rim tint
-                    // from TopWindow.PaintBar); the rounded ends are ~2px,
-                    // so the lines read as running the pill's full length.
-                    using (Pen hi = new Pen(Color.FromArgb(70, 255, 255, 255), 1f))
-                    {
-                        g.DrawLine(hi, rad, 0.5f, Width - rad, 0.5f);
-                        g.DrawLine(hi, rad, Height - 0.5f, Width - rad, Height - 0.5f);
-                    }
-                }
-                PushBitmap(bmp);
-            }
-        }
-
-        private void PushBitmap(Bitmap bmp)
-        {
-            IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
-            IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
-            IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
-            IntPtr old = NativeMethods.SelectObject(mem, hbm);
-            try
-            {
-                NativeMethods.SIZE size;
-                size.cx = Width; size.cy = Height;
-                NativeMethods.POINT src;
-                src.X = 0; src.Y = 0;
-                NativeMethods.BLENDFUNCTION blend;
-                blend.BlendOp = 0; blend.BlendFlags = 0;
-                blend.SourceConstantAlpha = 255; blend.AlphaFormat = 1; // AC_SRC_ALPHA
-                NativeMethods.UpdateLayeredWindow(
-                    Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2);
-            }
-            finally
-            {
-                NativeMethods.SelectObject(mem, old);
-                NativeMethods.DeleteObject(hbm);
-                NativeMethods.DeleteDC(mem);
-                NativeMethods.ReleaseDC(IntPtr.Zero, screen);
             }
         }
     }
@@ -1329,7 +1153,6 @@ namespace DuoChrome
         private IntPtr _hook = IntPtr.Zero;
         private int _ticks;
         private EdgeStrip[] _strips;
-        private GripWindow _grip;    // visible pill advertising the move zone
 
         private readonly bool _homeEnabled;
 
@@ -1383,8 +1206,9 @@ namespace DuoChrome
             // corners (the chin used to be the only bottom affordance, which
             // made bottom resizes undiscoverable). Created after the bars so
             // the visible bars stack above them. The last strip (edge 0) is
-            // the top-center move grab zone, created last so it sits above
-            // the top resize band.
+            // the full-width caption move band; it sits strictly below the
+            // top resize strip and between the corner zones, so no strip
+            // rects overlap and no z-order assertion is ever needed.
             _strips = new EdgeStrip[9];
             _strips[0] = new EdgeStrip(this, 10);   // left
             _strips[1] = new EdgeStrip(this, 11);   // right
@@ -1394,13 +1218,8 @@ namespace DuoChrome
             _strips[5] = new EdgeStrip(this, 15);   // bottom
             _strips[6] = new EdgeStrip(this, 16);   // bottom-left
             _strips[7] = new EdgeStrip(this, 17);   // bottom-right
-            _strips[8] = new EdgeStrip(this, 0);    // move (top-center)
+            _strips[8] = new EdgeStrip(this, 0);    // move (caption band)
             for (int i = 0; i < 4; i++) _masks[i] = new CornerMask(i);
-            // Visible move grip on top of strip [8]; created last so it
-            // starts stacked above every strip. Handle forced now so the
-            // first tick can SyncTo/ULW without racing creation.
-            _grip = new GripWindow(this);
-            if (!_grip.IsHandleCreated) { IntPtr h = _grip.Handle; }
             StartLogTailer(sessionLog);
             _tick.Interval = TickMs;
             _tick.Tick += Tick;
@@ -1421,7 +1240,6 @@ namespace DuoChrome
             {
                 strip.Dispose();
             }
-            _grip.Dispose();
             foreach (CornerMask mask in _masks)
             {
                 mask.Dispose();
@@ -1512,10 +1330,6 @@ namespace DuoChrome
                 want.Left, want.Top, want.Width, want.Height,
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
             if (!ok && _resizeMoves == 1) Log.Write("swp failed");
-            // Drag-rate chrome follow: the top edge just moved, so re-glue
-            // the grip pill now instead of letting it trail by up to one
-            // 50ms tick (SyncTo dedupes no-op moves, the tick stays safe).
-            if (_grip.Visible) SyncGrip(ClientRect());
         }
 
         /// <summary>Reshape a raw drag rect so the CLIENT area (where the
@@ -1623,13 +1437,12 @@ namespace DuoChrome
             Log.Write("resize end moves=" + _resizeMoves);
         }
 
-        // ---- window move (top-center grab zone) ---------------------------
+        // ---- window move (caption band) -----------------------------------
 
         private bool _moving;
         private Point _moveStart, _moveMouse;
         private int _lastMoveX = int.MinValue, _lastMoveY = int.MinValue;
         private int _moveMoves;
-        private IntPtr _gripAbove;   // HWND observed in front of the grip pill
 
         public bool Moving { get { return _moving; } }
 
@@ -1668,10 +1481,6 @@ namespace DuoChrome
             _moveMoves++;
             NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y,
                 0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
-            // Drag-rate chrome follow: re-glue the grip pill to the new
-            // client top-center immediately, or it visibly trails the
-            // window and snaps back once the 20Hz tick catches up.
-            if (_grip.Visible) SyncGrip(ClientRect());
         }
 
         public void EndMove()
@@ -1679,18 +1488,6 @@ namespace DuoChrome
             if (!_moving) return;
             _moving = false;
             Log.Write("move end moves=" + _moveMoves);
-        }
-
-        /// <summary>Position the grip pill over the top-center of
-        /// ``client`` (GripWindow.SyncTo also shows it while hidden - that
-        /// reveal belongs to the tick's engagement rules). Shared by the
-        /// drag paths (UpdateMove/UpdateResize, guarded on Visible so a
-        /// hidden pill is never resurrected mid-gesture) and TickInner,
-        /// which keeps calling it as the idle fallback; SyncTo dedupes
-        /// no-op moves either way.</summary>
-        private void SyncGrip(Rectangle client)
-        {
-            _grip.SyncTo(client.Left + client.Width / 2, client.Top);
         }
 
         // ---- aspect convergence (external changes, rotation, maximize) ----
@@ -2051,10 +1848,10 @@ namespace DuoChrome
 
         private void TickInner()
         {
-            // Gestures are event-driven from MouseMove (see EdgeStrip and
-            // GripWindow); this poll is only a fallback for stalled events,
-            // and both updates dedupe so the fallback is a no-op when the
-            // event path is already current.
+            // Gestures are event-driven from MouseMove (see EdgeStrip);
+            // this poll is only a fallback for stalled events, and both
+            // updates dedupe so the fallback is a no-op when the event
+            // path is already current.
             if (_resizing) UpdateResize();
             else if (_moving) UpdateMove();
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
@@ -2073,12 +1870,7 @@ namespace DuoChrome
 
             Rectangle client = ClientRect();
             Point cursor = CursorPosition();
-            bool overBars = _chin.Bounds.Contains(cursor) || _top.Bounds.Contains(cursor)
-                // the grip counts as a bar too: hovering its pixels must not
-                // un-engage the chrome (its lower half can poke below the
-                // thin strip band when the client inset exceeds it, and the
-                // NOACTIVATE pill never brings the target to foreground)
-                || _grip.Bounds.Contains(cursor);
+            bool overBars = _chin.Bounds.Contains(cursor) || _top.Bounds.Contains(cursor);
             bool overStrips = false;
             foreach (EdgeStrip strip in _strips) if (strip.Bounds.Contains(cursor)) overStrips = true;
             // Deep binding: affordances exist only while the scrcpy window
@@ -2107,33 +1899,13 @@ namespace DuoChrome
                 return;
             }
             SyncStrips(wr);
-            // The grip pill overlaps the move strip's rect, so z-order
-            // decides which one gets the click: the grip must sit ABOVE
-            // strip [8] (both start the same BeginMove - the pill is just
-            // the visible cue, [8] keeps covering the band around it). That
-            // is also why strip [8] no longer asserts itself against the
-            // top resize band: the pill shields the center, and SyncStrips'
-            // show order ([0..7] before [8]) keeps [8] above the resize
-            // strip everywhere else. Re-assert the grip on HWND_TOP every
-            // tick so a z-order shuffle can never deaden dragging.
-            if (_grip.Visible)
-            {
-                // Re-assert HWND_TOP only when something actually moved in
-                // front of the pill: the unconditional per-tick assertion
-                // woke the window manager 20x/s during drags for no effect
-                // 99% of the time. The cache is written right after each
-                // assertion (grip pinned at band top), so any later state
-                // with a different HWND in front of the grip means a real
-                // shuffle happened (ours or another app's) and is corrected
-                // on this tick - at most one tick late, same as before.
-                IntPtr above = NativeMethods.GetWindow(_grip.Handle, 3 /*GW_HWNDPREV*/);
-                if (above != _gripAbove)
-                {
-                    NativeMethods.SetWindowPos(_grip.Handle, IntPtr.Zero /*HWND_TOP*/,
-                        0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);   // NOSIZE|NOMOVE|NOACTIVATE
-                    _gripAbove = NativeMethods.GetWindow(_grip.Handle, 3 /*GW_HWNDPREV*/);
-                }
-            }
+            // Strip rects are pairwise disjoint (see SyncStrips), so click
+            // routing needs no z-order assertion. The top-right capsule is
+            // the one window that intentionally floats INSIDE the band's
+            // rect: it is opaque and shown after the strips (SyncStrips
+            // runs first in this tick), so its buttons win every click
+            // while the band keeps serving the rest of the title area -
+            // the same stacking as a native caption under its own buttons.
             SyncMasks();
 
             // Per-bar proximity rules, symmetric like a native window's own
@@ -2158,25 +1930,6 @@ namespace DuoChrome
                 Log.Write("top hidden");
             }
 
-            // The grip shares the capsule's reveal rule exactly (showTop,
-            // reached only while engaged): it advertises the move zone while
-            // the capsule advertises the window buttons. SyncTo re-centers
-            // on the client every tick; the pill repaints only on size/DPI
-            // change (see GripWindow.SyncTo).
-            if (showTop)
-            {
-                bool wasGrip = _grip.Visible;
-                SyncGrip(client);
-                if (!wasGrip)
-                    Log.Write("grip shown at " + _grip.Left + "," + _grip.Top
-                        + " " + _grip.Width + "x" + _grip.Height);
-            }
-            else if (_grip.Visible)
-            {
-                _grip.Hide();
-                Log.Write("grip hidden");
-            }
-
             DropStaleFakeMax();
             // NOTE: PrintWindow content sampling retired - both bars are
             // flat smoked glass now, and dropping the 220ms sample cadence
@@ -2188,7 +1941,6 @@ namespace DuoChrome
             if (_chin.Visible) Log.Write("bars hidden");
             _chin.Hide();
             _top.Hide();
-            _grip.Hide();
         }
 
         private void HideStrips()
@@ -2221,9 +1973,24 @@ namespace DuoChrome
             Place(_strips[5], wr.Left, wr.Bottom - edge, topLen, edge);
             Place(_strips[6], wr.Left, wr.Bottom - corner, corner, corner);
             Place(_strips[7], wr.Right - corner, wr.Bottom - corner, corner, corner);
-            int moveW = Math.Max(0, Math.Min(wr.Width / 3, S(280)));
-            int moveH = Math.Max(2, Math.Min(S(14), edge));
-            Place(_strips[8], wr.Left + (wr.Width - moveW) / 2, wr.Top, moveW, moveH);
+            // Caption move band (edge 0): the native title-bar layout -
+            //   top sliver (edge px)   -> top edge resize
+            //   band below it (24 DIP) -> window move, plain arrow cursor
+            //   four corners           -> corner resize
+            // The band spans the full width between the corner zones and
+            // starts BELOW the resize sliver, so strip rects stay pairwise
+            // disjoint: whichever strip is under the cursor is unambiguous,
+            // no z-order bookkeeping. Accepted tradeoff: the band covers
+            // ~24 DIP of the mirrored client (native SM_CYCAPTION ballpark).
+            // Revised split (user decision): only the CENTRAL HALF is the
+            // move band - Windows users expect to drag from the middle -
+            // while the left/right quarters stay video passthrough so the
+            // Android notification swipe keeps working from either side.
+            // The span clamp only bites on degenerate tiny windows.
+            int bandH = Math.Min(S(24), span / 2);
+            int bandW = Math.Max(0, wr.Width / 2);
+            Place(_strips[8], wr.Left + (wr.Width - bandW) / 2, wr.Top + edge,
+                bandW, bandH);
         }
 
         private static void Place(Form f, int x, int y, int w, int h)
