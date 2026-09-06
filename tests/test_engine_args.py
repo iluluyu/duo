@@ -24,23 +24,22 @@ def test_adb_pin_never_becomes_an_argv_flag():
 def test_flex_default_matches_verified_preset():
         """The default args reproduce the experiment-verified session shape.
 
-        Flex size source (2026-09-06 user decision): ALWAYS the original
-        resolution - bare --new-display=/480 (default density 480). The
-        same-day baseline tiers (FLEX_SIZES / settings flex_resolution)
-        were withdrawn: picking a tier confused users; the smoothness
-        budget is carried by video_codec=h264 + fps=60 instead.
+        Fixed-size virtual display (2026-09-06 final): resizable displays
+        cannot coexist with orientation-pushing apps (rotation ping-pong,
+        A/B verified); a fixed 2560x1440/480 display cannot rotate - apps
+        letterbox inside it like on a tablet.
         """
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")
         joined = " ".join(argv)
         assert "--serial=4444bd6b" in argv
-        # Bare --new-display=/480: virtual display at the main display's
-        # original resolution, never a pinned baseline size.
-        assert "--new-display=/480" in argv
-        assert not any(a.startswith("--new-display=2560x1440") for a in argv)
-        # One-way follow (2026-09-06): --flex-display stays (window drives
-        # the display); the overlay's startup nudge keeps scrcpy from ever
-        # auto-resizing the window back.
-        assert "--flex-display" in argv
+        assert "--new-display=2560x1440/480" in argv
+        assert "--no-window-aspect-ratio-lock" in argv
+        assert "--flex-display" not in argv
+        assert "--capture-orientation" not in " ".join(argv)
+        assert "--no-vd-system-decorations" not in argv
+        # Fixed 2560x1440/480 virtual display (2026-09-06 final): cannot
+        # rotate, orientation-pushing apps letterbox like on a tablet.
+        assert "--new-display=2560x1440/480" in argv
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
@@ -59,11 +58,12 @@ def test_flex_default_matches_verified_preset():
         assert "clipboard" not in joined
 
 
-def test_virtual_display_decorations_off_for_flex_only():
-        """flex sessions suppress decorations (rotation-storm fix,
-        2026-09-06 A/B); fixed and mirror never had the flag."""
+def test_virtual_display_decorations_on_for_flex_only():
+        """flex (fixed-size) sessions keep decorations - the rotation storm
+        was a resizable-display artifact; fixed displays cannot rotate.
+        fixed and mirror never had the flag."""
         flex = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
-        assert "--no-vd-system-decorations" in flex
+        assert "--no-vd-system-decorations" not in flex
         fixed = _argv(
                 serial="s",
                 display=DisplaySpec(mode="fixed", width=1200, height=1600, dpi=280),
@@ -80,30 +80,21 @@ def test_start_app_plus_prefix_is_idempotent():
         assert not any("++" in a for a in argv)
 
 
-def test_flex_without_dpi_uses_bare_new_display():
-        """dpi=None 的 flex 会话发裸 --new-display（无 = 形式）+ --flex-display。
-
-        2026-09-06 用户决策：一律原始分辨率（原 native 档成为唯一行为）。
-        """
+def test_flex_without_dpi_uses_default_size():
+        """dpi=None 的 flex 会话用默认尺寸 2560x1440（无密度后缀）。"""
         argv = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
-        assert "--new-display" in argv
-        assert not any(a.startswith("--new-display=") for a in argv)
-        assert "--flex-display" in argv
-        assert "--no-vd-system-decorations" in argv
-        assert "--capture-orientation=@" in argv
+        assert "--new-display=2560x1440" in argv
+        assert not any(a.endswith("/None") for a in argv)
+        assert "--flex-display" not in argv
+        assert "--no-vd-system-decorations" not in argv
 
 
-def test_flex_explicit_size_never_pins_display():
-        """显式尺寸 spec（竖屏推荐/用户 --width/--height 路径）不钉虚拟屏。
-
-        flex 跟随窗口（one-way follow），显式 width/height 只影响窗口几何，
-        display 旗标永远只有裸 new-display（/dpi）+ --flex-display。
-        """
+def test_flex_explicit_size_pins_display():
+        """显式尺寸 spec（竖屏推荐/--width/--height）直接钉固定虚拟屏。"""
         spec = DisplaySpec(mode="flex", width=1120, height=1872, dpi=313)
         argv = _argv(serial="s", display=spec)
-        assert "--new-display=/313" in argv
-        assert not any(a.startswith("--new-display=1120x1872") for a in argv)
-        assert "--flex-display" in argv
+        assert "--new-display=1120x1872/313" in argv
+        assert "--flex-display" not in argv
 
 
 def test_fixed_display_size_and_dpi():
