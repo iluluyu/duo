@@ -100,6 +100,8 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
         [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+        [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
+        [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
         [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
@@ -834,14 +836,28 @@ namespace DuoChrome
     /// Pixel alpha is zero everywhere, but layered windows still receive
     /// mouse input, so this is how the borderless scrcpy window regains
     /// native-feeling resize edges (correct cursors, live feedback).
-    /// Edge 0 is the caption twin: a full-width band directly below the
+    /// Edge 0 is the caption twin: a central band directly below the
     /// top resize strip that MOVES the window - the native title-bar
     /// layout (top sliver = resize, band = drag, corners = resize) with
-    /// a plain arrow cursor, so drag-anywhere needs zero learning.</summary>
+    /// a plain arrow cursor, so drag-anywhere needs zero learning. The
+    /// band also DISAMBIGUATES drag direction (see the MouseMove hook):
+    /// horizontal = window move, vertical = the Android notification
+    /// shade pull handed to the mirrored video.</summary>
     internal sealed class EdgeStrip : Form
     {
         public readonly int Edge;   // HT code: 10 left .. 17 bottomright
         private readonly Controller _owner;
+        // Edge-0 caption disambiguation state. While _pendingDown is set
+        // the drag direction is undecided and the window MUST NOT move:
+        // a vertical drag from the band belongs to the mirrored Android
+        // status bar (shade pull), not to the desktop window manager.
+        private bool _pendingDown;
+        private Point _downScreen;          // press point, screen coords
+        /// <summary>Set when a vertical caption drag was handed to the
+        /// video as a shade pull: the hidden strip cannot see the MouseUp
+        /// (hiding drops its capture), so SyncStrips polls the physical
+        /// button and must not re-show this strip until it is released.</summary>
+        public bool ShadeHold;
 
         public EdgeStrip(Controller owner, int edge)
         {
@@ -859,12 +875,46 @@ namespace DuoChrome
             else if (edge == 13 || edge == 17) Cursor = Cursors.SizeNWSE;
             else if (edge == 14 || edge == 16) Cursor = Cursors.SizeNESW;
             else Cursor = Cursors.Default;       // move zone: plain arrow
+            // ---- caption direction disambiguation (Edge 0 only) ------
+            // The central band sits over mirrored video, so a drag that
+            // starts on it is ambiguous: Windows wants "move the window",
+            // Android wants "pull the notification shade". Both intents
+            // begin identically (press, then motion), so the decision
+            // cannot be made at MouseDown. Instead the band enters the
+            // pending state above and commits once, when the drag first
+            // crosses a small threshold (S(8) DIP, controller-side):
+            //   |dx| >= |dy|  -> window move, grabbed at the PRESS point
+            //                    so the pre-decision displacement is applied
+            //                    in one UpdateMove step - the grab point
+            //                    stays pinned under the cursor, no jump.
+            //   |dy| >  |dx|  -> Android shade pull: hide this strip (its
+            //                    capture drops, real events reach the video)
+            //                    and replay the consumed press as posted
+            //                    WM_LBUTTONDOWN + WM_MOUSEMOVE to the scrcpy
+            //                    window, which injects touch WITHOUT being
+            //                    activated (no focus steal). If the cursor
+            //                    already left the window, the coordinates
+            //                    are posted anyway.
+            // Until the threshold the window never moves; the decision is
+            // made exactly once per drag; a release below the threshold is
+            // a plain click (or a long press in place) and resets cleanly.
+            // Fallback path (user plan): if the shade replay ever fails on
+            // a target device, revert these Edge == 0 branches to the old
+            // plain-geometry behavior (MouseDown -> BeginMove) - every
+            // caption change is confined here to keep that revert tiny.
             MouseDown += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
-                if (Edge == 0) _owner.BeginMove();
+                if (Edge == 0)
+                {
+                    NativeMethods.POINT pt;
+                    NativeMethods.GetCursorPos(out pt);
+                    _pendingDown = true;          // judge later, not now
+                    _downScreen = new Point(pt.X, pt.Y);
+                    ShadeHold = false;
+                }
                 else _owner.BeginResize(Edge);
-                Capture = true;
+                Capture = true;   // the whole drag stays on this strip
             };
             MouseMove += delegate(object s, MouseEventArgs e)
             {
@@ -875,21 +925,65 @@ namespace DuoChrome
                 // dedupe on the cursor position, so a synthesized no-op
                 // message cannot self-perpetuate a feedback storm. The Tick
                 // poll remains as a fallback, not the driver.
-                if (Edge == 0) _owner.UpdateMove();
+                if (Edge == 0)
+                {
+                    if (_pendingDown)
+                    {
+                        NativeMethods.POINT pt;
+                        NativeMethods.GetCursorPos(out pt);
+                        int dx = pt.X - _downScreen.X;
+                        int dy = pt.Y - _downScreen.Y;
+                        int t = _owner.CaptionDisambiguationPx();
+                        if (Math.Abs(dx) < t && Math.Abs(dy) < t) return;
+                        _pendingDown = false;   // decide exactly once
+                        if (Math.Abs(dx) >= Math.Abs(dy))
+                        {
+                            _owner.BeginMoveAt(_downScreen);
+                            _owner.UpdateMove();   // catch up in one step
+                            Log.Write("caption " + dx + "/" + dy + " -> move");
+                        }
+                        else
+                        {
+                            ShadeHold = true;  // SyncStrips holds the hide
+                            Hide();            // real events now hit the video
+                            Capture = false;
+                            _owner.ShadeCaption(_downScreen, new Point(pt.X, pt.Y));
+                            Log.Write("caption " + dx + "/" + dy + " -> shade");
+                        }
+                        return;
+                    }
+                    _owner.UpdateMove();
+                }
                 else _owner.UpdateResize();
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
+                if (_pendingDown)
+                {
+                    // Released below the threshold: a tap. The mirrored
+                    // phone's top-center hosts its "smart island" UI, so
+                    // forward the tap to the video instead of eating it
+                    // (user request): press+release replayed as a pair.
+                    _pendingDown = false;
+                    Capture = false;
+                    Point tapScreen = PointToScreen(new Point(e.X, e.Y));
+                    _owner.TapCaption(tapScreen);
+                    return;
+                }
                 if (_owner.Resizing) { _owner.EndResize(); Capture = false; }
                 else if (_owner.Moving) { _owner.EndMove(); Capture = false; }
             };
             MouseCaptureChanged += delegate(object s, EventArgs e)
             {
-                if (!Capture && (_owner.Resizing || _owner.Moving))
+                if (!Capture)
                 {
-                    _owner.EndResize();
-                    _owner.EndMove();
+                    if (Edge == 0) _pendingDown = false;   // drag died mid-judgement
+                    if (_owner.Resizing || _owner.Moving)
+                    {
+                        _owner.EndResize();
+                        _owner.EndMove();
+                    }
                 }
             };
         }
@@ -1448,6 +1542,20 @@ namespace DuoChrome
 
         public void BeginMove()
         {
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            BeginMoveAt(new Point(pt.X, pt.Y));
+        }
+
+        /// <summary>BeginMove with an explicit grab point. The caption
+        /// disambiguation (EdgeStrip, Edge 0) passes the original PRESS
+        /// point, so the displacement that accumulated while the drag
+        /// direction was still undecided is applied in one UpdateMove step:
+        /// the window simply catches up to where a plain move would have
+        /// been all along - the grab point stays pinned under the cursor,
+        /// no visible jump in either direction.</summary>
+        public void BeginMoveAt(Point grab)
+        {
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
             if (_fakedMax)
             {
@@ -1456,9 +1564,7 @@ namespace DuoChrome
             }
             Rectangle wr = WindowRect();
             _moveStart = new Point(wr.Left, wr.Top);
-            NativeMethods.POINT pt;
-            NativeMethods.GetCursorPos(out pt);
-            _moveMouse = new Point(pt.X, pt.Y);
+            _moveMouse = grab;
             _moving = true;
             _lastMoveX = int.MinValue; _lastMoveY = int.MinValue;
             _moveMoves = 0;
@@ -1488,6 +1594,62 @@ namespace DuoChrome
             if (!_moving) return;
             _moving = false;
             Log.Write("move end moves=" + _moveMoves);
+        }
+
+        /// <summary>DPI-scaled drag distance that turns an undecided
+        /// caption press into a committed move-or-shade decision. Large
+        /// enough to swallow hand jitter, small enough to feel instant.</summary>
+        public int CaptionDisambiguationPx()
+        {
+            return S(8);
+        }
+
+        /// <summary>Vertical caption drag = Android status-bar shade pull.
+        /// The caption band consumed the press while judging direction, so
+        /// replay it to the scrcpy window as posted messages: one
+        /// WM_LBUTTONDOWN at the press point plus one WM_MOUSEMOVE at the
+        /// current point (the messages bypass hit-testing, so the screen-
+        /// to-client mapping is ours to do; MK_LBUTTON in wParam keeps the
+        /// button state consistent for the motion that follows). Posted,
+        /// not sent, and deliberately NO activation: scrcpy injects touch
+        /// without focus, and stealing focus would disturb the device.
+        /// If the cursor has already left the window the coordinates are
+        /// posted regardless - scrcpy clamps what it cannot reach.
+        /// Fallback if a device ignores the replay: make this a no-op
+        /// (the pure-geometry revert of the EdgeStrip Edge == 0 branch).</summary>
+        public void ShadeCaption(Point pressScreen, Point nowScreen)
+        {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            NativeMethods.POINT press = new NativeMethods.POINT();
+            press.X = pressScreen.X; press.Y = pressScreen.Y;
+            NativeMethods.POINT now = new NativeMethods.POINT();
+            now.X = nowScreen.X; now.Y = nowScreen.Y;
+            NativeMethods.ScreenToClient(_hwnd, ref press);
+            NativeMethods.ScreenToClient(_hwnd, ref now);
+            IntPtr mk = (IntPtr)0x0001;   // MK_LBUTTON
+            NativeMethods.PostMessageW(_hwnd, 0x0201 /*WM_LBUTTONDOWN*/, mk,
+                (IntPtr)((press.X & 0xFFFF) | ((press.Y & 0xFFFF) << 16)));
+            NativeMethods.PostMessageW(_hwnd, 0x0200 /*WM_MOUSEMOVE*/, mk,
+                (IntPtr)((now.X & 0xFFFF) | ((now.Y & 0xFFFF) << 16)));
+            Log.Write("shade replay down=" + press.X + "," + press.Y +
+                " move=" + now.X + "," + now.Y);
+        }
+
+        /// <summary>Replay a plain tap (press+release, no motion) onto the
+        /// video window. Caption-band taps below the drag threshold belong
+        /// to the phone's top-center UI ("smart island"), not to the window.
+        /// Fallback: make this a no-op to revert to tap-swallowing.</summary>
+        public void TapCaption(Point tapScreen)
+        {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
+            NativeMethods.POINT p = new NativeMethods.POINT();
+            p.X = tapScreen.X; p.Y = tapScreen.Y;
+            NativeMethods.ScreenToClient(_hwnd, ref p);
+            IntPtr mk = (IntPtr)0x0001;   // MK_LBUTTON
+            IntPtr lp = (IntPtr)((p.X & 0xFFFF) | ((p.Y & 0xFFFF) << 16));
+            NativeMethods.PostMessageW(_hwnd, 0x0201 /*WM_LBUTTONDOWN*/, mk, lp);
+            NativeMethods.PostMessageW(_hwnd, 0x0202 /*WM_LBUTTONUP*/, IntPtr.Zero, lp);
+            Log.Write("caption tap replay " + p.X + "," + p.Y);
         }
 
         // ---- aspect convergence (external changes, rotation, maximize) ----
@@ -1987,9 +2149,25 @@ namespace DuoChrome
             // while the left/right quarters stay video passthrough so the
             // Android notification swipe keeps working from either side.
             // The span clamp only bites on degenerate tiny windows.
+            // Direction disambiguation tie-in: a vertical drag that started
+            // on this band is replayed to the video as an Android shade
+            // pull (EdgeStrip/ShadeCaption), which needs the band to stay
+            // HIDDEN for the whole gesture - the periodic Place below
+            // would otherwise re-show it under the cursor mid-drag and
+            // steal the real WM_MOUSEMOVEs the video window must see.
+            // The hidden strip cannot see the MouseUp, so hold the hide
+            // while the left button is still physically down and let the
+            // first tick after release restore the band.
             int bandH = Math.Min(S(24), span / 2);
             int bandW = Math.Max(0, wr.Width / 2);
-            Place(_strips[8], wr.Left + (wr.Width - bandW) / 2, wr.Top + edge,
+            EdgeStrip caption = _strips[8];
+            if (caption.ShadeHold)
+            {
+                if ((NativeMethods.GetAsyncKeyState(0x01 /*VK_LBUTTON*/) & 0x8000) != 0)
+                    return;   // mid-shade: leave the band parked (hidden)
+                caption.ShadeHold = false;
+            }
+            Place(caption, wr.Left + (wr.Width - bandW) / 2, wr.Top + edge,
                 bandW, bandH);
         }
 
