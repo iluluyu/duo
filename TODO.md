@@ -69,23 +69,38 @@
 - [ ] **需 Windows 实测**：`scripts/build_windows.ps1` 构建 `dist\Duo\`，按同文档「打包构建与产物校验」清单核对（QML/overlay 资源入包、Duo.exe 直启与带参路由、设置持久化、图标）。
 - [ ] **需 Windows 实测**：按 [docs/validation/window-experience.md](docs/validation/window-experience.md) §3 清单实测并回填验证记录（拖拽手感、DPI、多窗口、断线清理、打包版行为）。
 
-### 7. P1 — 虚拟屏 HOME 语义与直达应用（调研完成，待实现）
+### 7. P1 — 虚拟屏 HOME 语义与直达应用（已实现）
 
 > 2026-09-05 真机调研（OPD2409 / Android 16 / scrcpy 4.1）完成，根因与方案见 [docs/window-experience.md §7](docs/window-experience.md)。要点：选择器 = AOSP SecondaryDisplayLauncher（`CATEGORY_SECONDARY_HOME` 唯一 handler），HOME 键全局落物理屏（display 定向注入已证伪），`--start-app` 无 `+` 在应用已运行时不落虚拟屏（真实 bug）。
 
-- [ ] `engine.py`：flex/fixed 会话默认加 `--no-vd-system-decorations`；`--start-app` 一律带 `+` 前缀；更新 argv 断言测试（两个旗标都不能只断言源码包含关键字，要断言拼装结果）。
-- [ ] 会话日志解析 display id（`[server] INFO: New display: ... (id=N)`，尾读通道现成），面板"运行中点应用"改走 `am start --display N -n <resolved>`（resolve-activity 预解析），不重建会话；日志缺失时降级提示。
-- [ ] chin ○ / HOME 按钮语义保持：虚拟屏上永不发 keyevent 3（长按=关窗现状不变），tooltip 注明"HOME = 回 Duo 面板"；scrcpy 内置 MOD+h/中键的焦点漂移记为已知限制。
+- [x] `engine.py`：flex/fixed 会话默认加 `--no-vd-system-decorations`；`--start-app` 一律带 `+` 前缀；更新 argv 断言测试（两个旗标都不能只断言源码包含关键字，要断言拼装结果）。✅ 2026-09-06（scrcpy 官方文档复核：`--start-app=+pkg` = 先 force-stop，`+`/`?` 可叠加且顺序固定）
+- [x] 会话日志解析 display id（`[server] INFO: New display: ... (id=N)`，尾读通道现成），面板"运行中点应用"改走 `am start --display N -n <resolved>`（resolve-activity 预解析），不重建会话；日志缺失时降级提示。✅ 2026-09-06：CLI `--session-log` 让面板拿到固定日志路径，`session.parse_display_id/display_id_from_log` 点击时尾读，`Controller.startAppOnDisplay` 工作线程 resolve + am start，全部失败路径降级为状态栏提示；面板日志每次启动前截断防旧 id 串台
+- [x] chin ○ / HOME 按钮语义保持：虚拟屏上永不发 keyevent 3（长按=关窗现状不变），tooltip 注明"HOME = 回 Duo 面板"；scrcpy 内置 MOD+h/中键的焦点漂移记为已知限制。✅ 2026-09-06（零 C# 改动；语义写入 docs/window-experience.md §7.6；芯片 tooltip 已注明）
 - [ ] **需 Windows 实测**：空 flex 会话（无 `--app`）在 decorations 关闭后整屏无帧，确认 Texture 通道静默时窗口/overlay 的降级体验，再决定空 flex 是否保留 decorations（现默认关）。
 - [ ] **需 Windows 实测**：中文输入乱象是否复现（uhid 键盘下候选窗落物理屏），决定是否加 `--display-ime-policy=local`。
 
 **完成标准**：flex/fixed 会话从启动到退出全程不出现 SecondaryDisplayLauncher（应用选择器）；重复开会话（应用已在物理屏运行）仍能直达应用；HOME/chin 语义有 UI 说明。
 
+### 8. 长期目标 — 自研视频客户端（GPU 解码，需强模型/专项）
+
+> 背景与取舍见 docs/mirroring-quality.md §6。现状：scrcpy PC 端纯软解（libavcodec+SDL 内存帧，跨平台设计使然，无 GPU 旗标）；当前用 h264+1440p+60fps 喂饱软解已够用。本项目是架构级升级，需更强模型或专项投入。
+
+**目标**：替换 scrcpy 客户端为自研 —— 只用它的服务端：`adb push scrcpy-server.jar` → socket 协议（video/control 流，参考 scrcpy 源码 app/src/server + client 协议文档/QtScrcpy、ws-scrcpy 等成熟实现）→ PC 端 D3D11VA 硬解 → 零拷贝渲染进 QML 窗口（QQuickItem + swapchain 互操作）。
+
+**解锁收益**（一项工程三项红利）：
+1. GPU 解码：4K120 原生分辨率无压力（当前软解只能到 ~1440p90 富余）
+2. 真抗锯齿圆角/任意形状窗口：视频表面归我们所有，alpha mask 直接 GPU 合成（G2 回退的根治路径，见 §3.4/plan.md）
+3. 视频嵌入主面板/多窗分屏等窗口形态自由
+
+**验收基线**：不弱于 scrcpy 的端到端延迟；断线/重连/旋转/控制通道（touch/key/clipboard/uaed）全通；CPU 占用显著低于软解基线。
+
+**风险**：协议跟进 scrcpy 版本升级；D3D11 零拷贝与 Qt 渲染线程的同步；工作量估计为人周级而非人天级。
+
 ## 当前基线
 
-- 2026-09-06：QML 重构全部落地（任务 3/4 实际完成）；打包 exe 已产出并由用户多轮实测（拖动、双屏、设备闪烁、灵动岛交互均已修）；当前 HEAD：中央带方向消歧+点按穿透。
-- `.venv/bin/python -m pytest -q`：**120 passed**；ruff / mypy 全绿。
-- 剩余开发工作：任务 7（虚拟屏 HOME 语义实现，调研已完成）。
+- 2026-09-06：任务 7 软件侧落地（decorations 关闭、`+` 前缀、display id 直达通道、HOME 语义文档化）；剩 Windows 实测两项（空 flex 无帧体验、IME 候选窗）。
+- `.venv/bin/python -m pytest -q`：**132 passed**；ruff / mypy 全绿。
+- 剩余开发工作：Windows 实测回填（任务 5/6/7 的实测清单）。
 
 ## 给执行模型的提示词
 
