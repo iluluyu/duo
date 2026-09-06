@@ -81,9 +81,40 @@
 
 **完成标准**：flex/fixed 会话从启动到退出全程不出现 SecondaryDisplayLauncher（应用选择器）；重复开会话（应用已在物理屏运行）仍能直达应用；HOME/chin 语义有 UI 说明。
 
+### 9. P1 — 动态跟随虚拟屏（窗口驱动显示，无旋转风暴）
+
+> 背景（2026-09-06 一整天 A/B 实验，全部真机验证，勿重试已死路径）：
+> 用户要的是「拖窗口→应用实时重排到新尺寸」，但 scrcpy 的 `--flex-display`
+> 与定向应用（piliplus 视频页强制竖屏）互斥——WindowManager 尊重应用方向
+> 请求，scrcpy 持续重申窗口形状，~2Hz 无限乒乓（首页即发作）。
+>
+> 已死路径（勿重试）：
+> - `--flex-display`（任意装饰/尺寸组合）→ 旋转风暴
+> - `--capture-orientation=@` 锁捕获方向 → 内容侧转 90°（用户实际撞过）
+> - `--no-vd-system-decorations` → 视频页仍风暴
+> - 钉扎弹回 + flex → 我们弹回 → 显示跟随弹回 → 应用再请求 → 死循环
+>
+> 临时基线（当前 exe）：固定 2560×1440/480 虚拟屏（`--new-display=WxH`，
+> 不可旋转，风暴物理不可能）+ `--no-window-aspect-ratio-lock` + overlay
+> 钉扎（左键豁免+收编）。窗口可自由拖改，内容直立 letterbox，永不翻转。
+
+**目标**：拖完窗口松手后，虚拟屏按用户窗口尺寸重建（离散跟随）。
+
+**候选方案 A（推荐，工作量人天级）**：overlay 检测拖拽 settle（`TrackExternalChange`）
+→ 通过文件通道（如 `%TEMP%\duo-display-request-<title>.txt` 写 WxH）→
+controller QTimer 轮询 → 用 `--new-display=WxH/--window-x/--window-y`
+重启会话（竖屏切换的重启链路已存在，复用）。防抖 ≥800ms；尺寸差 <96px
+不重建（防边框舍入死循环）。
+
+**候选方案 B（根治，依赖 §8）**：自研客户端后自管虚拟屏尺寸，无 scrcpy
+窗口仲裁层，跟随可连续无重建闪烁。
+
+**验收**：拖动→松手→≤1.5s 内应用以新窗口比例重排；无旋转/无风暴/无闪烁
+死循环；pilipili 首页→视频→全屏来回切窗口纹丝不动。
+
 ### 8. 长期目标 — 自研视频客户端（GPU 解码，需强模型/专项）
 
-> 背景与取舍见 docs/mirroring-quality.md §6。现状：scrcpy PC 端纯软解（libavcodec+SDL 内存帧，跨平台设计使然，无 GPU 旗标）；当前用 h264+1440p+60fps 喂饱软解已够用。本项目是架构级升级，需更强模型或专项投入。
+> 背景与取舍见 docs/mirroring-quality.md §6。现状：scrcpy PC 端纯软解（libavcodec+SDL 内存帧，跨平台设计使然，无 GPU 旗标）；当前用 h264+1440p+60fps 喂饱软解已够用。本项目是架构级升级，需更强模型或专项投入。同时解锁 §9 动态跟随虚拟屏的根治路径。
 
 **目标**：替换 scrcpy 客户端为自研 —— 只用它的服务端：`adb push scrcpy-server.jar` → socket 协议（video/control 流，参考 scrcpy 源码 app/src/server + client 协议文档/QtScrcpy、ws-scrcpy 等成熟实现）→ PC 端 D3D11VA 硬解 → 零拷贝渲染进 QML 窗口（QQuickItem + swapchain 互操作）。
 
