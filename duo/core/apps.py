@@ -93,6 +93,41 @@ class Adb:
 # ----------------------------------------------------------------------------
 
 
+def parse_device_density(wm_density_output: str) -> int | None:
+        """Parse ``wm density`` output into the density apps actually see.
+
+        Prefers the ``Override density`` line (the effective value, e.g. a
+        display-zoom setting) and falls back to ``Physical density``:
+
+        >>> parse_device_density("Physical density: 420\\nOverride density: 356")
+        356
+        >>> parse_device_density("Physical density: 420")
+        420
+        >>> parse_device_density("") is None
+        True
+        """
+        override: int | None = None
+        physical: int | None = None
+        for line in wm_density_output.splitlines():
+                text = line.strip()
+                if text.startswith("Override density:"):
+                        digits = "".join(ch for ch in text.split(":", 1)[1] if ch.isdigit())
+                        if digits:
+                                override = int(digits)
+                elif text.startswith("Physical density:"):
+                        digits = "".join(ch for ch in text.split(":", 1)[1] if ch.isdigit())
+                        if digits:
+                                physical = int(digits)
+        return override or physical
+
+
+def device_density(adb_path: str, serial: str | None) -> int | None:
+        """Effective density of the device's main display (Override > Physical)."""
+        target = serial or ""
+        adb = Adb(adb_path, target)
+        return parse_device_density(adb.shell("wm density"))
+
+
 def parse_package_list(packages_output: str, third_party: bool = True) -> list[str]:
         """Parse ``pm list packages [-3]`` output into package names (sorted)."""
         names = []

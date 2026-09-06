@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from duo import __version__
-from duo.core.apps import Adb, AdbError, app_info
+from duo.core.apps import Adb, AdbError, app_info, device_density
 from duo.core.audio_lock import AudioLock
 from duo.core.chrome import ChromeError, ChromeOverlay
 from duo.core.codec import (
@@ -179,6 +179,24 @@ def _run_mirror(args: argparse.Namespace) -> int:
         engine_window: dict[str, int | None] = {}
         if display.mode != "mirror":
                 area = primary_work_area()
+                # 虚拟屏密度 = 设备自身生效密度（2026-09-06 晚定稿，用户
+                # 指定“查我这台设备的 DPI 再决定”）：元素物理尺寸与平板/
+                # 手机屏一致（px/dp 相同，Pad 4 Pro override 356 → 2.23px/dp），
+                # 窗口越大 dp 越多而非元素越大。实测谱系：手机 411-420dp
+                # / iPad 744-1024pt / Pad 4 Pro 1078dp 短边；密度建屏即定死
+                # （wm density -d 无效），scrcpy 不带 dpi 的自动值 201 是
+                # “保主屏 dp 长边”，不是我们要的“保元素尺寸”。回退 356。
+                if dpi is None and display.mode == "flex":
+                        try:
+                                dpi = device_density(adb_path, serial) or 356
+                        except AdbError:
+                                dpi = 356
+                        display = DisplaySpec(
+                                mode=display.mode,
+                                width=display.width,
+                                height=display.height,
+                                dpi=dpi,
+                        )
                 portrait = args.portrait or (args.height is not None and args.width is not None
                         and args.height > args.width)
                 if portrait:
