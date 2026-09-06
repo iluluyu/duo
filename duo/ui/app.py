@@ -44,6 +44,12 @@ from duo.core.settings import (
 )
 from duo.ui.controller import PanelController
 
+#:audio_policy values shown in the settings page, in display order.
+AUDIO_POLICIES = ("latest", "all", "off")
+
+#: video_codec values shown in the settings page, in display order.
+VIDEO_CODECS = ("auto", "h264", "h265", "av1")
+
 #: The panel document (qmldir next to it declares the Style singleton).
 #: Frozen builds must include the directory (PyInstaller
 #: ``--add-data duo/ui/qml``); __file__-relative lookup fails otherwise.
@@ -91,6 +97,9 @@ class SettingsApi(QObject):
                         "corner_mode": settings.corner_mode,
                         "corner_size_dip": settings.corner_size_dip,
                         "glass_enabled": settings.glass_enabled,
+                        "audio_policy": settings.audio_policy,
+                        "video_codec": settings.video_codec,
+                        "turn_screen_off": settings.turn_screen_off,
                 }
 
         @pyqtSlot(result="QVariantList")
@@ -116,6 +125,9 @@ class SettingsApi(QObject):
                         corner_mode=_text(values.get("corner_mode", "system")),
                         corner_size_dip=_number(values.get("corner_size_dip", 48)),
                         glass_enabled=_flag(values.get("glass_enabled", True)),
+                        audio_policy=_text(values.get("audio_policy", "latest")),
+                        video_codec=_text(values.get("video_codec", "auto")),
+                        turn_screen_off=_flag(values.get("turn_screen_off", False)),
                 )
                 problems = validate(settings)
                 if problems:

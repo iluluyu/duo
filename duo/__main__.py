@@ -12,6 +12,13 @@ from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info
 from duo.core.audio_lock import AudioLock
 from duo.core.chrome import ChromeError, ChromeOverlay
+from duo.core.codec import (
+        encoders_cache_path,
+        load_cached_encoders,
+        probe_encoders,
+        resolve_codec,
+        save_encoders_cache,
+)
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import (
         REQUIRED_TOOLS,
@@ -69,6 +76,68 @@ def _pick_serial(explicit: str | None, adb_path: str) -> str:
         return serials[0]
 
 
+def _resolve_audio(no_audio_flag: bool, audio_policy: str) -> tuple[bool, bool]:
+        """(forward audio, arbitrate via AudioLock) from flag + policy.
+
+        Explicit ``--no-audio`` always wins. Policy ``off`` mutes every
+        session (no arbitration); ``all`` forwards everywhere and skips the
+        lock (parallel captures are the explicit ask); ``latest`` forwards
+        and arbitrates - the panel hands audio over by restarting older
+        sessions muted, a standalone CLI that loses the race falls back to
+        muted via the lock failure below.
+        """
+        audio = not no_audio_flag
+        if not audio:
+                return False, False
+        if audio_policy == "off":
+                return False, False
+        return True, audio_policy != "all"
+
+
+def _resolve_screen_off(no_screen_off_flag: bool, turn_screen_off: bool) -> bool:
+        """--turn-screen-off decision: explicit CLI flag beats the setting.
+
+        ``--no-screen-off`` forces the screen to stay on; otherwise the
+        settings switch (default false) decides - mirroring comfort only,
+        virtual-display sessions are independent of the physical screen.
+        """
+        return False if no_screen_off_flag else turn_screen_off
+
+
+def _resolve_video(
+        scrcpy_path: str,
+        serial: str,
+        codec_setting: str,
+        bitrate: int,
+        fps: int,
+) -> VideoSpec:
+        """VideoSpec from the ``video_codec`` setting + cached device probe.
+
+        The probe result (device hardware encoders) is cached in
+        ``data_dir/encoders.json`` with a timestamp; a fresh cache skips the
+        ~2s probe, an expired/missing/foreign-serial one re-probes once.
+        Probe failure never blocks a session: resolve_codec degrades to h264
+        without an encoder pin. Bitrate is the user's ``bitrate_mbps``
+        setting regardless of codec (per-codec guidance lives in
+        docs/mirroring-quality.md §5).
+        """
+        cache_path = encoders_cache_path()
+        encoders = load_cached_encoders(cache_path, serial)
+        if encoders is None:
+                encoders = probe_encoders(scrcpy_path, serial)
+                if encoders is not None:
+                        save_encoders_cache(cache_path, serial, encoders)
+        choice = resolve_codec(codec_setting, encoders)
+        if choice.note:
+                print(f"video codec: {choice.note}", flush=True)
+        return VideoSpec(
+                codec=choice.codec,
+                encoder=choice.encoder,
+                bitrate_mbps=bitrate,
+                max_fps=fps,
+        )
+
+
 def _run_mirror(args: argparse.Namespace) -> int:
         """Launch a branded mirroring session for one app."""
         # Priority everywhere: explicit CLI args > saved settings > defaults.
@@ -94,6 +163,10 @@ def _run_mirror(args: argparse.Namespace) -> int:
         corner = (
                 args.corner_radius if args.corner_radius is not None
                 else corner_radius_dip(settings)
+        )
+        codec_setting = (
+                args.video_codec if args.video_codec is not None
+                else settings.video_codec
         )
 
         display = DisplaySpec(
@@ -140,7 +213,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"
                 print(f"display: {display.mode} dpi={display.dpi} ({area_text})", flush=True)
-        video = VideoSpec(bitrate_mbps=bitrate, max_fps=fps)
+        video = _resolve_video(scrcpy_path, serial, codec_setting, bitrate, fps)
         adb = Adb(adb_path, serial)
 
         title = args.title
@@ -149,11 +222,15 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 title = info.label
                 print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
 
-        # Single-audio arbitration: only one live session may capture the
-        # device mixer (two captures crackle). Later windows start muted.
-        audio = not args.no_audio
+        # audio_policy (docs/mirroring-quality.md §2): off mutes all, all
+        # skips the lock, latest arbitrates (newest session wins; the panel
+        # restarts its older children muted, standalone CLIs fall back here).
+        audio_policy = settings.audio_policy
+        audio, arbitrate = _resolve_audio(args.no_audio, audio_policy)
+        if audio_policy == "off" and not args.no_audio:
+                print("audio policy: off - muted", flush=True)
         audio_lock = AudioLock()
-        if audio and not audio_lock.acquire():
+        if audio and arbitrate and not audio_lock.acquire():
                 audio = False
                 print("audio already owned by another duo window - muted", flush=True)
 
@@ -163,7 +240,9 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 display=display,
                 video=video,
                 app_package=args.app,
-                screen_off=not args.no_screen_off,
+                # Settings gate (default false) first, explicit CLI override second.
+                screen_off=_resolve_screen_off(args.no_screen_off,
+                                               settings.turn_screen_off),
                 audio=audio,
                 window_title=title,
                 window_x=engine_window.get("window_x"),
@@ -291,9 +370,19 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--bitrate", type=int, default=None, help="video bitrate Mbps (settings/30)"
         )
         mirror.add_argument(
-                "--no-screen-off", action="store_true", help="keep the device screen on"
+                "--no-screen-off",
+                action="store_true",
+                help="keep the device screen on (overrides the settings "
+                     "turn_screen_off switch, default off)",
         )
         mirror.add_argument("--no-audio", action="store_true", help="disable audio forwarding")
+        mirror.add_argument(
+                "--video-codec",
+                choices=["auto", "h264", "h265", "av1"],
+                default=None,
+                help="video codec (settings/auto: probe the device and pick "
+                     "the best hardware encoder)",
+        )
         mirror.add_argument("--title", help="window title (defaults to the app label)")
         mirror.add_argument(
                 "--chrome",

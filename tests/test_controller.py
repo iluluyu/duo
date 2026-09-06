@@ -23,8 +23,9 @@ pytest.importorskip("PyQt6.QtCore")
 from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-import duo.ui.controller as controller_mod  # noqa: E402
-from duo.core.apps import AdbError  # noqa: E402
+import duo.ui.controller as controller_mod
+from duo.core.apps import AdbError
+from duo.core.settings import Settings
 from duo.ui.controller import (  # noqa: E402
         APP_CATALOG,
         MIRROR_KEY,
@@ -100,6 +101,11 @@ class _FakeProc:
         def terminate(self) -> None:
                 self.terminated = True
 
+        def wait(self, timeout: float | None = None) -> int | None:
+                # The audio-restart path waits for the CLI to release the
+                # audio lock; the fake exits immediately.
+                return self._exit_code
+
 
 @pytest.fixture()
 def qapp():
@@ -126,6 +132,10 @@ def no_adb(monkeypatch, tmp_path_factory):
         """
         _StubMonitor.instances = []
         monkeypatch.setattr(controller_mod, "DeviceMonitor", _StubMonitor)
+        # Settings live in the real user data dir; controller session starts
+        # re-read them (audio policy), so tests pin the defaults.
+        monkeypatch.setattr(
+                controller_mod, "load_settings", lambda: (Settings(), []))
         checked: list[str] = []
 
         def fake_resolve_installed(adb_binary, done):
@@ -677,3 +687,125 @@ def test_resolve_adb_uses_settings_probe_fallback(no_adb, prefs_stub, qapp, monk
         assert controller.adbBinary == "/resolved/adb.exe"
         assert "boom" in statuses   # settings problems surfaced once
         assert statuses[-1] == "设置已保存，已切换 adb，新会话生效"
+
+
+# ------------------------------------------------- audio_policy 三态（面板侧）
+
+
+def _policy(monkeypatch, value: str) -> None:
+        """Pin the settings a session start will re-read."""
+        monkeypatch.setattr(
+                controller_mod, "load_settings",
+                lambda: (Settings(audio_policy=value), []))
+
+
+def test_audio_latest_restarts_running_sessions_muted(
+        no_adb, prefs_stub, qapp, monkeypatch):
+        """latest：新会话带音频启动时，旧音频会话以 --no-audio 重启。"""
+        _policy(monkeypatch, "latest")
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        spawned: list[list[str]] = []
+
+        def fake_spawn(argv):
+                spawned.append(argv)
+                proc = _FakeProc(argv)
+                procs.append(proc)
+                return proc
+
+        controller._spawn = fake_spawn  # type: ignore[method-assign]
+        statuses: list[str] = []
+        controller.statusChanged.connect(statuses.append)
+
+        controller.startSession("tv.danmaku.bili")
+        controller.startSession("com.tencent.mm")
+
+        # spawns: bili(音频) → bili 静音重启 → mm(音频)
+        assert len(spawned) == 3
+        assert spawned[1] == build_launch_argv(
+                "tv.danmaku.bili", "S1", portrait=False, muted=True)
+        assert "--no-audio" in spawned[1]
+        assert spawned[2] == build_launch_argv("com.tencent.mm", "S1", portrait=False)
+        assert "--no-audio" not in spawned[2]
+        assert procs[0].terminated          # the old bili CLI got SIGTERM
+        assert controller._audio_keys == {"com.tencent.mm"}
+        assert "哔哩哔哩 已静音重启" in statuses[-1]
+
+
+def test_audio_latest_skips_muted_and_dead_sessions(
+        no_adb, prefs_stub, qapp, monkeypatch):
+        """latest 重启只针对存活的音频会话；静音重启过的不再被翻动。"""
+        _policy(monkeypatch, "latest")
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        spawned: list[list[str]] = []
+
+        def fake_spawn(argv):
+                spawned.append(argv)
+                proc = _FakeProc(argv)
+                procs.append(proc)
+                return proc
+
+        controller._spawn = fake_spawn  # type: ignore[method-assign]
+
+        controller.startSession("tv.danmaku.bili")
+        controller.startSession("com.tencent.mm")   # bili -> muted restart
+        mute_spawn_count = len(spawned)
+        mm_first = procs[2]                          # mm's first process
+        controller.startSession("cn.wps.moffice_eng")   # third session
+        # bili (muted) is not restarted again; only mm is.
+        assert len(spawned) == mute_spawn_count + 2   # mm muted + wps
+        assert mm_first.terminated is True
+        assert not any("--no-audio" in a for a in spawned[mute_spawn_count + 1:])
+
+
+def test_audio_off_pins_no_audio_in_panel_argv(
+        no_adb, prefs_stub, qapp, monkeypatch):
+        """off：面板直接在 spawn argv 上钉 --no-audio（CLI 侧同样兜底）。"""
+        _policy(monkeypatch, "off")
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        spawned: list[list[str]] = []
+        controller._spawn = lambda argv: (spawned.append(argv), _FakeProc(argv))[1]
+        controller.startSession("tv.danmaku.bili")
+        assert "--no-audio" in spawned[0]
+        assert controller._audio_keys == set()
+
+
+def test_audio_all_spawns_without_mute_and_without_restart(
+        no_adb, prefs_stub, qapp, monkeypatch):
+        """all：并行音频是显式要求，不做重启也不静音。"""
+        _policy(monkeypatch, "all")
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        controller.startSession("tv.danmaku.bili")
+        controller.startSession("com.tencent.mm")
+        assert len(procs) == 2
+        assert not any(p.terminated for p in procs)
+        assert "--no-audio" not in procs[0].argv
+        assert controller._audio_keys == {"tv.danmaku.bili", "com.tencent.mm"}
+
+
+def test_device_mirror_latest_restart_uses_mirror_argv(
+        no_adb, prefs_stub, qapp, monkeypatch):
+        """latest：镜像会话启动时同样把音频会话静音重启（镜像 argv 复用）。"""
+        _policy(monkeypatch, "latest")
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        spawned: list[list[str]] = []
+
+        def fake_spawn(argv):
+                spawned.append(argv)
+                return _FakeProc(argv)
+
+        controller._spawn = fake_spawn  # type: ignore[method-assign]
+        controller.startSession("tv.danmaku.bili")
+        controller.startMirror()
+        # spawns: bili(音频) → bili 静音重启 → mirror(音频，最新者胜)
+        assert spawned[2] == build_device_mirror_argv("S1")
+        assert "--no-audio" not in spawned[2]
+        assert spawned[1][-1] == "--no-audio"   # bili's mute respawn
