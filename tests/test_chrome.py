@@ -79,11 +79,11 @@ def test_overlay_source_shipped_and_hardened():
         assert "MaybeResizeFlexDisplay" in text
         assert "wm size " in text
         assert "FlexSettleMs" in text and "FlexMinDelta" in text
-        # Flex resize passthrough: the native size loop (WM_NCLBUTTONDOWN)
-        # takes over the whole gesture, plus on-demand rendering (no more
-        # unconditional per-tick repaint).
-        assert "BeginUserResize" in text
-        assert "0x00A1" in text and "native resize begin" in text
+        # Resize path: self-managed drag with ASYNC SetWindowPos (never
+        # blocks the overlay thread on the SDL window's slow relayout -
+        # the sync-send variant was the original laggy, sticky resize).
+        assert "SWP_ASYNCWINDOWPOS" in text
+        assert "0x4000" in text
 
 
 def test_compile_command_shape():

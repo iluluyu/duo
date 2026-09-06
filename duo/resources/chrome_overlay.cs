@@ -489,9 +489,11 @@ namespace DuoChrome
                 if (e.Button != MouseButtons.Left) return;
                 if (HitIndex(e.Location) >= 0) return;
                 int edge = ResizeEdgeAt(e.Location);
-                // Native passthrough (flex) takes no capture - the OS size
-                // loop runs its own modal drag.
-                if (edge != 0 && Ctrl.BeginUserResize(edge)) Capture = true;
+                if (edge != 0)
+                {
+                    Ctrl.BeginResize(edge);
+                    Capture = true;
+                }
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -604,9 +606,11 @@ namespace DuoChrome
                     return;
                 }
                 int edge = ResizeEdgeAt(e.Location);
-                // Native passthrough (flex) takes no capture - the OS size
-                // loop runs its own modal drag.
-                if (edge != 0 && Ctrl.BeginUserResize(edge)) Capture = true;
+                if (edge != 0)
+                {
+                    Ctrl.BeginResize(edge);
+                    Capture = true;
+                }
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -915,9 +919,8 @@ namespace DuoChrome
                     ShadeHold = false;
                     Capture = true;   // the whole drag stays on this strip
                 }
-                // Native passthrough (flex): the OS size loop holds its own
-                // capture, so only the self-managed path captures here.
-                else if (_owner.BeginUserResize(Edge)) Capture = true;
+                else _owner.BeginResize(Edge);
+                Capture = true;   // the whole drag stays on this strip
             };
             MouseMove += delegate(object s, MouseEventArgs e)
             {
@@ -1377,41 +1380,6 @@ namespace DuoChrome
             return (double)_videoW / _videoH;
         }
 
-        /// <summary>用户在缩放热区按下：flex（无比例锁）直通系统原生
-        /// size loop——PostMessage WM_NCLBUTTONDOWN(HT 边码) 让 scrcpy 窗口
-        /// 自己进入 DefWindowProc 的模态缩放循环，OS 全程接管（跟手、原生
-        /// 光标、Win11 Snap），overlay 在整个手势期间零参与；返回 true 表示
-        /// 走自管路径，调用方需持有鼠标捕获。mirror/fixed（RatioLock）保留
-        /// 自管路径：拖拽中要实时约束视频比例。</summary>
-        public bool BeginUserResize(int edge)
-        {
-            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return false;
-            if (!RatioLock)
-            {
-                BeginNativeResize(edge);
-                return false;              // 原生循环自己持捕获
-            }
-            BeginResize(edge);
-            return true;
-        }
-
-        private void BeginNativeResize(int edge)
-        {
-            if (_fakedMax)
-            {
-                _fakedMax = false;
-                _top.SetMaximized(0);
-            }
-            if (NativeMethods.IsZoomed(_hwnd))
-                NativeMethods.ShowWindow(_hwnd, 9 /*SW_RESTORE*/);
-            NativeMethods.POINT pt;
-            NativeMethods.GetCursorPos(out pt);
-            IntPtr lp = (IntPtr)(((pt.Y & 0xFFFF) << 16) | (pt.X & 0xFFFF));
-            NativeMethods.PostMessageW(_hwnd, 0x00A1 /*WM_NCLBUTTONDOWN*/,
-                (IntPtr)edge, lp);
-            Log.Write("native resize begin edge=" + edge);
-        }
-
         public void BeginResize(int edge)
         {
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
@@ -1461,9 +1429,13 @@ namespace DuoChrome
             Rectangle want = Rectangle.FromLTRB(L, T, R, B);
             if (RatioLock) want = ConstrainToVideo(want, _resizeEdge);
             want = ConstrainToWorkArea(want, _resizeEdge);
+            // SWP_ASYNCWINDOWPOS: 跨进程 SetWindowPos 默认同步等待目标窗口
+            // 处理 WM_WINDOWPOSCHANGING（SDL 视频窗口重排很慢，曾致拖拽
+            // 粘滞不跟手）；异步下发后本线程永不阻塞，鼠标事件不再堆积。
             bool ok = NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
                 want.Left, want.Top, want.Width, want.Height,
-                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/
+                | 0x4000 /*SWP_ASYNCWINDOWPOS*/);
             if (!ok && _resizeMoves == 1) Log.Write("swp failed");
         }
 
@@ -1621,7 +1593,8 @@ namespace DuoChrome
             NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
                 _pinnedRect.Left, _pinnedRect.Top,
                 _pinnedRect.Width, _pinnedRect.Height,
-                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/
+                | 0x4000 /*SWP_ASYNCWINDOWPOS: 不阻塞 tick 线程*/);
             Log.Write("flex pin restored " + _pinnedRect.Width + "x"
                 + _pinnedRect.Height + " (was " + wr.Width + "x" + wr.Height + ")");
         }
@@ -1734,7 +1707,8 @@ namespace DuoChrome
             _lastMoveX = x; _lastMoveY = y;
             _moveMoves++;
             NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, x, y,
-                0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+                0, 0, 0x0001 /*SWP_NOSIZE*/ | 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/
+                | 0x4000 /*SWP_ASYNCWINDOWPOS*/);
         }
 
         public void EndMove()
