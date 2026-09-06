@@ -123,8 +123,9 @@ def overlay_command(
         arrive through ``session_log`` as scrcpy ``Texture:`` lines) and
         shows the ring glyph; flex/fixed let the window resize freely and
         show a plain back chevron (no home affordance - see above and
-        docs/window-experience.md §7). ``video_*`` is the initial size when
-        already known (fixed mode only); ``session_log`` is a Windows path.
+        docs/window-experience.md §7). ``video_*``: fixed carries its known
+        initial video size; flex carries the launch display box (the seed for
+        the in-place follow); ``session_log`` is a Windows path.
         """
         argv = [
                 exe,

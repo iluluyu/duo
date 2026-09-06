@@ -489,11 +489,9 @@ namespace DuoChrome
                 if (e.Button != MouseButtons.Left) return;
                 if (HitIndex(e.Location) >= 0) return;
                 int edge = ResizeEdgeAt(e.Location);
-                if (edge != 0)
-                {
-                    Ctrl.BeginResize(edge);
-                    Capture = true;
-                }
+                // Native passthrough (flex) takes no capture - the OS size
+                // loop runs its own modal drag.
+                if (edge != 0 && Ctrl.BeginUserResize(edge)) Capture = true;
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -606,11 +604,9 @@ namespace DuoChrome
                     return;
                 }
                 int edge = ResizeEdgeAt(e.Location);
-                if (edge != 0)
-                {
-                    Ctrl.BeginResize(edge);
-                    Capture = true;
-                }
+                // Native passthrough (flex) takes no capture - the OS size
+                // loop runs its own modal drag.
+                if (edge != 0 && Ctrl.BeginUserResize(edge)) Capture = true;
             };
             MouseUp += delegate(object s, MouseEventArgs e)
             {
@@ -709,6 +705,9 @@ namespace DuoChrome
             Rectangle was = Buttons[0].Circle;
             Buttons[0].Circle = new Rectangle(
                 (width - btn) / 2, was.Y, btn, btn);
+            // On-demand render: the bitmap is re-pushed only when the width
+            // truly changed (moves alone just reposition the layered surface).
+            Render();
         }
     }
 
@@ -914,9 +913,11 @@ namespace DuoChrome
                     _pendingDown = true;          // judge later, not now
                     _downScreen = new Point(pt.X, pt.Y);
                     ShadeHold = false;
+                    Capture = true;   // the whole drag stays on this strip
                 }
-                else _owner.BeginResize(Edge);
-                Capture = true;   // the whole drag stays on this strip
+                // Native passthrough (flex): the OS size loop holds its own
+                // capture, so only the self-managed path captures here.
+                else if (_owner.BeginUserResize(Edge)) Capture = true;
             };
             MouseMove += delegate(object s, MouseEventArgs e)
             {
@@ -1291,6 +1292,8 @@ namespace DuoChrome
             _displayMode = displayMode == null ? "flex" : displayMode;
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
+            _flexBoxW = videoW > 0 ? videoW : 2560;   // flex 启动显示框 seed
+            _flexBoxH = videoH > 0 ? videoH : 1440;
             _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home, _displayMode);
             _top = new TopWindow(this, _displayMode.Equals("flex"));
@@ -1372,6 +1375,41 @@ namespace DuoChrome
         {
             if (_videoW <= 0 || _videoH <= 0) return 0.0;
             return (double)_videoW / _videoH;
+        }
+
+        /// <summary>用户在缩放热区按下：flex（无比例锁）直通系统原生
+        /// size loop——PostMessage WM_NCLBUTTONDOWN(HT 边码) 让 scrcpy 窗口
+        /// 自己进入 DefWindowProc 的模态缩放循环，OS 全程接管（跟手、原生
+        /// 光标、Win11 Snap），overlay 在整个手势期间零参与；返回 true 表示
+        /// 走自管路径，调用方需持有鼠标捕获。mirror/fixed（RatioLock）保留
+        /// 自管路径：拖拽中要实时约束视频比例。</summary>
+        public bool BeginUserResize(int edge)
+        {
+            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return false;
+            if (!RatioLock)
+            {
+                BeginNativeResize(edge);
+                return false;              // 原生循环自己持捕获
+            }
+            BeginResize(edge);
+            return true;
+        }
+
+        private void BeginNativeResize(int edge)
+        {
+            if (_fakedMax)
+            {
+                _fakedMax = false;
+                _top.SetMaximized(0);
+            }
+            if (NativeMethods.IsZoomed(_hwnd))
+                NativeMethods.ShowWindow(_hwnd, 9 /*SW_RESTORE*/);
+            NativeMethods.POINT pt;
+            NativeMethods.GetCursorPos(out pt);
+            IntPtr lp = (IntPtr)(((pt.Y & 0xFFFF) << 16) | (pt.X & 0xFFFF));
+            NativeMethods.PostMessageW(_hwnd, 0x00A1 /*WM_NCLBUTTONDOWN*/,
+                (IntPtr)edge, lp);
+            Log.Write("native resize begin edge=" + edge);
         }
 
         public void BeginResize(int edge)
@@ -1586,6 +1624,59 @@ namespace DuoChrome
                 0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
             Log.Write("flex pin restored " + _pinnedRect.Width + "x"
                 + _pinnedRect.Height + " (was " + wr.Width + "x" + wr.Height + ")");
+        }
+
+        // ---- flex in-place display follow (window drives display) --------
+        // 单向离散的"窗口驱动显示"：只在用户手势 settle 后下发一次
+        // `wm size WxH -d <id>`（真机已验证 2026-09：OPD2409 / Android 16 /
+        // scrcpy 4.1 会话进行中直接生效，日志立刻出现新 Texture，无需重启）；
+        // 从不响应 Texture/窗口反馈，因此不可能成风暴环。
+        // 绝不使用 --flex-display（旋转风暴，见 docs/window-experience.md §3）。
+        private int _flexBoxW, _flexBoxH;              // 启动显示框（argv seed）
+        private int _flexAppliedW, _flexAppliedH;      // 上次已下发尺寸（0=未下发）
+        private Size _flexClientSeen;                  // 上次观察到的客户区尺寸
+        private int _flexClientSince = -1;             // 客户区尺寸最近变化的时刻
+        private const int FlexSettleMs = 800;          // 手势 settle 防抖
+        private const int FlexMinDelta = 96;           // 两轴差均 <96px 不下发
+
+        private void MaybeResizeFlexDisplay()
+        {
+            if (!_displayMode.Equals("flex")) return;
+            if (_vdDisplayId < 0) return;              // 会话日志尚未给出 id
+            if (_moving || _resizing) { _flexClientSince = -1; return; }
+            Rectangle client = ClientRect();
+            if (client.Width <= 0 || client.Height <= 0) return;
+            // settle 跟踪：客户区尺寸一变就重新计时，稳定 FlexSettleMs 后
+            // 只下发一次（one-shot：每个 settle 最多发一条命令）。
+            if (client.Width != _flexClientSeen.Width
+                || client.Height != _flexClientSeen.Height)
+            {
+                _flexClientSeen = new Size(client.Width, client.Height);
+                _flexClientSince = Environment.TickCount;
+            }
+            if (_flexClientSince < 0) return;
+            if (Environment.TickCount - _flexClientSince < FlexSettleMs) return;
+            _flexClientSince = -1;
+            // 目标尺寸：窗口宽高比适配进启动显示框，跨方向时交换框。
+            int boxW = _flexBoxW, boxH = _flexBoxH;
+            bool winPortrait = client.Height > client.Width;
+            bool boxPortrait = boxH > boxW;
+            if (winPortrait != boxPortrait) { int t = boxW; boxW = boxH; boxH = t; }
+            double aspect = (double)client.Width / client.Height;
+            int w, h;
+            if (aspect >= (double)boxW / boxH)
+            { w = boxW; h = (int)Math.Round(boxW / aspect); }
+            else
+            { h = boxH; w = (int)Math.Round(boxH * aspect); }
+            w = Math.Max(320, w & ~1);   // 偶数（h264 4:2:0），下限防细条
+            h = Math.Max(320, h & ~1);
+            // 差值护栏：边框舍入级别的小抖动不下发（防下发-重排死循环）。
+            if (_flexAppliedW > 0 && Math.Abs(w - _flexAppliedW) < FlexMinDelta
+                && Math.Abs(h - _flexAppliedH) < FlexMinDelta) return;
+            AdbShell("wm size " + w + "x" + h + " -d " + _vdDisplayId);
+            _flexAppliedW = w; _flexAppliedH = h;
+            Log.Write("flex display resize " + w + "x" + h + " id=" + _vdDisplayId
+                + " (client " + client.Width + "x" + client.Height + ")");
         }
 
         // ---- window move (caption band) -----------------------------------
@@ -2157,6 +2248,7 @@ namespace DuoChrome
                 || overBars || overStrips || _resizing || _moving;
             Rectangle wr = WindowRect();
             EnforceFlexPin(wr);   // window never follows display rotation
+            MaybeResizeFlexDisplay();   // flex: display follows window in place
             // Window-state duties run regardless of engagement: the corner
             // region must settle even when the cursor is away, and the
             // aspect convergence must see external changes while idle.
@@ -2191,6 +2283,7 @@ namespace DuoChrome
                 _top.Left = client.Right - _top.Width - S(TopMargin);
                 _top.Top = client.Top + S(TopMargin);
                 _top.Show();
+                _top.Render();
                 Log.Write("top shown at " + _top.Left + "," + _top.Top
                     + " " + _top.Width + "x" + _top.Height);
             }
@@ -2313,6 +2406,7 @@ namespace DuoChrome
             if (show && !_chin.Visible)
             {
                 _chin.Show();
+                _chin.Render();
                 Log.Write("chin shown");
             }
             else if (!show && _chin.Visible)
@@ -2327,8 +2421,9 @@ namespace DuoChrome
                 _top.Left = client.Right - _top.Width - S(TopMargin);
                 _top.Top = client.Top + S(TopMargin);
             }
-            _chin.Render();
-            if (_top.Visible) _top.Render();
+            // On-demand rendering: bars re-push only on show / hover /
+            // width change; per-tick repaints (full-width bitmap alloc +
+            // UpdateLayeredWindow) fought the UI thread during drags.
         }
 
         private void MaybeSample()

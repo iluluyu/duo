@@ -42,8 +42,9 @@ scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并
 原因见 docs/window-experience.md §3）。流畅度由 h264 + 60fps 承担。
 分辨率档位设置（`flex_resolution`）已撤除，旧 settings.json 残键被无害忽略。
 
-## 6. PC 端 GPU 解码（长期）
+## 6. PC 端解码与长期策略
 
-scrcpy PC 端跨平台纯软解（libavcodec+SDL），无 GPU 旗标。自建 backend 已评估：
-fork 加 D3D11VA（高维护，弃）；自研客户端（TODO 任务 2，人周级，收益=GPU 解码/
-真 AA 圆角/视频嵌面板）。当前最优 = 喂饱软解：h264 + 60fps + 1440p。
+scrcpy PC 端跨平台使用软件解码，没有可直接开启的 GPU 解码旗标。自研客户端与
+fork scrcpy 的 D3D11VA 后端均不纳入当前计划；继续使用已验证的低风险组合：h264
+硬件编码 + 60fps + 合理分辨率。出现卡顿时优先查看 `--print-fps` 日志，再按实际
+设备和 PC 性能调整编码器、码率或帧率。

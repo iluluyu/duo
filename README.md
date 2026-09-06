@@ -34,7 +34,7 @@ Windows 安装与打包（onefile → `C:\Tools\Duo.exe`）见 [docs/windows-set
 
 | 文档 | 内容 |
 |---|---|
-| [TODO.md](TODO.md) | 待办（动态跟随虚拟屏、自研客户端）与基线 |
+| [TODO.md](TODO.md) | 待办（动态跟随虚拟屏）与基线 |
 | [docs/window-experience.md](docs/window-experience.md) | 窗口语义 + 虚拟屏/横竖屏真机调研存档 |
 | [docs/mirroring-quality.md](docs/mirroring-quality.md) | 编码/帧率/音频/旗标决策记录 |
 | [docs/windows-setup.md](docs/windows-setup.md) | Windows 安装、打包、排障 |
