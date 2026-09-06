@@ -206,31 +206,36 @@ class DisplaySpec:
                 if self.mode == "mirror":
                         return []
                 if self.mode == "flex":
-                        # ONE-WAY follow (2026-09-06): window -> display
-                        # follows (the app reflows to the user's window), but
-                        # display/app -> NEVER moves the window. scrcpy only
-                        # auto-resizes its window while the user has not
-                        # manually resized it; the overlay performs one
-                        # no-op size nudge at session start to mark
-                        # user-resized from tick one, plus a drag-guarded pin
-                        # veto for anything that slips through.
-                        # Rotation LOCKED at the source (2026-09-06, gated
-                        # on the reproduced storm): decorated flex displays
-                        # ping-pong orientation at ~2Hz (WindowManager honors
-                        # the app's portrait push, scrcpy re-asserts the
-                        # window's landscape shape, repeat) - even on the app
-                        # home page. ``--capture-orientation=@`` locks the
-                        # display capture to its initial orientation: no
-                        # orientation-driven size churn can even start. The
-                        # overlay's nudge + drag-guarded pin veto backstop any
-                        # residual window-level attempt.
-                        # Size source: always the original resolution (tier
-                        # option withdrawn same day, user decision).
-                        value = f"/{self.dpi}" if self.dpi else ""
-                        new_display = f"--new-display={value}" if value else "--new-display"
-                        return [new_display, "--flex-display",
-                                "--capture-orientation=@",
-                                "--no-vd-system-decorations"]
+                        # FIXED-SIZE virtual displays (2026-09-06, final):
+                        # resizable (flex) displays cannot coexist with
+                        # orientation-pushing apps - scrcpy re-asserts the
+                        # window's shape while the app forces portrait, and
+                        # WindowManager ping-pongs rotation at ~2Hz (A/B
+                        # verified, also sideways content with
+                        # --capture-orientation=@). A fixed WxH display
+                        # physically cannot rotate: apps letterbox inside it
+                        # like on a tablet (verified: piliplus task fills the
+                        # display, zero size churn). System decorations stay
+                        # ON - on a fixed display the launcher page is safe.
+                        # The window is a plain viewport: resizing scales the
+                        # content (letterbox); no window-side magic.
+                        if self.width is None or self.height is None:
+                                size_w, size_h = 2560, 1440
+                        else:
+                                size_w, size_h = self.width, self.height
+                        value = f"{size_w}x{size_h}"
+                        if self.dpi:
+                                value += f"/{self.dpi}"
+                        return [
+                                f"--new-display={value}",
+                                # scrcpy locks the window to the video aspect
+                                # by default: when an orientation-pushing app
+                                # rotates the content, scrcpy RESIZES the
+                                # window to match (the "window flips to
+                                # portrait" bug). With the lock off, the video
+                                # just letterboxes inside the user's window.
+                                "--no-window-aspect-ratio-lock",
+                        ]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
