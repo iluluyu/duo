@@ -1295,8 +1295,6 @@ namespace DuoChrome
             _displayMode = displayMode == null ? "flex" : displayMode;
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
-            _flexBoxW = videoW > 0 ? videoW : 2560;   // flex 启动显示框 seed
-            _flexBoxH = videoH > 0 ? videoH : 1440;
             _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home, _displayMode);
             _top = new TopWindow(this, _displayMode.Equals("flex"));
@@ -1541,116 +1539,14 @@ namespace DuoChrome
         {
             if (!_resizing) return;
             _resizing = false;
-            PinCurrentRect();
             Log.Write("resize end moves=" + _resizeMoves);
         }
 
-        // ---- window pin (app sessions) -----------------------------
-
-        /// <summary>Flex sessions are one-way: the window drives the virtual
-        /// display (--flex-display), and NOTHING may drive the window -
-        /// scrcpy's own auto-resize included (live-verified 2026-09-06: the
-        /// startup nudge alone does not stop it; an app orientation flip
-        /// still rotated the window to 1336x1986). When any external actor
-        /// changes the rect, bounce it back to the user's pinned rect.
-        /// Drag guards are mandatory: during _moving/_resizing the rect is
-        /// changing legitimately every tick and a bounce there was the
-        /// teleport-back bug of the first pin attempt.</summary>
-        private Rectangle _pinnedRect = new Rectangle(0, 0, 0, 0);
-        private int _lbtnAt;                            // last tick LBUTTON was held
-
-        private void PinCurrentRect()
-        {
-            if (!_displayMode.Equals("flex")) return;
-            Rectangle wr = WindowRect();
-            if (wr.Width < 8 || wr.Height < 8) return;
-            _pinnedRect = wr;
-        }
-
-        private void EnforceFlexPin(Rectangle wr)
-        {
-            if (!_displayMode.Equals("flex")) return;
-            if (_moving || _resizing) return;         // user is driving: never bounce
-            if (NativeMethods.IsZoomed(_hwnd)) return; // native maximize is the user's act
-            // Native-border drags never set _moving/_resizing (they run in
-            // the scrcpy window's own modal loop). ANY left-button-down window
-            // change is user action: skip while held, and adopt the result for
-            // a grace period after release instead of bouncing it back (the
-            // "cannot resize the window" bug - pin fought native drags).
-            if ((NativeMethods.GetAsyncKeyState(0x01 /*VK_LBUTTON*/) & 0x8000) != 0)
-            {
-                _lbtnAt = Environment.TickCount;
-                return;
-            }
-            if (_lbtnAt > 0 && Environment.TickCount - _lbtnAt < 1500)
-            {
-                _pinnedRect = wr;                     // adopt the user's new rect
-                return;
-            }
-            if (_fakedMax) { _pinnedRect = wr; return; }
-            if (_pinnedRect.Width < 8) { _pinnedRect = wr; return; }
-            if (wr == _pinnedRect) return;
-            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
-                _pinnedRect.Left, _pinnedRect.Top,
-                _pinnedRect.Width, _pinnedRect.Height,
-                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/
-                | 0x4000 /*SWP_ASYNCWINDOWPOS: 不阻塞 tick 线程*/);
-            Log.Write("flex pin restored " + _pinnedRect.Width + "x"
-                + _pinnedRect.Height + " (was " + wr.Width + "x" + wr.Height + ")");
-        }
-
-        // ---- flex in-place display follow (window drives display) --------
-        // 单向离散的"窗口驱动显示"：只在用户手势 settle 后下发一次
-        // `wm size WxH -d <id>`（真机已验证 2026-09：OPD2409 / Android 16 /
-        // scrcpy 4.1 会话进行中直接生效，日志立刻出现新 Texture，无需重启）；
-        // 从不响应 Texture/窗口反馈，因此不可能成风暴环。
-        // 绝不使用 --flex-display（旋转风暴，见 docs/window-experience.md §3）。
-        private int _flexBoxW, _flexBoxH;              // 启动显示框（argv seed）
-        private int _flexAppliedW, _flexAppliedH;      // 上次已下发尺寸（0=未下发）
-        private Size _flexClientSeen;                  // 上次观察到的客户区尺寸
-        private int _flexClientSince = -1;             // 客户区尺寸最近变化的时刻
-        private const int FlexSettleMs = 800;          // 手势 settle 防抖
-        private const int FlexMinDelta = 96;           // 两轴差均 <96px 不下发
-
-        private void MaybeResizeFlexDisplay()
-        {
-            if (!_displayMode.Equals("flex")) return;
-            if (_vdDisplayId < 0) return;              // 会话日志尚未给出 id
-            if (_moving || _resizing) { _flexClientSince = -1; return; }
-            Rectangle client = ClientRect();
-            if (client.Width <= 0 || client.Height <= 0) return;
-            // settle 跟踪：客户区尺寸一变就重新计时，稳定 FlexSettleMs 后
-            // 只下发一次（one-shot：每个 settle 最多发一条命令）。
-            if (client.Width != _flexClientSeen.Width
-                || client.Height != _flexClientSeen.Height)
-            {
-                _flexClientSeen = new Size(client.Width, client.Height);
-                _flexClientSince = Environment.TickCount;
-            }
-            if (_flexClientSince < 0) return;
-            if (Environment.TickCount - _flexClientSince < FlexSettleMs) return;
-            _flexClientSince = -1;
-            // 目标尺寸：窗口宽高比适配进启动显示框，跨方向时交换框。
-            int boxW = _flexBoxW, boxH = _flexBoxH;
-            bool winPortrait = client.Height > client.Width;
-            bool boxPortrait = boxH > boxW;
-            if (winPortrait != boxPortrait) { int t = boxW; boxW = boxH; boxH = t; }
-            double aspect = (double)client.Width / client.Height;
-            int w, h;
-            if (aspect >= (double)boxW / boxH)
-            { w = boxW; h = (int)Math.Round(boxW / aspect); }
-            else
-            { h = boxH; w = (int)Math.Round(boxH * aspect); }
-            w = Math.Max(320, w & ~1);   // 偶数（h264 4:2:0），下限防细条
-            h = Math.Max(320, h & ~1);
-            // 差值护栏：边框舍入级别的小抖动不下发（防下发-重排死循环）。
-            if (_flexAppliedW > 0 && Math.Abs(w - _flexAppliedW) < FlexMinDelta
-                && Math.Abs(h - _flexAppliedH) < FlexMinDelta) return;
-            AdbShell("wm size " + w + "x" + h + " -d " + _vdDisplayId);
-            _flexAppliedW = w; _flexAppliedH = h;
-            Log.Write("flex display resize " + w + "x" + h + " id=" + _vdDisplayId
-                + " (client " + client.Width + "x" + client.Height + ")");
-        }
+        // ---- window pin + flex display follow: REMOVED 2026-09-06 -----
+        // 用户拍板回退：不要防转钉扎、不要显示跟随/横竖屏切换。flex 窗口就是
+        // 普通 Windows 窗口；虚拟屏恒定 2560x1440，方向由 APP 自主请求（app
+        // 全屏→Android 转屏→scrcpy 窗口随视频自然重排），overlay 零干预。
+        // 实验存档：docs/window-experience.md §3，TODO.md 任务 1。
 
         // ---- window move (caption band) -----------------------------------
 
@@ -1715,7 +1611,6 @@ namespace DuoChrome
         {
             if (!_moving) return;
             _moving = false;
-            PinCurrentRect();
             Log.Write("move end moves=" + _moveMoves);
         }
 
@@ -2221,8 +2116,6 @@ namespace DuoChrome
             bool engaged = foreground || rootAtCursor == _hwnd
                 || overBars || overStrips || _resizing || _moving;
             Rectangle wr = WindowRect();
-            EnforceFlexPin(wr);   // window never follows display rotation
-            MaybeResizeFlexDisplay();   // flex: display follows window in place
             // Window-state duties run regardless of engagement: the corner
             // region must settle even when the cursor is away, and the
             // aspect convergence must see external changes while idle.

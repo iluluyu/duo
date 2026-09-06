@@ -73,12 +73,12 @@ def test_overlay_source_shipped_and_hardened():
         assert "--corner-radius" in text
         assert "CreatePolygonRgn" in text
         assert "ApplyCornerRegion" in text
-        # Flex in-place follow: the display follows the window via a settle-
-        # debounced `wm size -d` on the virtual display - one-way and
-        # discrete, driven only by user gesture settle (no feedback loop).
-        assert "MaybeResizeFlexDisplay" in text
-        assert "wm size " in text
-        assert "FlexSettleMs" in text and "FlexMinDelta" in text
+        # 2026-09-06 user decision: NO display-follow, NO orientation pin -
+        # the flex window is a plain free window and the app itself decides
+        # orientation. The follow/pin machinery must stay OUT of the source.
+        assert "MaybeResizeFlexDisplay" not in text
+        assert "EnforceFlexPin" not in text
+        assert "wm size " not in text
         # Resize path: self-managed drag with ASYNC SetWindowPos (never
         # blocks the overlay thread on the SDL window's slow relayout -
         # the sync-send variant was the original laggy, sticky resize).
