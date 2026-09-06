@@ -1702,6 +1702,17 @@ namespace DuoChrome
             // user's window wins and the app letterboxes inside it.
             if (Math.Abs(cw - _videoW) > cw / 4) return;
             if (Math.Abs(ch - _videoH) > ch / 4) return;
+            // Aspect guard: an orientation-locked app (e.g. pilipili) keeps
+            // pushing portrait textures while the user holds the window
+            // landscape - without this guard the small-fit chain walks the
+            // window to portrait one step per settle ("jumps to portrait",
+            // then 16:9 video letterboxes with heavy top/bottom bands).
+            // If the app wants a different ASPECT, never chase it: the
+            // user's orientation wins, full stop.
+            double clientAspect = (double)cw / ch;
+            double textureAspect = (double)_videoW / _videoH;
+            if (Math.Abs(textureAspect - clientAspect) > 0.1 * clientAspect)
+                return;
             int dxL = client.Left - wr.Left, dyT = client.Top - wr.Top;
             int dxR = wr.Right - client.Right, dyB = wr.Bottom - client.Bottom;
             if (Math.Abs(cw - _videoW) <= 2 && Math.Abs(ch - _videoH) <= 2) return;
