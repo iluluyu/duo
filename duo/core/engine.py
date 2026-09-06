@@ -216,24 +216,31 @@ class DisplaySpec:
                 if self.mode == "mirror":
                         return []
                 if self.mode == "flex":
-                        # Explicit sizes (portrait recommendation, user-pinned
-                        # WxH) always win: flex_resolution only backstops the
-                        # no-explicit-size path, it never overrides WxH.
+                        # DECOUPLED (2026-09-06 user decision): fixed-size
+                        # virtual display + free window that letterboxes.
+                        # ``--flex-display`` (display follows window) created
+                        # a feedback loop: app rotation -> display rotates ->
+                        # scrcpy flips the window -> bounce -> display
+                        # follows back -> app rotates again... With a fixed
+                        # display nothing in the loop can move: the window is
+                        # a plain Windows viewport, apps letterbox inside the
+                        # constant display, orientation flips never reach the
+                        # window. Explicit sizes (portrait recommendation,
+                        # user-pinned WxH) always win over flex_resolution.
                         # System decorations stay ON: the secondary-display
                         # launcher is the in-session "virtual desktop" the
-                        # chin's long-press opens (2026-09-06 user decision;
-                        # the earlier suppression cut that page off entirely).
+                        # chin's long-press opens.
                         if self.width is None and self.height is None:
                                 size = FLEX_SIZES.get(self.flex_resolution, "")
                                 if size:
                                         value = f"{size}/{self.dpi}" if self.dpi else size
-                                        return [
-                                                f"--new-display={value}",
-                                                "--flex-display",
-                                        ]
-                        value = f"/{self.dpi}" if self.dpi else ""
-                        new_display = f"--new-display={value}" if value else "--new-display"
-                        return [new_display, "--flex-display"]
+                                        return [f"--new-display={value}"]
+                                value = f"/{self.dpi}" if self.dpi else ""
+                                return [f"--new-display={value}"] if value else ["--new-display"]
+                        value = f"{self.width}x{self.height}"
+                        if self.dpi:
+                                value += f"/{self.dpi}"
+                        return [f"--new-display={value}"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
