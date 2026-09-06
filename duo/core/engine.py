@@ -216,31 +216,30 @@ class DisplaySpec:
                 if self.mode == "mirror":
                         return []
                 if self.mode == "flex":
-                        # DECOUPLED (2026-09-06 user decision): fixed-size
-                        # virtual display + free window that letterboxes.
-                        # ``--flex-display`` (display follows window) created
-                        # a feedback loop: app rotation -> display rotates ->
-                        # scrcpy flips the window -> bounce -> display
-                        # follows back -> app rotates again... With a fixed
-                        # display nothing in the loop can move: the window is
-                        # a plain Windows viewport, apps letterbox inside the
-                        # constant display, orientation flips never reach the
-                        # window. Explicit sizes (portrait recommendation,
-                        # user-pinned WxH) always win over flex_resolution.
-                        # System decorations stay ON: the secondary-display
-                        # launcher is the in-session "virtual desktop" the
-                        # chin's long-press opens.
+                        # ONE-WAY follow (2026-09-06): window -> display
+                        # follows (the app reflows to the user's window), but
+                        # display/app -> NEVER moves the window. scrcpy only
+                        # auto-resizes its window while the user has not
+                        # manually resized it; the overlay performs one
+                        # no-op size nudge at session start to mark
+                        # user-resized from tick one, so orientation flips
+                        # (pilipili's portrait video page) letterbox inside
+                        # instead of flipping the window.
+                        # Explicit sizes (portrait recommendation, user-pinned
+                        # WxH) always win over flex_resolution. System
+                        # decorations stay ON: the secondary-display launcher
+                        # is the in-session "virtual desktop" (chin long-press).
                         if self.width is None and self.height is None:
                                 size = FLEX_SIZES.get(self.flex_resolution, "")
                                 if size:
                                         value = f"{size}/{self.dpi}" if self.dpi else size
-                                        return [f"--new-display={value}"]
-                                value = f"/{self.dpi}" if self.dpi else ""
-                                return [f"--new-display={value}"] if value else ["--new-display"]
-                        value = f"{self.width}x{self.height}"
-                        if self.dpi:
-                                value += f"/{self.dpi}"
-                        return [f"--new-display={value}"]
+                                        return [
+                                                f"--new-display={value}",
+                                                "--flex-display",
+                                        ]
+                        value = f"/{self.dpi}" if self.dpi else ""
+                        new_display = f"--new-display={value}" if value else "--new-display"
+                        return [new_display, "--flex-display"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
