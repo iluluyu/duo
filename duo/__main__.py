@@ -257,8 +257,6 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 window_width=engine_window.get("window_width"),
                 window_height=engine_window.get("window_height"),
                 borderless=args.chrome,
-                # CLI > 设置 > 默认（与所有设置一致的优先级契约）
-                window_aspect=(args.window_aspect or settings.window_aspect),
         )
         command = engine_args.to_argv(binary=scrcpy_path)
 
@@ -294,17 +292,13 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # too). mirror/fixed windows keep the video aspect ratio
                 # (sizes stream from the session log); flex windows resize
                 # freely.
-                # 视频尺寸 seed：fixed 恒传（比例锁）；flex 仅在 locked 模式传
-                # （2026-09-06 定稿：free=自由窗口零干预；locked=拖拽约束在
-                # 内容比例内像视频播放器，永不黑边；两种模式 APP 转屏时均由
-                # scrcpy 原生把窗口贴合新内容）；镜像不传。
-                aspect = args.window_aspect or settings.window_aspect
+                # 视频尺寸 seed 只给 fixed（比例锁）；flex 是纯自由窗口
+                # （2026-09-06 定稿：比例永不锁、无任何方向概念，窗口形状由
+                # 钉扎保护）；镜像不传。
                 vd_w = vd_h = None
-                if display.mode == "fixed" or (
-                        display.mode == "flex" and aspect == "locked"
-                ):
-                        vd_w = display.width or 2560
-                        vd_h = display.height or 1440
+                if display.mode == "fixed":
+                        vd_w = display.width
+                        vd_h = display.height
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,
@@ -313,7 +307,6 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         display_mode=args.display,
                         video_width=vd_w,
                         video_height=vd_h,
-                        ratio_lock=display.mode == "flex" and aspect == "locked",
                         session_log=log_path,
                         corner_radius_dip=corner,
                 )
@@ -385,15 +378,6 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--portrait",
                 action="store_true",
                 help="open a tall window on the right with portrait-tuned dpi",
-        )
-        mirror.add_argument(
-                "--window-aspect",
-                choices=["free", "locked"],
-                default=None,
-                help="app-session window aspect: free = any shape (default; "
-                     "app rotation adapts the window), locked = constrain to "
-                     "content aspect like a video player (never any black bars) "
-                     "(settings/free)",
         )
         mirror.add_argument("--fps", type=int, default=None, help="max fps (settings/90)")
         mirror.add_argument(

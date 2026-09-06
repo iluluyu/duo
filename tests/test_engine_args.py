@@ -12,18 +12,6 @@ def _argv(**kwargs) -> list[str]:
         return EngineArgs(**kwargs).to_argv()
 
 
-def test_window_aspect_flag_follows_setting():
-        """free (default) unlocks the window ratio; locked keeps scrcpy's
-        native aspect lock (video-player semantics, never any black bars —
-        2026-09-06 定稿)."""
-        free = _argv(serial="s", app_package="a.b",
-                     display=DisplaySpec(mode="flex"))
-        assert "--no-window-aspect-ratio-lock" in free
-        locked = _argv(serial="s", app_package="a.b",
-                       display=DisplaySpec(mode="flex"), window_aspect="locked")
-        assert "--no-window-aspect-ratio-lock" not in locked
-
-
 def test_adb_pin_never_becomes_an_argv_flag():
         """The adb pin stays out of argv: scrcpy 4.1 has no --adb option and
         exits with "unknown option" (live finding 2026-09-05, restart loop).

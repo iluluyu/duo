@@ -110,3 +110,30 @@ def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
 def test_gui_importable_without_display():
         """The QML front end imports cleanly headless (Qt lazy-loaded)."""
         import duo.ui.app  # noqa: F401
+
+
+def test_panel_single_instance_lock(tmp_path, monkeypatch):
+        """GUI mode is single-instance: a second panel cannot take the lock.
+
+        Background (2026-09-06 "全部失效" incident): every extra panel owns
+        its own session map; launching an app from instance B force-stops
+        it off instance A's virtual display, leaving A's window dead.
+        """
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        pytest.importorskip("PyQt6.QtCore")
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import duo.core.paths as paths_mod
+        import gui_entry
+
+        monkeypatch.setattr(paths_mod, "data_dir", lambda: tmp_path)
+        lock = gui_entry._acquire_panel_lock()
+        assert lock is not None
+        try:
+                assert gui_entry._acquire_panel_lock() is None   # second panel loses
+        finally:
+                lock.unlock()
+        again = gui_entry._acquire_panel_lock()
+        assert again is not None                                 # released = reusable
+        again.unlock()

@@ -166,7 +166,6 @@ namespace DuoChrome
             string mode = "flex", sessionLog = null;
             bool home = false;
             int videoW = 0, videoH = 0, cornerDip = 0;
-            bool ratioLock = false;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
@@ -176,7 +175,6 @@ namespace DuoChrome
                 else if (argv[i] == "--display-mode") mode = argv[i + 1];
                 else if (argv[i] == "--video-w") int.TryParse(argv[i + 1], out videoW);
                 else if (argv[i] == "--video-h") int.TryParse(argv[i + 1], out videoH);
-                else if (argv[i] == "--ratio-lock") ratioLock = true;
                 else if (argv[i] == "--session-log") sessionLog = argv[i + 1];
                 else if (argv[i] == "--corner-radius") int.TryParse(argv[i + 1], out cornerDip);
             }
@@ -184,7 +182,7 @@ namespace DuoChrome
             {
                 Log.Write("usage: --title <t> --serial <s> --adb <path> [--home 0|1] "
                     + "[--display-mode mirror|flex|fixed] [--video-w n] [--video-h n] "
-                    + "[--ratio-lock] [--session-log <path>]");
+                    + "[--session-log <path>]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -201,11 +199,9 @@ namespace DuoChrome
             };
             Log.Write("overlay start title=" + title + " serial=" + serial
                 + " mode=" + mode + " video=" + videoW + "x" + videoH
-                + (ratioLock ? " ratio=locked" : "")
                 + (sessionLog == null ? "" : " log=" + sessionLog));
             using (Controller c = new Controller(
-                title, serial, adb, home, mode, videoW, videoH, sessionLog,
-                cornerDip, ratioLock))
+                title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip))
             {
                 Application.Run();
             }
@@ -1292,14 +1288,12 @@ namespace DuoChrome
         private const int SettleMs = 350;
 
         public Controller(string title, string serial, string adb, bool home,
-            string displayMode, int videoW, int videoH, string sessionLog,
-            int cornerDip, bool ratioLock)
+            string displayMode, int videoW, int videoH, string sessionLog, int cornerDip)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
             _displayMode = displayMode == null ? "flex" : displayMode;
             _videoW = videoW; _videoH = videoH;
-            _forceRatioLock = ratioLock;
             _videoChangedAt = 0;
             _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home, _displayMode);
@@ -1372,21 +1366,10 @@ namespace DuoChrome
         public bool Resizing { get { return _resizing; } }
 
         /// <summary>Whether the window must stay glued to the video aspect
-        /// (mirror and fixed always lock; flex locks only when started with
-        /// --ratio-lock (window_aspect=locked, 2026-09-06): strip drags are
-        /// constrained to the content aspect like a video player - never any
-        /// black bars. Free flex windows (the default) resize freely and
-        /// scrcpy letterboxes whatever shape the user drags; app rotation
-        /// adapts the window natively in both modes.
-        private bool _forceRatioLock;
-
+        /// (mirror and fixed modes with a known size; flex follows freely).
         private bool RatioLock
         {
-            get
-            {
-                return _videoW > 0 && _videoH > 0
-                    && (_forceRatioLock || !_displayMode.Equals("flex"));
-            }
+            get { return _videoW > 0 && _videoH > 0 && !_displayMode.Equals("flex"); }
         }
 
         private double VideoAspect()
@@ -1556,14 +1539,57 @@ namespace DuoChrome
         {
             if (!_resizing) return;
             _resizing = false;
+            PinCurrentRect();
             Log.Write("resize end moves=" + _resizeMoves);
         }
 
-        // ---- window pin + flex display follow: REMOVED 2026-09-06 -----
-        // 用户拍板回退：不要防转钉扎、不要显示跟随/横竖屏切换。flex 窗口就是
-        // 普通 Windows 窗口；虚拟屏恒定 2560x1440，方向由 APP 自主请求（app
-        // 全屏→Android 转屏→scrcpy 窗口随视频自然重排），overlay 零干预。
-        // 实验存档：docs/window-experience.md §3，TODO.md 任务 1。
+        // ---- window pin (app sessions) ---------------------------------
+        // 恢复于 2026-09-06（曾误删）：窗口形状是用户财产，任何外部变化——
+        // 尤其 scrcpy 在 APP 转屏后的自动改窗（live-verified：app 方向翻转
+        // 曾把窗口旋转成 1336x1986）——都弹回用户钉住的矩形。Drag guards
+        // 必须：_moving/_resizing 期间矩形合法变化，那时的弹回就是第一次
+        // 钉扎的 teleport-back bug。
+        private Rectangle _pinnedRect = new Rectangle(0, 0, 0, 0);
+        private int _lbtnAt;                            // last tick LBUTTON was held
+
+        private void PinCurrentRect()
+        {
+            if (!_displayMode.Equals("flex")) return;
+            Rectangle wr = WindowRect();
+            if (wr.Width < 8 || wr.Height < 8) return;
+            _pinnedRect = wr;
+        }
+
+        private void EnforceFlexPin(Rectangle wr)
+        {
+            if (!_displayMode.Equals("flex")) return;
+            if (_moving || _resizing) return;         // user is driving: never bounce
+            if (NativeMethods.IsZoomed(_hwnd)) return; // native maximize is the user's act
+            // Native-border drags never set _moving/_resizing (they run in
+            // the scrcpy window's own modal loop). ANY left-button-down window
+            // change is user action: skip while held, and adopt the result for
+            // a grace period after release instead of bouncing it back (the
+            // "cannot resize the window" bug - pin fought native drags).
+            if ((NativeMethods.GetAsyncKeyState(0x01 /*VK_LBUTTON*/) & 0x8000) != 0)
+            {
+                _lbtnAt = Environment.TickCount;
+                return;
+            }
+            if (_lbtnAt > 0 && Environment.TickCount - _lbtnAt < 1500)
+            {
+                _pinnedRect = wr;                     // adopt the user's new rect
+                return;
+            }
+            if (_fakedMax) { _pinnedRect = wr; return; }
+            if (_pinnedRect.Width < 8) { _pinnedRect = wr; return; }
+            if (wr == _pinnedRect) return;
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                _pinnedRect.Left, _pinnedRect.Top,
+                _pinnedRect.Width, _pinnedRect.Height,
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            Log.Write("flex pin restored " + _pinnedRect.Width + "x"
+                + _pinnedRect.Height + " (was " + wr.Width + "x" + wr.Height + ")");
+        }
 
         // ---- window move (caption band) -----------------------------------
 
@@ -1628,6 +1654,7 @@ namespace DuoChrome
         {
             if (!_moving) return;
             _moving = false;
+            PinCurrentRect();
             Log.Write("move end moves=" + _moveMoves);
         }
 
@@ -2133,6 +2160,7 @@ namespace DuoChrome
             bool engaged = foreground || rootAtCursor == _hwnd
                 || overBars || overStrips || _resizing || _moving;
             Rectangle wr = WindowRect();
+            EnforceFlexPin(wr);   // window never follows display rotation
             // Window-state duties run regardless of engagement: the corner
             // region must settle even when the cursor is away, and the
             // aspect convergence must see external changes while idle.
