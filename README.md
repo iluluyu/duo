@@ -1,5 +1,7 @@
 # Duo
 
+[![CI](https://github.com/iluluyu/duo/actions/workflows/ci.yml/badge.svg)](https://github.com/iluluyu/duo/actions/workflows/ci.yml)
+
 > **让安卓设备成为 Windows 的应用服务器。**
 
 设备熄屏插电，USB 连电脑；Windows 大屏 + 键鼠直接使用安卓应用（背单词、阅读、
