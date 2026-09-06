@@ -8,10 +8,16 @@ and prefs contracts are unchanged.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
-from duo.ui.controller import (
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+pytest.importorskip("PyQt6.QtCore")
+
+from duo.ui.controller import (  # noqa: E402
         DEFAULT_PORTRAIT,
         build_device_mirror_argv,
         build_launch_argv,
