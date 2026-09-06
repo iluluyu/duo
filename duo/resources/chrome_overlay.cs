@@ -2393,6 +2393,20 @@ namespace DuoChrome
             _repaired = true;
             ApplyCornerRegion();
             Log.Write("window repaired: thickframe+round");
+            // One-way follow (flex): scrcpy auto-resizes its window on video
+            // size changes ONLY until the user manually resizes it. A single
+            // no-op reposition here (same rect) marks user-resized from tick
+            // one, so later orientation flips (pilipili's portrait video
+            // page) letterbox INSIDE the window instead of flipping it. The
+            // window -> display direction keeps working (--flex-display).
+            if (_displayMode.Equals("flex"))
+            {
+                Rectangle wr0 = WindowRect();
+                NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                    wr0.Left, wr0.Top, wr0.Width, wr0.Height,
+                    0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+                Log.Write("flex user-size nudge " + wr0.Width + "x" + wr0.Height);
+            }
         }
 
         // -- fake maximize (taskbar-safe) ---------------------------------------
