@@ -19,21 +19,24 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
 $bits = .venv\Scripts\python -c "import struct; print(struct.calcsize('P') * 8)"
 if ($bits -ne '64') { throw "need 64-bit Windows Python for the win64 bundle (got ${bits}-bit)" }
 
-# --noconfirm overwrites dist\ and build\ left over from earlier runs.
-.venv\Scripts\pyinstaller duo.spec --noconfirm
+# --onefile: a single portable Duo.exe (user-facing default; slower to
+# start than onedir because it self-extracts to temp on launch).
+# The onedir duo.spec remains available for faster dev iteration:
+#   .venv\Scripts\pyinstaller duo.spec --noconfirm
+.venv\Scripts\pyinstaller --onefile --noconsole --name Duo `
+        --icon assets/duo.ico `
+        --add-data "duo/ui/qml;duo/ui/qml" `
+        --add-data "duo/resources/chrome_overlay.cs;duo/resources" `
+        --hidden-import PyQt6.QtQml --hidden-import PyQt6.QtQuick `
+        gui_entry.py --noconfirm
 
-# Artifact sanity (PyInstaller >= 6 onedir puts data under _internal\):
-# the windowed exe plus the sidecar files it loads at runtime - QML
-# sources for the panel, the C# overlay source for --chrome windows.
+# Artifact sanity for the single-file bundle.
 $artifacts = @(
-        'dist\Duo\Duo.exe',
-        'dist\Duo\_internal\duo\ui\qml\Main.qml',
-        'dist\Duo\_internal\duo\ui\qml\qmldir',
-        'dist\Duo\_internal\duo\resources\chrome_overlay.cs'
+        'dist\Duo.exe'
 )
 foreach ($f in $artifacts) {
         if (-not (Test-Path $f)) { throw "missing artifact: $repo\$f" }
 }
 
-Write-Output "bundle ready: $repo\dist\Duo\Duo.exe"
-Write-Output "smoke test  : dist\Duo\Duo.exe --check; `$LASTEXITCODE (0 = tools found)"
+Write-Output "bundle ready: $repo\dist\Duo.exe (single file, portable)"
+Write-Output "smoke test  : dist\Duo.exe --check; `$LASTEXITCODE (0 = tools found)"

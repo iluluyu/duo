@@ -22,7 +22,6 @@ from duo.core.paths import data_dir
 VALID_CORNER_MODES = ("system", "g2", "none")
 VALID_AUDIO_POLICIES = ("latest", "all", "off")
 VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
-VALID_FLEX_RESOLUTIONS = ("1440p", "1080p", "native")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -57,11 +56,11 @@ class Settings:
         video_codec: str = "auto"
         # --turn-screen-off：黑屏防误触，主要对 mirror（整机镜像）有意义
         turn_screen_off: bool = False
-        # flex 虚拟屏基准分辨率（docs/mirroring-quality.md §6）：无显式尺寸的
-        # flex 会话据此拼 --new-display=WxH。裸 --new-display 会把虚拟屏建成
-        # 主屏全尺寸（2400x3392 面板 → 2400x3392 虚拟屏），全屏动画时设备端
-        # 硬编与 PC 端软解双端吃满，进应用动画必卡。native = 不加尺寸。
-        flex_resolution: str = "1440p"
+
+# 历史（2026-09-06）：曾有 flex_resolution 基准分辨率档（1440p/1080p/native），
+# 用户决策撤除——档位选择造成困扰，flex 一律原始分辨率；性能由
+# codec=h264+fps=60 承担。旧 settings.json 里残留的 flex_resolution 键被
+# _sanitize 无害忽略（只读已知键）。
 
 
 def settings_path() -> Path:
@@ -144,12 +143,8 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 problems.append(f"turn_screen_off: 期望布尔，实际为 {turn_screen_off!r}")
                 turn_screen_off = defaults.turn_screen_off
 
-        flex_resolution = raw.get("flex_resolution", defaults.flex_resolution)
-        if flex_resolution not in VALID_FLEX_RESOLUTIONS:
-                problems.append(
-                        f"flex_resolution: {flex_resolution!r} 不在 {VALID_FLEX_RESOLUTIONS}")
-                flex_resolution = defaults.flex_resolution
-
+        # 注意：这里只读上方已知键。settings.json 里已撤除的键（如历史
+        # flex_resolution）或任何多余键都会被无害忽略，不进 problems。
         return Settings(
                 version=version,
                 scrcpy_path=scrcpy_path,
@@ -163,7 +158,6 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 audio_policy=audio_policy,
                 video_codec=video_codec,
                 turn_screen_off=turn_screen_off,
-                flex_resolution=flex_resolution,
         )
 
 
@@ -245,7 +239,6 @@ __all__ = [
         "Settings",
         "VALID_AUDIO_POLICIES",
         "VALID_CORNER_MODES",
-        "VALID_FLEX_RESOLUTIONS",
         "VALID_VIDEO_CODECS",
         "corner_radius_dip",
         "load_settings",

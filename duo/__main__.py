@@ -174,7 +174,6 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 width=args.width,
                 height=args.height,
                 dpi=dpi,
-                flex_resolution=settings.flex_resolution,
         )
         # Display recommendation from the PC monitor when not pinned.
         engine_window: dict[str, int | None] = {}
@@ -189,7 +188,6 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 width=args.width or rec.display_width,
                                 height=args.height or rec.display_height,
                                 dpi=dpi or rec.dpi,
-                                flex_resolution=display.flex_resolution,
                         )
                         # Position the window but never lock its size: the user
                         # manages window geometry (e.g. PowerToys zones) and
@@ -211,7 +209,6 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                         width=display.width,
                                         height=display.height,
                                         dpi=rec.dpi,
-                                        flex_resolution=display.flex_resolution,
                                 )
                         engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"

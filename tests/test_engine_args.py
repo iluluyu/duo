@@ -24,18 +24,23 @@ def test_adb_pin_never_becomes_an_argv_flag():
 def test_flex_default_matches_verified_preset():
         """The default args reproduce the experiment-verified session shape.
 
-        The default flex_resolution (settings default 1440p) pins the virtual
-        display baseline at 2560x1440: a bare --new-display would size the
-        display at the main display's full resolution and max out both the
-        device encoder and the PC decoder during fullscreen animations.
+        Flex size source (2026-09-06 user decision): ALWAYS the original
+        resolution - bare --new-display=/480 (default density 480). The
+        same-day baseline tiers (FLEX_SIZES / settings flex_resolution)
+        were withdrawn: picking a tier confused users; the smoothness
+        budget is carried by video_codec=h264 + fps=60 instead.
         """
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")
         joined = " ".join(argv)
         assert "--serial=4444bd6b" in argv
-        assert "--new-display=2560x1440/480" in argv
+        # Bare --new-display=/480: virtual display at the main display's
+        # original resolution, never a pinned baseline size.
+        assert "--new-display=/480" in argv
+        assert not any(a.startswith("--new-display=2560x1440") for a in argv)
         # One-way follow (2026-09-06): --flex-display stays (window drives
         # the display); the overlay's startup nudge keeps scrcpy from ever
         # auto-resizing the window back.
+        assert "--flex-display" in argv
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
@@ -74,67 +79,29 @@ def test_start_app_plus_prefix_is_idempotent():
         assert not any("++" in a for a in argv)
 
 
-        assert "--flex-display" in argv
-
-
 def test_flex_without_dpi_uses_bare_new_display():
-        """native（不加尺寸）+ dpi=None emits a bare --new-display + flex."""
-        argv = _argv(serial="s",
-                     display=DisplaySpec(mode="flex", dpi=None,
-                                         flex_resolution="native"))
+        """dpi=None 的 flex 会话发裸 --new-display（无 = 形式）+ --flex-display。
+
+        2026-09-06 用户决策：一律原始分辨率（原 native 档成为唯一行为）。
+        """
+        argv = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
         assert "--new-display" in argv
         assert not any(a.startswith("--new-display=") for a in argv)
         assert "--flex-display" in argv
+        assert "--no-vd-system-decorations" not in argv
 
 
-def test_flex_resolution_three_tiers():
-        """三档 flex_resolution → 三种 --new-display 形状（卡顿修复的核心）。
+def test_flex_explicit_size_never_pins_display():
+        """显式尺寸 spec（竖屏推荐/用户 --width/--height 路径）不钉虚拟屏。
 
-        裸 --new-display 会把虚拟屏建成主屏全尺寸（2400x3392 面板实测同尺寸），
-        全屏动画时设备端硬编 + PC 端软解双端吃满；1440p/1080p 钉住基准尺寸。
+        flex 跟随窗口（one-way follow），显式 width/height 只影响窗口几何，
+        display 旗标永远只有裸 new-display（/dpi）+ --flex-display。
         """
-        assert DisplaySpec().flex_resolution == "1440p"   # 默认值 = 平衡档
-
-        def new_display(spec: DisplaySpec) -> str:
-                argv = EngineArgs(serial="s", display=spec).to_argv()
-                return next(f for f in argv if f.startswith("--new-display"))
-
-        assert new_display(DisplaySpec(mode="flex", dpi=480)) == \
-                "--new-display=2560x1440/480"
-        assert new_display(DisplaySpec(mode="flex", dpi=480,
-                                       flex_resolution="1080p")) == \
-                "--new-display=1920x1080/480"
-        assert new_display(DisplaySpec(mode="flex", dpi=480,
-                                       flex_resolution="native")) == \
-                "--new-display=/480"
-        # 尺寸可与 dpi 解耦：无 dpi 时只拼 WxH
-        assert new_display(DisplaySpec(mode="flex", dpi=None)) == \
-                "--new-display=2560x1440"
-        # flex 三档（跟随保留：窗口驱动显示；装饰开启：虚拟桌面页）
-        for value in ("1440p", "1080p", "native"):
-                argv = _argv(serial="s", display=DisplaySpec(
-                        mode="flex", dpi=480, flex_resolution=value))
-                assert "--flex-display" in argv
-                assert "--no-vd-system-decorations" not in argv
-
-
-def test_flex_explicit_size_never_overridden_by_resolution():
-        """带显式尺寸的 spec（竖屏推荐/fixed 路径）不被 flex_resolution 覆盖。"""
-        spec = DisplaySpec(mode="flex", width=1120, height=1872, dpi=313,
-                           flex_resolution="1080p")
+        spec = DisplaySpec(mode="flex", width=1120, height=1872, dpi=313)
         argv = _argv(serial="s", display=spec)
         assert "--new-display=/313" in argv
-        assert not any(a.startswith("--new-display=1920x1080") for a in argv)
-        assert not any(a.startswith("--new-display=2560x1440") for a in argv)
-
-
-def test_fixed_mode_ignores_flex_resolution():
-        """fixed 模式已有显式尺寸，flex_resolution 不参与拼装。"""
-        display = DisplaySpec(mode="fixed", width=2560, height=1440, dpi=268,
-                              flex_resolution="native")
-        argv = _argv(serial="s", display=display)
-        assert "--new-display=2560x1440/268" in argv
-        assert "--flex-display" not in argv
+        assert not any(a.startswith("--new-display=1120x1872") for a in argv)
+        assert "--flex-display" in argv
 
 
 def test_fixed_display_size_and_dpi():

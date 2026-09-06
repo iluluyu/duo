@@ -1531,7 +1531,45 @@ namespace DuoChrome
         {
             if (!_resizing) return;
             _resizing = false;
+            PinCurrentRect();
             Log.Write("resize end moves=" + _resizeMoves);
+        }
+
+        // ---- one-way follow enforcement (flex) -----------------------------
+
+        /// <summary>Flex sessions are one-way: the window drives the virtual
+        /// display (--flex-display), and NOTHING may drive the window -
+        /// scrcpy's own auto-resize included (live-verified 2026-09-06: the
+        /// startup nudge alone does not stop it; an app orientation flip
+        /// still rotated the window to 1336x1986). When any external actor
+        /// changes the rect, bounce it back to the user's pinned rect.
+        /// Drag guards are mandatory: during _moving/_resizing the rect is
+        /// changing legitimately every tick and a bounce there was the
+        /// teleport-back bug of the first pin attempt.</summary>
+        private Rectangle _pinnedRect = new Rectangle(0, 0, 0, 0);
+
+        private void PinCurrentRect()
+        {
+            if (!_displayMode.Equals("flex")) return;
+            Rectangle wr = WindowRect();
+            if (wr.Width < 8 || wr.Height < 8) return;
+            _pinnedRect = wr;
+        }
+
+        private void EnforceFlexPin(Rectangle wr)
+        {
+            if (!_displayMode.Equals("flex")) return;
+            if (_moving || _resizing) return;         // user is driving: never bounce
+            if (NativeMethods.IsZoomed(_hwnd)) return; // native maximize is the user's act
+            if (_fakedMax) { _pinnedRect = wr; return; }
+            if (_pinnedRect.Width < 8) { _pinnedRect = wr; return; }
+            if (wr == _pinnedRect) return;
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                _pinnedRect.Left, _pinnedRect.Top,
+                _pinnedRect.Width, _pinnedRect.Height,
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            Log.Write("flex pin restored " + _pinnedRect.Width + "x"
+                + _pinnedRect.Height + " (was " + wr.Width + "x" + wr.Height + ")");
         }
 
         // ---- window move (caption band) -----------------------------------
@@ -1596,6 +1634,7 @@ namespace DuoChrome
         {
             if (!_moving) return;
             _moving = false;
+            PinCurrentRect();
             Log.Write("move end moves=" + _moveMoves);
         }
 
@@ -2101,6 +2140,7 @@ namespace DuoChrome
             bool engaged = foreground || rootAtCursor == _hwnd
                 || overBars || overStrips || _resizing || _moving;
             Rectangle wr = WindowRect();
+            EnforceFlexPin(wr);   // one-way follow: veto external rect changes
             // Window-state duties run regardless of engagement: the corner
             // region must settle even when the cursor is away, and the
             // aspect convergence must see external changes while idle.
