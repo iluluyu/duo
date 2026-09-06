@@ -604,9 +604,9 @@ def test_status_signal_fires_on_state_changes(no_adb, prefs_stub, qapp, monkeypa
         statuses: list[str] = []
         controller.statusChanged.connect(statuses.append)
         controller.startSession("cn.com.langeasy.LangEasyLexis")
-        assert statuses[-1] == "已启动 不背单词 · 竖屏"   # DEFAULT_PORTRAIT
+        assert statuses[-1] == "已启动 不背单词 · 横屏"   # 无硬编码种子：16:9 开局
         controller.togglePortrait("cn.com.langeasy.LangEasyLexis")
-        assert statuses[-1] == "不背单词 将以横屏启动"
+        assert statuses[-1] == "不背单词 将以竖屏启动"   # 从 16:9 默认切到竖屏
         controller.stopSession("cn.com.langeasy.LangEasyLexis")
         assert statuses[-1] == "已关闭 不背单词"
 
@@ -626,8 +626,8 @@ def test_portrait_prefs_roundtrip(no_adb, prefs_stub, qapp):
 
         second = PanelController("/fake/adb.exe")
         assert second.portraitFor("tv.danmaku.bili") is True
-        # Catalog defaults survive the save/load round trip.
-        assert second.portraitFor("cn.com.langeasy.LangEasyLexis") is True
+        # 无硬编码种子（防过拟合）：未被用户切换过的 APP 一律 16:9 默认。
+        assert second.portraitFor("cn.com.langeasy.LangEasyLexis") is False
 
         second.togglePortrait("tv.danmaku.bili")   # flips back, persists again
         assert second.portraitFor("tv.danmaku.bili") is False
@@ -727,7 +727,7 @@ def test_audio_latest_restarts_running_sessions_muted(
                 "tv.danmaku.bili", "S1", portrait=False, muted=True)
         assert "--no-audio" in spawned[1]
         assert spawned[2] == build_launch_argv(
-                "com.tencent.mm", "S1", portrait=True)  # DEFAULT_PORTRAIT
+                "com.tencent.mm", "S1", portrait=False)  # 无硬编码种子：16:9
         assert "--no-audio" not in spawned[2]
         assert procs[0].terminated          # the old bili CLI got SIGTERM
         assert controller._audio_keys == {"com.tencent.mm"}

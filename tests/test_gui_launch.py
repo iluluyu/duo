@@ -92,7 +92,9 @@ def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
         stub = _StubFile(None)
         monkeypatch.setattr(controller, "_prefs_path", lambda: stub)
         prefs = load_portrait_prefs()
-        assert prefs["cn.com.langeasy.LangEasyLexis"] is True  # default portrait
+        # 无硬编码种子（防过拟合，2026-09-06 晚）：空文件 → 空表，全部 16:9 开局；
+        # 只有用户切换过的 APP 才进来（学习式持久化）。
+        assert "cn.com.langeasy.LangEasyLexis" not in prefs
         prefs["tv.danmaku.bili"] = True
         save_portrait_prefs(prefs)
         assert stub.written is not None

@@ -72,16 +72,12 @@ APP_CATALOG: list[tuple[str, str]] = [
         ("微信读书", "com.tencent.weread"),
 ]
 
-#: Per-app portrait defaults (reading/vocabulary apps want a tall phone).
-#: QQ/微信：竖屏设计的手机 APP，在横屏显示里会自留大片黑边
-#: （同真平板横屏行为，2026-09-06 晚真机验证 QQ SplashActivity
-#: Requested=fill 显示但 UI 内部留黑）；竖屏启动则自然填满。
-DEFAULT_PORTRAIT: dict[str, bool] = {
-        "cn.com.langeasy.LangEasyLexis": True,
-        "com.tencent.weread": True,
-        "com.tencent.mobileqq": True,
-        "com.tencent.mm": True,
-}
+#: Per-app portrait seeds. EMPTY BY DESIGN (2026-09-06 晚，用户决策
+#: “防过拟合”)：不再替 APP 猜初始方向 —— 设备上没有便宜的静态探测
+#: （manifest screenOrientation 不在任何 dump/badging 输出里），猜错
+#: 就是横屏开竖屏 APP 自留黑边。所有 APP 一律 16:9 开局；用户在面板
+#: 长按切换的偏好持久化在 prefs 里（学习而非硬编码）。
+DEFAULT_PORTRAIT: dict[str, bool] = {}
 
 #: Human-readable adb state names for the device card.
 _STATE_TEXT = {
