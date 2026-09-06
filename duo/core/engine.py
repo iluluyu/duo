@@ -226,18 +226,29 @@ class DisplaySpec:
                         value = f"{size_w}x{size_h}"
                         if self.dpi:
                                 value += f"/{self.dpi}"
-                        # scrcpy locks the window to the video aspect
-                        # by default; free windows need the explicit unlock
-                        # (2026-09-06 定稿：自由窗口，比例永不锁）。
-                        # stretched：内容永远铺满窗口（沉浸，无黑边）；形状
-                        # 差远时有拉伸失真——窗口形状是用户的选择，贴合
-                        # 内容比例时零失真。纯客户端渲染，不回传设备，
-                        # 与钉扎（窗口形状稳定）无反馈环。
-                        return [
+                        # --flex-display（2026-09-06 晚定稿）：虚拟屏持续
+                        # 跟随窗口尺寸（原生填满，unscaled 渲染，零拉伸零
+                        # 黑边）。上午的风暴根因 = 建屏自带
+                        # ROTATES_WITH_CONTENT，APP 方向请求→显示旋转→
+                        # scrcpy 重申窗口形状→乒乓；解法 = overlay 在拿到
+                        # display id 后一次性下发
+                        # `wm set-ignore-orientation-request -d <id> 1`
+                        # （方向请求被 WM 层忽略，APP 自己适配/自挔黑边 =
+                        # 原生平板语义）。真机验证：bbdc 横窗跟随+自适配，
+                        # 无风暴。--new-display 只提供初始形状。
+                        argv = [
                                 f"--new-display={value}",
+                                "--flex-display",
                                 "--no-window-aspect-ratio-lock",
+                                # 过渡平滑（跟随 ~200ms 是 Android 侧物理往返，
+                                # scrcpy 客户端零节流已源码确认）：flex 默认
+                                # unscaled 过渡期内容 1:1 缩在角落露空白；
+                                # stretched 让拖拽期间内容平滑铺满（像原生窗口
+                                # 拖拽时 DWM 拉伸旧帧），松手即原生分辨率收敛
+                                # （稳态三尺寸相等，零失真）。
                                 "--render-fit=stretched",
                         ]
+                        return argv
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"

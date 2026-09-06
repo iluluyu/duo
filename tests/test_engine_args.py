@@ -34,11 +34,14 @@ def test_flex_default_matches_verified_preset():
         assert "--serial=4444bd6b" in argv
         assert "--new-display=2560x1440/480" in argv
         assert "--no-window-aspect-ratio-lock" in argv
-        # stretched（2026-09-06 定稿）：内容永远铺满自由窗口（无黑边）；
-        # 与钉扎兼容，无反馈环。
+        # flex display（2026-09-06 晚定稿）：虚拟屏持续跟随窗口（原生填满，
+        # unscaled 渲染）；风暴根因（ROTATES_WITH_CONTENT + APP 方向请求）
+        # 由 overlay 的 set-ignore-orientation-request 一次性锁死。
+        assert "--flex-display" in argv
+        # stretched 在这里只平滑跟随过渡期（flex 默认 unscaled 会露空白）；
+        # 稳态三尺寸相等 = 零失真原生分辨率（与单独 stretched 的永久失真不同）。
         assert "--render-fit=stretched" in argv
-        assert "--flex-display" not in argv
-        assert "--capture-orientation" not in " ".join(argv)
+        assert "--capture-orientation" not in joined
         assert "--no-vd-system-decorations" not in argv
         # Fixed 2560x1440/480 virtual display (2026-09-06 final): cannot
         # rotate, orientation-pushing apps letterbox like on a tablet.
@@ -50,13 +53,15 @@ def test_flex_default_matches_verified_preset():
         # artifact), window ratio unlocked, pin veto guards the window rect.
         assert "--no-vd-system-decorations" not in argv
         assert "--no-window-aspect-ratio-lock" in argv
-        assert "--flex-display" not in argv
+        assert "--flex-display" in argv   # 2026-09-06 晚：原生跟随 + 方向锁
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv
         assert "--video-codec=h265" in argv
         assert "--video-bit-rate=30M" in argv
         assert "--max-fps=90" in argv
+        # No positive clipboard flag exists in scrcpy >= 3.0 (experiment finding).
+        assert "clipboard" not in joined
         # No positive clipboard flag exists in scrcpy >= 3.0 (experiment finding).
         assert "clipboard" not in joined
 
@@ -84,20 +89,22 @@ def test_start_app_plus_prefix_is_idempotent():
 
 
 def test_flex_without_dpi_uses_default_size():
-        """dpi=None 的 flex 会话用默认尺寸 2560x1440（无密度后缀）。"""
+        """dpi=None 的 flex 会话用默认初始尺寸 2560x1440（无密度后缀），
+        显示随后 flex 跟随窗口（2026-09-06 晚定稿）。"""
         argv = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
         assert "--new-display=2560x1440" in argv
         assert not any(a.endswith("/None") for a in argv)
-        assert "--flex-display" not in argv
+        assert "--flex-display" in argv
         assert "--no-vd-system-decorations" not in argv
 
 
 def test_flex_explicit_size_pins_display():
-        """显式尺寸 spec（竖屏推荐/--width/--height）直接钉固定虚拟屏。"""
+        """显式尺寸 spec（竖屏推荐/--width/--height）给出初始形状（不再钉
+        死：flex 跟随始终开，2026-09-06 晚定稿）。"""
         spec = DisplaySpec(mode="flex", width=1120, height=1872, dpi=313)
         argv = _argv(serial="s", display=spec)
         assert "--new-display=1120x1872/313" in argv
-        assert "--flex-display" not in argv
+        assert "--flex-display" in argv
 
 
 def test_fixed_display_size_and_dpi():
