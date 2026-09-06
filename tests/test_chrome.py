@@ -73,20 +73,21 @@ def test_overlay_source_shipped_and_hardened():
         assert "--corner-radius" in text
         assert "CreatePolygonRgn" in text
         assert "ApplyCornerRegion" in text
-        # 2026-09-06 user decision: NO display-follow, NO orientation pin -
-        # the flex window is a plain free window and the app itself decides
-        # orientation. The follow/pin machinery must stay OUT of the source.
+        # 2026-09-06 回归：钉扎（EnforceFlexPin）是用户验证过的原始行为
+        # （窗口形状是用户财产，APP 转屏的 scrcpy 自动改窗被弹回），误删
+        # 后同日恢复；显示跟随/横竖屏机器已删，不得复活。
+        assert "EnforceFlexPin" in text
+        assert "flex pin restored" in text
         assert "MaybeResizeFlexDisplay" not in text
-        assert "EnforceFlexPin" not in text
         assert "wm size " not in text
+        # Resize path: self-managed drag with ASYNC SetWindowPos (never
+        # blocks the overlay thread on the SDL window's slow relayout -
+        # the sync-send variant was the original laggy, sticky resize).
         # Resize path: self-managed drag with ASYNC SetWindowPos (never
         # blocks the overlay thread on the SDL window's slow relayout -
         # the sync-send variant was the original laggy, sticky resize).
         assert "SWP_ASYNCWINDOWPOS" in text
         assert "0x4000" in text
-        # Window aspect setting (2026-09-06): flex locks only when started
-        # with --ratio-lock (window_aspect=locked); free flex stays free.
-        assert "--ratio-lock" in text and "_forceRatioLock" in text
 
 
 def test_compile_command_shape():
@@ -165,17 +166,6 @@ def test_overlay_command_home_off_for_virtual_displays():
         """App windows (virtual displays) disable the long-press-home ring."""
         argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False)
         assert argv[argv.index("--home") + 1] == "0"
-
-
-def test_overlay_command_ratio_lock_opt_in():
-        """--ratio-lock is opt-in (window_aspect=locked); free flex stays silent."""
-        argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False,
-                               display_mode="flex", video_width=2560, video_height=1440,
-                               ratio_lock=True)
-        assert "--ratio-lock" in argv
-        assert argv[argv.index("--video-w") + 1] == "2560"
-        argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False)
-        assert "--ratio-lock" not in argv
 
 
 def test_build_is_fresh_matches_stamp(tmp_path):
