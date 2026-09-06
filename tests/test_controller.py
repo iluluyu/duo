@@ -176,6 +176,39 @@ def test_apps_model_tracks_installed_icons_and_extras(no_adb, prefs_stub, qapp):
         assert by_package["org.foo.bar"]["label"] == "Bar 应用"
 
 
+def test_failed_installed_sweep_keeps_previous_and_retries_once(no_adb, prefs_stub, qapp):
+        """A failed installed-sweep must NOT grey out every tile.
+
+        ``done(None)`` = the probe itself failed (adb flake, cold server),
+        which is NOT "nothing installed": the previous set stays
+        authoritative (tiles stay clickable - the old behavior disabled
+        every app on a single timeout and never healed, since this sweep
+        has no 2s re-poll). One silent retry is armed; a later success
+        re-arms the failure path for the next flake.
+        """
+        controller = PanelController("/fake/adb.exe")
+        controller._installedResolved.emit({"tv.danmaku.bili"})
+        by_package = {e["package"]: e for e in controller.apps}
+        assert by_package["tv.danmaku.bili"]["installed"] is True
+
+        # A flaked sweep: None arrives, the known set rides it out.
+        controller._installedResolved.emit(None)
+        by_package = {e["package"]: e for e in controller.apps}
+        assert by_package["tv.danmaku.bili"]["installed"] is True
+        assert controller._install_retry.isActive()   # one silent retry armed
+
+        # The retry fires exactly once: a second failure must not re-arm.
+        controller._install_retry.stop()
+        controller._installedResolved.emit(None)
+        assert not controller._install_retry.isActive()
+
+        # Recovery disarms the gate; the next flake gets a fresh retry.
+        controller._installedResolved.emit({"tv.danmaku.bili"})
+        assert controller._install_retried is False
+        controller._installedResolved.emit(None)
+        assert controller._install_retry.isActive()
+
+
 def test_toggle_portrait_does_not_rebuild_app_model(no_adb, prefs_stub, qapp):
         """The long-press portrait path never touches the apps model.
 

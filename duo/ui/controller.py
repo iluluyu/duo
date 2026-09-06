@@ -160,10 +160,18 @@ def build_device_mirror_argv(serial: str) -> list[str]:
         return argv
 
 
-def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> None:
-        """Background check of which catalog apps are installed."""
+def _resolve_installed(adb_binary: str, done: Callable[[set[str] | None], None]) -> None:
+        """Background check of which catalog apps are installed.
+
+        ``done(None)`` signals a FAILED probe (adb missing, timeout, nonzero
+        exit): the caller must keep its previous installed set - treating a
+        flaked ``pm list packages`` as "nothing installed" greys out and
+        disables every tile (the click-dead panel bug), and unlike the
+        device list there is no 2s re-poll to heal it.
+        """
 
         def work() -> None:
+                installed: set[str] | None
                 try:
                         result = subprocess.run(
                                 [adb_binary, "shell", "pm list packages"],
@@ -180,8 +188,10 @@ def _resolve_installed(adb_binary: str, done: Callable[[set[str]], None]) -> Non
                                 for line in result.stdout.splitlines()
                                 if line.startswith("package:")
                         }
+                        if result.returncode != 0 and not installed:
+                                installed = None
                 except (OSError, subprocess.TimeoutExpired):
-                        installed = set()
+                        installed = None
                 done(installed)
 
         threading.Thread(target=work, daemon=True).start()
@@ -247,6 +257,14 @@ class PanelController(QObject):
                 self._icon_flush = QTimer(self)
                 self._icon_flush.setSingleShot(True)
                 self._icon_flush.timeout.connect(self._flush_icon_batch)
+                # One silent retry after a failed installed-sweep (cold boot,
+                # adb server still waking up). Without it the very first
+                # failure would leave the grid empty until a manual refresh.
+                self._install_retried = False
+                self._install_retry = QTimer(self)
+                self._install_retry.setSingleShot(True)
+                self._install_retry.setInterval(5000)
+                self._install_retry.timeout.connect(self.refreshInstalled)
 
                 self._monitor = DeviceMonitor(
                         on_change=self._devicesPolled.emit,
@@ -401,6 +419,7 @@ class PanelController(QObject):
         @pyqtSlot()
         def refreshInstalled(self) -> None:
                 """Background check of which catalog apps are installed."""
+                self._install_retry.stop()   # manual/explicit run: fresh attempt
                 _resolve_installed(self._adb_binary, self._installedResolved.emit)
 
         @pyqtSlot()
@@ -482,8 +501,19 @@ class PanelController(QObject):
 
         @pyqtSlot(object)
         def _apply_installed(self, installed: object) -> None:
-                """Adopt the installed set, report it, then resolve icons."""
-                assert isinstance(installed, set)
+                """Adopt the installed set, report it, then resolve icons.
+
+                ``None`` means the probe itself failed (adb flake) - NOT an
+                empty device: the previous set stays authoritative (tiles
+                keep their installed state, no click-dead grey-out), and a
+                single silent retry re-checks shortly.
+                """
+                if not isinstance(installed, set):
+                        if not self._install_retried:
+                                self._install_retried = True
+                                self._install_retry.start()
+                        return
+                self._install_retried = False
                 self._installed = installed
                 self.appsResolved.emit(installed)
                 self._rebuild_apps(installed)

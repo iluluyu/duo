@@ -77,6 +77,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 - [ ] 设置页在打包版可用：读改存 settings.json（仍是 `%USERPROFILE%\.local\share\duo`），保存后新会话生效
 - [ ] 图标：exe/快捷方式用 `assets\duo.ico`（当前为占位图标，正式图标到位后同名替换重打即可）
 
+**打包版 adb 路径提示**：exe（双击/快捷方式启动）继承的 PATH 与终端会话不同——scoop 等加入用户 PATH 的 `adb.exe` 在打包版里可能探测不到或时有时无（表现为设备列表异常、`--check` 缺工具）。设置页里把 adb（及 scrcpy）路径显式固定下来即可（存入 settings.json 的 `adb_path`/`scrcpy_path`，显式路径优先于 PATH 探测，全流程共用同一 adb）。
+
 ## 日常使用
 
 1. 打开 Duo 面板 → 设备绿灯
@@ -89,5 +91,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 | 症状 | 处理 |
 |---|---|
 | 面板无设备 | 换线/换口，平板上重新授权调试 |
+| 打包版时有时无/找不到 adb | exe 的 PATH 与终端不同：设置页固定 adb 路径（见上节「打包版 adb 路径提示」） |
+| 设备卡状态短暂抖动 | 已有 ~6s 容错（连续 3 次查询失败才判离线）；若持续离线先看 `adb devices` 本身 |
 | 窗口无边框控件缺失 | 等待 2 秒（overlay 首次编译 csc）；仍无则看 `%USERPROFILE%\.local\share\duo\logs` |
 | 图标显示为文字 | 首次会拉取 APK 解析，稍候 |

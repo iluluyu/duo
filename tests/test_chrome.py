@@ -36,6 +36,12 @@ def test_overlay_source_shipped_and_hardened():
         # MonitorFromWindow (flips to the other monitor at boundaries).
         assert "straddle-proof" in text
         assert "SystemInformation.WorkingArea" in text
+        # MonitorFromPoint's flag must be MONITOR_DEFAULTTONEAREST (2) in
+        # both center-resolution sites: 1 is MONITOR_DEFAULTTOPRIMARY, which
+        # jumps an off-desktop center (window dragged past the screen edge)
+        # to the primary's work area - the wrong-screen bug class again.
+        assert text.count("2 /*MONITOR_DEFAULTTONEAREST*/") == 2
+        assert "MonitorFromPoint(center, 1" not in text
         # Persistent chin tracks window moves in realtime.
         assert "SetWinEventHook" in text
         # Honor-style GDI+ nav symbols and Fluent window glyphs.
