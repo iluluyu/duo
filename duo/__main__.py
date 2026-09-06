@@ -154,7 +154,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         serial = _pick_serial(args.serial, adb_path)
 
-        fps = args.fps if args.fps is not None else (settings.fps or 90)
+        fps = args.fps if args.fps is not None else (settings.fps or 60)
         bitrate = (
                 args.bitrate if args.bitrate is not None
                 else (settings.bitrate_mbps or 30)
@@ -292,14 +292,21 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # too). mirror/fixed windows keep the video aspect ratio
                 # (sizes stream from the session log); flex windows resize
                 # freely.
+                # flex 也携带启动显示框（就地跟随的 seed）：无显式尺寸时引擎
+                # 回落 2560x1440（engine.DisplaySpec.to_flags），此值只作
+                # overlay 的启动显示框 seed；镜像模式不传。
+                vd_w = vd_h = None
+                if display.mode in ("flex", "fixed"):
+                        vd_w = display.width or 2560
+                        vd_h = display.height or 1440
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,
                         adb_path=adb_path,
                         home=args.app is None,
                         display_mode=args.display,
-                        video_width=display.width if display.mode == "fixed" else None,
-                        video_height=display.height if display.mode == "fixed" else None,
+                        video_width=vd_w,
+                        video_height=vd_h,
                         session_log=log_path,
                         corner_radius_dip=corner,
                 )

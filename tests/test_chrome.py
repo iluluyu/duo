@@ -73,6 +73,17 @@ def test_overlay_source_shipped_and_hardened():
         assert "--corner-radius" in text
         assert "CreatePolygonRgn" in text
         assert "ApplyCornerRegion" in text
+        # Flex in-place follow: the display follows the window via a settle-
+        # debounced `wm size -d` on the virtual display - one-way and
+        # discrete, driven only by user gesture settle (no feedback loop).
+        assert "MaybeResizeFlexDisplay" in text
+        assert "wm size " in text
+        assert "FlexSettleMs" in text and "FlexMinDelta" in text
+        # Flex resize passthrough: the native size loop (WM_NCLBUTTONDOWN)
+        # takes over the whole gesture, plus on-demand rendering (no more
+        # unconditional per-tick repaint).
+        assert "BeginUserResize" in text
+        assert "0x00A1" in text and "native resize begin" in text
 
 
 def test_compile_command_shape():
@@ -105,8 +116,9 @@ def test_overlay_command_plain_argv():
 
 
 def test_overlay_command_carries_display_mode_and_log():
-        """Mirror/fixed windows get the mode + live-size channel; fixed also
-        gets its known initial video size; flex gets no video flags."""
+        """Mirror/fixed windows get the mode + live-size channel; fixed gets
+        its known initial video size; flex may carry its launch display box
+        (in-place follow seed) and omits video flags by default."""
         argv = overlay_command(
                 "/x.exe", "t", "s", "a", False,
                 display_mode="mirror",
@@ -126,6 +138,16 @@ def test_overlay_command_carries_display_mode_and_log():
         argv = overlay_command("/x.exe", "t", "s", "a", False)
         assert argv[argv.index("--display-mode") + 1] == "flex"
         assert "--session-log" not in argv
+        # Flex now also accepts its launch display box (in-place follow seed);
+        # the default-argument call above still carries no video flags.
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False,
+                display_mode="flex",
+                video_width=2560,
+                video_height=1440,
+        )
+        assert argv[argv.index("--video-w") + 1] == "2560"
+        assert argv[argv.index("--video-h") + 1] == "1440"
 
 
 def test_overlay_command_corner_radius():
