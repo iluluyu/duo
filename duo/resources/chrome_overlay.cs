@@ -1583,7 +1583,9 @@ namespace DuoChrome
         /// into the wrong screen's work area and re-center it, snapping the
         /// window across the boundary (the reported "card switch at the
         /// screen edge"). Picking by the center point follows the user's
-        /// drag target instead. And because a clamp may legitimately fire
+        /// drag target instead. Point flag 2 = MONITOR_DEFAULTTONEAREST
+        /// (1 would be MONITOR_DEFAULTTOPRIMARY; see WorkArea). And because
+        /// a clamp may legitimately fire
         /// while dragging across onto a smaller monitor, the shrunk rect
         /// stays anchored at the edges NOT being dragged - the dragged
         /// corner keeps chasing the cursor, nothing teleports.
@@ -1594,7 +1596,8 @@ namespace DuoChrome
             NativeMethods.POINT center;
             center.X = want.Left + want.Width / 2;
             center.Y = want.Top + want.Height / 2;
-            IntPtr mon = NativeMethods.MonitorFromPoint(center, 1 /*NEAREST*/);
+            IntPtr mon = NativeMethods.MonitorFromPoint(
+                center, 2 /*MONITOR_DEFAULTTONEAREST*/);
             NativeMethods.MONITORINFO mi = new NativeMethods.MONITORINFO();
             mi.cbSize = Marshal.SizeOf(typeof(NativeMethods.MONITORINFO));
             if (mon == IntPtr.Zero || !NativeMethods.GetMonitorInfoW(mon, ref mi))
@@ -2517,20 +2520,25 @@ namespace DuoChrome
         /// and made "maximize" fit/center on the other screen. Every
         /// FakeMaximize entry re-resolves from the current rect, so after a
         /// cross-screen drag the next maximize fits the screen the window
-        /// is actually on.</summary>
+        /// is actually on. The point flag must be 2 (MONITOR_DEFAULTTONEAREST):
+        /// for an off-desktop center (window dragged past the screen edge)
+        /// 1 would be MONITOR_DEFAULTTOPRIMARY - maximize would jump the
+        /// window to the primary screen, the very wrong-screen bug this
+        /// center resolution exists to kill. NEAREST never returns null.
+        /// </summary>
         private Rectangle WorkArea()
         {
             Rectangle wr = WindowRect();
             NativeMethods.POINT center;
             center.X = wr.Left + wr.Width / 2;
             center.Y = wr.Top + wr.Height / 2;
-            IntPtr mon = NativeMethods.MonitorFromPoint(center, 1 /*NEAREST*/);
+            IntPtr mon = NativeMethods.MonitorFromPoint(
+                center, 2 /*MONITOR_DEFAULTTONEAREST*/);
             NativeMethods.MONITORINFO mi = new NativeMethods.MONITORINFO();
             mi.cbSize = Marshal.SizeOf(typeof(NativeMethods.MONITORINFO));
             if (mon == IntPtr.Zero || !NativeMethods.GetMonitorInfoW(mon, ref mi))
             {
-                // MONITOR_DEFAULTTONEAREST never returns null in practice;
-                // last-ditch fallback keeps the old primary-screen behavior
+                // Last-ditch fallback keeps the old primary-screen behavior
                 // instead of computing against an empty rectangle.
                 return SystemInformation.WorkingArea;
             }
