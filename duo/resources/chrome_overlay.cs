@@ -10,9 +10,9 @@
 //   cursor in the top edge band  -> top-right capsule: minimize / maximize
 //                                   (taskbar-safe, emulated) / close
 //   always-on (window visible)   -> chin: "<" back (adb keyevent);
-//                                   "O" hold: HOME on physical mirroring,
-//                                   session close on virtual displays
-//                                   (no launcher there - see ChinHold)
+//                                   "O" hold: HOME on every display
+//                                   (virtual-desktop layer hint; vendors
+//                                   may flesh it out - close is on ✕)
 //
 // Resize policy comes from --display-mode: mirror/fixed windows stay glued
 // to the video aspect ratio (live sizes are tailed from the session log,
@@ -527,12 +527,10 @@ namespace DuoChrome
     // -------------------------------------------------------------------------
     // The chin: persistent bottom bar with one centered control. Physical
     // mirroring shows the mBack ring (tap = back, long-press = home on the
-    // phone's real launcher). Virtual displays (flex/fixed) show a plain
-    // back chevron instead - the ○ reads as a home button, and HOME has
-    // nowhere to go on a virtual display (keyevent 3 raises the AOSP
-    // SecondaryDisplayLauncher app picker there; see ChinHold and
-    // docs/window-experience.md §7). Long-press stays the session close on
-    // virtual displays.
+    // phone's real launcher). Virtual displays (flex/fixed) show the same
+    // ring - one glyph, one gesture everywhere: long-press = HOME (the
+    // virtual-desktop layer; vendors may flesh it out later). Closing a
+    // session lives on the capsule's ✕ only.
     // -------------------------------------------------------------------------
     internal sealed class ChinWindow : OverlayWindow
     {
@@ -1955,14 +1953,13 @@ namespace DuoChrome
         /// home=1, and must also close rather than send keyevent 3.</summary>
         public void ChinHold()
         {
-            if (_homeEnabled && _displayMode.Equals("mirror"))
-            {
-                AdbKey(3);
-            }
-            else
-            {
-                CloseSessionWindow();
-            }
+            // Long-press = HOME on every display, virtual included: it tells
+            // the user there IS a virtual desktop layer, and vendors are
+            // expected to flesh out virtual-display home behavior over time
+            // (2026-09-06 user decision). Closing stays on the capsule's ✕.
+            // Today, with --no-vd-system-decorations, HOME on a virtual
+            // display may be a visual no-op - that is accepted.
+            AdbKey(3);
         }
 
         /// <summary>Close the mirrored window (WM_CLOSE): scrcpy exits
