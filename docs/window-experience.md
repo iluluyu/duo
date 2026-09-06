@@ -236,3 +236,13 @@ adb shell screencap -d $(dumpsys SurfaceFlinger --display-id | awk '/Virtual/{pr
 ```
 
 注意：`screencap -d <逻辑id>` 在该 ColorOS 上报 "not valid"，需用 SurfaceFlinger 输出的虚拟屏 id；scrcpy 会话日志的 `New display: ... (id=N)` 行是 R3 的 display id 来源。
+
+### 7.6 实现状态（2026-09-06，对齐 TODO 任务 7）
+
+已落地（未做 Windows 实测的项目见下，不宣称完成）：
+
+- **R1 引擎两行**：`DisplaySpec.to_flags()` 对 flex/fixed 一律输出 `--no-vd-system-decorations`（mirror 不加）；`EngineArgs.to_argv()` 的 `--start-app` 值一律带 `+` 前缀（幂等，已带 `+` 不双加）。测试断言拼装后的 argv 列表，非源码关键字。已知代价（R1 风险列）：空 flex 会话整屏无帧，待 Windows 实测决定是否保留默认关闭（TODO 任务 7 实测项）。
+- **R3 直达应用**：CLI `mirror` 新增 `--session-log`（面板托管的会话传固定路径 `logs/panel-<pkg>.log`，CLI 自启仍用时间戳文件名）；`duo.core.session` 提供 `parse_display_id()` / `display_id_from_log()`（点击时尾读日志，无后台线程）；面板 `PanelController.startAppOnDisplay(package)` 走 `cmd package resolve-activity --brief` 预解析组件 → `am start --display N -n <cmp>`（adb 工作线程 + hop 信号回状态栏）。会话已存活时再点应用磁贴不再提示"已在运行"而是直达虚拟屏（不重建会话）。降级路径（全部只是状态栏提示，不重建）：会话未运行 / 无日志或无 `New display:` 行（虚拟屏未就绪）/ resolve 失败 / `am start` 报 Error。每次启动会话先截断 panel 日志，避免把上一次运行的旧 display id 发给已销毁的屏。
+- **R2 HOME 语义（零 C# 改动，`chrome_overlay.cs` 未动）**：虚拟屏上永不发 keyevent 3——chin 长按 = 关窗的现状保持（overlay 按 display-mode 门控，已实现）；"HOME = 回 Duo 面板"由面板侧实现：运行中芯片的标签可点（tooltip 注明"在虚拟屏中打开应用（HOME = 回 Duo 面板）"），语义是把应用拉回虚拟屏/回面板，而非发 HOME 键。**已知限制**：scrcpy 内置 MOD+h / 中键仍会触发 HOME（全局拦截，焦点漂移到物理屏、画面不变），无法逐键禁用，记录为限制而非缺陷。QML 面板无独立 HOME 按钮，无需映射。
+
+待 Windows 实测（TODO 任务 7 保留项）：空 flex 会话无帧时 Texture 通道静默的窗口/overlay 降级体验；uhid 键盘下中文输入候选窗是否落物理屏（决定是否加 `--display-ime-policy=local`）。

@@ -9,6 +9,7 @@ from duo.core.apps import (
         parse_badging,
         parse_base_apk_path,
         parse_package_list,
+        parse_resolve_activity,
 )
 
 DEVICES_OUTPUT = """List of devices attached
@@ -97,3 +98,30 @@ def test_extract_icon_missing_entry(tmp_path: Path):
         with zipfile.ZipFile(apk, "w") as zf:
                 zf.writestr("dummy.txt", "x")
         assert extract_icon(apk, "res/drawable/icon.png", tmp_path / "out.png") is None
+
+
+def test_parse_resolve_activity_extracts_component():
+        """``--brief`` output yields the launchable component."""
+        output = (
+            "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n"
+            "  cn.com.langeasy.LangEasyLexis/.activity.SplashActivity\n"
+            "\n"
+            "cn.com.langeasy.LangEasyLexis/cn.com.langeasy.LangEasyLexis.MainActivity\n"
+        )
+        component = parse_resolve_activity(output)
+        assert component == (
+            "cn.com.langeasy.LangEasyLexis/cn.com.langeasy.LangEasyLexis.MainActivity"
+        )
+
+
+def test_parse_resolve_activity_single_line():
+        """The common one-line form passes through untouched."""
+        assert parse_resolve_activity(
+            "tv.danmaku.bili/tv.danmaku.bili.MainActivityV2\n"
+        ) == "tv.danmaku.bili/tv.danmaku.bili.MainActivityV2"
+
+
+def test_parse_resolve_activity_missing():
+        """Nothing resolvable -> None (caller degrades to a status message)."""
+        assert parse_resolve_activity("") is None
+        assert parse_resolve_activity("\n\n") is None

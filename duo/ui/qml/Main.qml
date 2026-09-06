@@ -5,8 +5,12 @@
 //        runningSessions[{key,label,running,portrait}] / engineLocked(bool) /
 //        apps[{package,label,icon,installed}]（icon 为 file URL 串或空串）
 //   槽   startSession(package) / startMirror() / stopSession(key) /
-//        refreshInstalled() / togglePortrait(package) / resolveAdb()
-// 交互：磁贴点击启动；右键/长按切换横竖屏（对齐 widgets 版目录图标）
+//        startAppOnDisplay(package) / refreshInstalled() /
+//        togglePortrait(package) / resolveAdb()
+// 交互：磁贴点击启动（已在运行 → 改为直达该会话虚拟屏，见 controller
+//   startSession 路由）；运行中芯片点标签 = startAppOnDisplay（把应用拉回
+//   虚拟屏，即面板侧的"HOME = 回 Duo 面板"语义，不发 keyevent 3）；
+//   右键/长按切换横竖屏（对齐 widgets 版目录图标）
 // 设置页：齿轮按钮或 Ctrl+, 把 SettingsPage.qml push 上 StackView；
 //   保存成功（accepted）→ ctrl.resolveAdb()（对齐旧 widgets 版
 //   _refresh_after_settings 语义：adb 变了就切监控 + 刷新已装列表），
@@ -236,13 +240,42 @@ ApplicationWindow {
             anchors.leftMargin: 12
             spacing: 8
 
-            Rectangle { width: 6; height: 6; radius: 3
-                        anchors.verticalCenter: parent.verticalCenter; color: Style.running }
-            Text {
-                text: chip.modelData.label
-                font.pixelSize: 12
-                color: Style.ink
+            // 状态点 + 标签整体可点：把应用拉回该会话的虚拟屏
+            // （am start --display N，不重建会话）。设备镜像无虚拟屏，
+            // 退化为纯展示。HOME 在虚拟屏被系统全局拦截（落物理屏），
+            // 面板侧的"回主页"就是这个按钮，永不发 keyevent 3。
+            AbstractButton {
+                id: chipMain
+                enabled: chip.modelData.key !== ctrl.mirrorKey
+                opacity: enabled ? 1.0 : 0.7
+                implicitHeight: 24
+                implicitWidth: dotRow.implicitWidth
                 anchors.verticalCenter: parent.verticalCenter
+                contentItem: Row {
+                    id: dotRow
+                    spacing: 8
+                    Rectangle { width: 6; height: 6; radius: 3
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: Style.running }
+                    Text {
+                        text: chip.modelData.label
+                        font.pixelSize: 12
+                        color: chipMain.hovered ? Style.accent : Style.ink
+                        Behavior on color { ColorAnimation { duration: Style.durFast } }
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                background: Rectangle {
+                    radius: 12
+                    color: chipMain.pressed ? Style.pressWash
+                                            : (chipMain.hovered ? Style.hoverWash : "transparent")
+                    Behavior on color { ColorAnimation { duration: Style.durFast } }
+                }
+                onClicked: ctrl.startAppOnDisplay(chip.modelData.key)
+                Accessible.role: Accessible.Button
+                Accessible.name: "在虚拟屏打开 " + chip.modelData.label
+                ToolTip.visible: chipMain.hovered && chipMain.enabled
+                ToolTip.text: "在虚拟屏中打开应用（HOME = 回 Duo 面板）"
             }
             // 方向标签：点击 = ctrl.togglePortrait(key)（影响下次启动）。
             // 设备镜像无横竖屏概念，隐藏。

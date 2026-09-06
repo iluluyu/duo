@@ -112,6 +112,21 @@ def parse_base_apk_path(pm_path_output: str) -> str | None:
         return None
 
 
+def parse_resolve_activity(resolve_output: str) -> str | None:
+        """Extract ``pkg/activity`` from ``cmd package resolve-activity --brief``.
+
+        ``--brief`` prints just the launchable component (a blank line may
+        precede it); the last non-empty line containing ``/`` wins. ``None``
+        = nothing resolvable (package missing or exported=false), which the
+        caller reports as a degradation instead of half an am start.
+        """
+        for line in reversed(resolve_output.splitlines()):
+                line = line.strip()
+                if line and "/" in line and " " not in line:
+                        return line
+        return None
+
+
 def parse_badging(badging_output: str) -> dict[str, str]:
         """Parse the interesting fields from ``aapt2 dump badging`` output."""
         info: dict[str, str] = {}

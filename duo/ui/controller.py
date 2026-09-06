@@ -25,10 +25,11 @@ from typing import Any
 from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
 
-from duo.core.apps import Adb, AdbError, app_info
+from duo.core.apps import Adb, AdbError, app_info, parse_resolve_activity
 from duo.core.devices import DeviceMonitor, poll_query
 from duo.core.engine import probe
-from duo.core.paths import data_dir
+from duo.core.paths import data_dir, logs_dir
+from duo.core.session import display_id_from_log
 from duo.core.settings import load_settings, resolve_adb_path
 from duo.core.winproc import creation_flags
 
@@ -119,6 +120,16 @@ def save_portrait_prefs(prefs: dict[str, bool]) -> None:
         )
 
 
+def panel_log_path(package: str) -> Path:
+        """Session log path for a panel-managed session (one per package).
+
+        Passed to the CLI via ``--session-log`` so the controller knows where
+        to read the virtual display id from later (startAppOnDisplay); the
+        CLI's own timestamped names are unfindable for a detached child.
+        """
+        return logs_dir() / f"panel-{package}.log"
+
+
 def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
         """The mirror argv for a panel launch.
 
@@ -137,6 +148,8 @@ def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
                 "--serial",
                 serial,
                 "--chrome",
+                "--session-log",
+                str(panel_log_path(package)),
         ]
         if portrait:
                 argv.append("--portrait")
@@ -227,6 +240,8 @@ class PanelController(QObject):
         _devicesPolled = pyqtSignal(object)          # dict serial -> state
         _installedResolved = pyqtSignal(object)      # set of packages
         _adbResolved = pyqtSignal(str)
+        # startAppOnDisplay outcome: package, ok, detail line for status.
+        _appMoved = pyqtSignal(str, bool, str)
 
         def __init__(self, adb_binary: str, parent: QObject | None = None) -> None:
                 super().__init__(parent)
@@ -244,6 +259,7 @@ class PanelController(QObject):
                 self._devicesPolled.connect(self._apply_devices)
                 self._installedResolved.connect(self._apply_installed)
                 self._adbResolved.connect(self.setAdb)
+                self._appMoved.connect(self._apply_app_moved)
                 # App-model maintenance for the QML grid (queued from workers).
                 self.allAppsReady.connect(self._merge_all_apps)
                 self.iconReady.connect(self._apply_icon)
@@ -350,17 +366,28 @@ class PanelController(QObject):
 
         @pyqtSlot(str)
         def startSession(self, package: str) -> None:
-                """Spawn a chrome-clad mirror session and track it."""
+                """Spawn a chrome-clad mirror session and track it.
+
+                Clicking an app that already has a live session does NOT spawn
+                a second engine: it moves the app onto that session's virtual
+                display (startAppOnDisplay) - the task may live on the
+                physical screen after an earlier run, and re-delivering it is
+                what "the app won't come to the mirror window" means.
+                """
                 serial = next(iter(self._monitor.online), "")
                 if not serial:
                         self._set_status("设备未连接")
                         return
                 self.reapSessions()
                 if package in self._sessions:
-                        self._set_status(f"{session_label(package)} 已在运行")
+                        self.startAppOnDisplay(package)
                         return
                 portrait = self._portrait_prefs.get(package, False)
                 argv = build_launch_argv(package, serial, portrait)
+                # Fresh log per session: the display-id parser takes the last
+                # 'New display:' line, and a stale id from a previous run
+                # would point at a dead display until the engine rewrites it.
+                panel_log_path(package).unlink(missing_ok=True)
                 try:
                         proc = self._spawn(argv)
                 except OSError as exc:
@@ -370,6 +397,82 @@ class PanelController(QObject):
                 self._emit_sessions()
                 orientation = "竖屏" if portrait else "横屏"
                 self._set_status(f"已启动 {session_label(package)} · {orientation}")
+
+        @pyqtSlot(str)
+        def startAppOnDisplay(self, package: str) -> None:
+                """Deliver ``package`` onto a running session's virtual display.
+
+                Reads the display id from the session log (scrcpy's
+                ``New display: ... (id=N)``), resolves the launchable
+                component via ``cmd package resolve-activity`` and moves/
+                starts it with ``am start --display N -n cmp`` - no session
+                rebuild. Unknown display id (log missing or engine still
+                starting) or a failed adb step degrades to a status message.
+
+                This is also where "HOME" lands conceptually for panel-side
+                routing: HOME on a virtual display is globally intercepted by
+                the physical launcher (docs/window-experience.md §7.1.3), so
+                going home from a session means coming back to this panel,
+                never sending keyevent 3.
+                """
+                proc = self._sessions.get(package)
+                if proc is None or proc.poll() is not None:
+                        self._set_status(f"{session_label(package)} 会话未运行")
+                        return
+                serial = next(iter(self._monitor.online), "")
+                if not serial:
+                        self._set_status("设备未连接")
+                        return
+                display_id = display_id_from_log(panel_log_path(package))
+                if display_id is None:
+                        self._set_status(
+                                f"{session_label(package)} 虚拟屏未就绪，稍后重试"
+                        )
+                        return
+
+                adb_binary = self._adb_binary
+
+                def work() -> None:
+                        adb = Adb(adb_binary, serial)
+                        try:
+                                component = parse_resolve_activity(
+                                        adb.run(
+                                                "shell", "cmd", "package",
+                                                "resolve-activity", "--brief", package,
+                                        )
+                                )
+                                if component is None:
+                                        self._appMoved.emit(
+                                                package, False, "无法解析应用入口"
+                                        )
+                                        return
+                                output = adb.run(
+                                        "shell", "am", "start",
+                                        "--display", str(display_id), "-n", component,
+                                )
+                        except (AdbError, OSError) as exc:
+                                self._appMoved.emit(package, False, str(exc))
+                                return
+                        # am start reports failures in-band ("Error: ...") while
+                        # still exiting 0 on some builds; "Warning: ... delivered
+                        # to running instance" IS a success (the task exists).
+                        failed = "Error" in output
+                        self._appMoved.emit(
+                                package,
+                                not failed,
+                                output.strip().splitlines()[0] if output.strip() else "",
+                        )
+
+                threading.Thread(target=work, daemon=True).start()
+
+        @pyqtSlot(str, bool, str)
+        def _apply_app_moved(self, package: str, ok: bool, detail: str) -> None:
+                """Adopt a startAppOnDisplay outcome (worker hop)."""
+                label = session_label(package)
+                if ok:
+                        self._set_status(f"已在虚拟屏打开 {label}")
+                else:
+                        self._set_status(f"打开失败：{label}（{detail}）")
 
         @pyqtSlot()
         def startMirror(self) -> None:

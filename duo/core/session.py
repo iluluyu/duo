@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -24,6 +25,53 @@ class SessionSpec:
 
 
 _POLL_INTERVAL_S = 0.5
+
+
+# ----------------------------------------------------------------------------
+# Session log parsing (the same channel the C# overlay tails for Texture sizes)
+# ----------------------------------------------------------------------------
+
+#: scrcpy announces each virtual display exactly once per session:
+#: ``[server] INFO: New display: 1200x1600/280 (id=157)``. The id is what
+#: ``am start --display N`` needs to move apps onto the running session's
+#: display without rebuilding it (docs/window-experience.md §7.3 R3).
+_DISPLAY_ID_RE = re.compile(r"New display:.*\(id=(\d+)\)")
+
+#: How much of a session log tail to scan for the display id. scrcpy logs a
+#: few KiB at startup; 64 KiB is generous and keeps the read bounded even if
+#: a long-lived session accumulates output.
+_LOG_TAIL_BYTES = 64 * 1024
+
+
+def parse_display_id(log_text: str) -> int | None:
+        """Extract the virtual display id from session log text.
+
+        The LAST match wins: panel-managed sessions append to one file, so
+        the most recent ``New display:`` line belongs to the latest engine
+        run. ``None`` = no line yet (engine still starting, or a mirror
+        session, which has no virtual display).
+        """
+        matches = _DISPLAY_ID_RE.findall(log_text)
+        return int(matches[-1]) if matches else None
+
+
+def display_id_from_log(log_path: Path) -> int | None:
+        """Read the tail of a session log and parse the display id from it.
+
+        Click-time read, no tailer thread: the panel only needs the id when
+        the user asks an app onto the display. Missing/unreadable file (or a
+        log without the line yet) returns ``None`` - the caller degrades to
+        a status message instead of inventing a display.
+        """
+        try:
+                with open(log_path, "rb") as log_file:
+                        log_file.seek(0, os.SEEK_END)
+                        size = log_file.tell()
+                        log_file.seek(max(0, size - _LOG_TAIL_BYTES))
+                        text = log_file.read().decode("utf-8", errors="replace")
+        except OSError:
+                return None
+        return parse_display_id(text)
 
 
 class Session:
