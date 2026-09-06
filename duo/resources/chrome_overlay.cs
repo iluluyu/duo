@@ -1551,6 +1551,7 @@ namespace DuoChrome
         // 钉扎的 teleport-back bug。
         private Rectangle _pinnedRect = new Rectangle(0, 0, 0, 0);
         private int _lbtnAt;                            // last tick LBUTTON was held
+        private int _discoveredAt;                      // tick the window was found
 
         private void PinCurrentRect()
         {
@@ -1563,6 +1564,17 @@ namespace DuoChrome
         private void EnforceFlexPin(Rectangle wr)
         {
             if (!_displayMode.Equals("flex")) return;
+            // 启动宽限期（flex 跟随时代，2026-09-06 晚）：scrcpy 建窗为
+            // 256x256，首帧后才程序化调到初始尺寸；竞态下钉扎先收养了
+            // 256x256，再把首帧调整弹回 → 显示跟随窗口卡死在 256x256
+            // （真机：piliplus 横屏会话全型“flex pin restored 256x256
+            // (was 2560x1440)”）。发现后 4s 内只跟踪不弹回，让初始布局
+            // 完成；也永不收养 256x256 本身。
+            if (_discoveredAt > 0 && Environment.TickCount - _discoveredAt < 4000)
+            {
+                if (!(wr.Width == 256 && wr.Height == 256)) _pinnedRect = wr;
+                return;
+            }
             if (_moving || _resizing) return;         // user is driving: never bounce
             if (NativeMethods.IsZoomed(_hwnd)) return; // native maximize is the user's act
             // Native-border drags never set _moving/_resizing (they run in
@@ -2416,6 +2428,7 @@ namespace DuoChrome
                 }
                 return;
             }
+            _discoveredAt = Environment.TickCount;
             Log.Write("window found hwnd=0x" + _hwnd.ToString("x"));
             _waitedMs = 0;
             Repair();
