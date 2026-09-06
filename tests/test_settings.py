@@ -8,7 +8,6 @@ import pytest
 
 import duo.core.settings as settings_mod
 from duo.core.settings import (
-        VALID_FLEX_RESOLUTIONS,
         Settings,
         corner_radius_dip,
         load_settings,
@@ -170,47 +169,16 @@ def test_quality_fields_save_rejects_invalid(tmp_path, monkeypatch):
     assert not (tmp_path / "s.json").exists()
 
 
-# --------------------------------------------- flex 虚拟屏基准分辨率（新）
+def test_stale_flex_resolution_key_is_ignored(tmp_path, monkeypatch):
+        """已撤除的 flex_resolution 键残留在旧 settings.json 里被无害忽略。
 
-
-def test_flex_resolution_default_is_1440p():
-        """默认 1440p 平衡档：无显式尺寸的 flex 会话钉 2560x1440，
-        避免虚拟屏 = 主屏全尺寸（双端吃满，进应用动画卡）。"""
-        fresh = Settings()
-        assert fresh.flex_resolution == "1440p"
-        assert Settings().flex_resolution in VALID_FLEX_RESOLUTIONS
-
-
-def test_flex_resolution_roundtrip(tmp_path, monkeypatch):
-        """三档值持久化并读回。"""
+        2026-09-06 用户决策撤除基准分辨率档位后，旧文件可能仍带该键：
+        _sanitize 只读已知键，残留键不进 problems、不产生字段。
+        """
         monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
-        save_settings(Settings(flex_resolution="1080p"))
+        (tmp_path / "s.json").write_text(
+                json.dumps({"flex_resolution": "1080p", "fps": 90}), encoding="utf-8")
         loaded, problems = load_settings()
         assert problems == []
-        assert loaded.flex_resolution == "1080p"
-        save_settings(Settings(flex_resolution="native"))
-        loaded, _problems = load_settings()
-        assert loaded.flex_resolution == "native"
-
-
-def test_flex_resolution_invalid_reported_and_dropped(tmp_path, monkeypatch):
-        """非法值（不在三档内/类型错）逐字段回退默认并上报。"""
-        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
-        (tmp_path / "s.json").write_text(
-                json.dumps({"flex_resolution": "720p"}), encoding="utf-8")
-        loaded, problems = load_settings()
-        assert loaded.flex_resolution == "1440p"
-        assert len(problems) == 1
-        assert "flex_resolution" in problems[0]
-        (tmp_path / "s.json").write_text(
-                json.dumps({"flex_resolution": 1080}), encoding="utf-8")
-        loaded, problems = load_settings()
-        assert loaded.flex_resolution == "1440p"
-        assert len(problems) == 1
-
-
-def test_flex_resolution_save_rejects_invalid(tmp_path, monkeypatch):
-        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
-        with pytest.raises(ValueError):
-                save_settings(Settings(flex_resolution="4320p"))
-        assert not (tmp_path / "s.json").exists()
+        assert loaded.fps == 90
+        assert not hasattr(loaded, "flex_resolution")

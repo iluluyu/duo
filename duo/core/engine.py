@@ -137,12 +137,13 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 #   - scrcpy >= 3.0 has no positive ``--clipboard-autosync`` flag (default on,
 #     only ``--no-clipboard-autosync`` exists) — never emit the positive form.
 #   - ``--flex-display`` must be paired with ``--new-display``.
-#   - A bare ``--new-display`` sizes the virtual display at the MAIN display's
-#     full resolution (verified live on a 2400x3392 panel: the virtual display
-#     came up 2400x3392). Full-screen animations then max out BOTH ends - the
-#     device hardware encoder and the PC-side decoder - so explicit-size-less
-#     flex sessions pin a baseline size from FLEX_SIZES (settings
-#     ``flex_resolution``, docs/mirroring-quality.md §6).
+#   - Flex size source (2026-09-06 user decision): ALWAYS the original
+#     resolution - a bare ``--new-display`` (=/dpi with a custom density)
+#     sizes the virtual display at the MAIN display's full resolution
+#     (verified live on a 2400x3392 panel). The same-day baseline tiers
+#     (FLEX_SIZES / settings ``flex_resolution``) were withdrawn: picking a
+#     tier confused users, and the smoothness budget is carried by
+#     video_codec=h264 + fps=60 instead (docs/mirroring-quality.md §7).
 #   - Virtual displays keep system decorations ON: the AOSP
 #     SecondaryDisplayLauncher that appears is the in-session "virtual
 #     desktop" the chin's long-press opens (2026-09-06 user decision -
@@ -156,17 +157,6 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 # ----------------------------------------------------------------------------
 
 DisplayMode = Literal["mirror", "flex", "fixed"]
-
-#: Baseline ``--new-display`` sizes for flex sessions without an explicit
-#: size (settings ``flex_resolution``). Flex keeps following window resizes,
-#: so this only caps the initial/max resolution - the point is keeping the
-#: encoder/decoder pixel count off the "full main display" worst case.
-FLEX_SIZES: dict[str, str] = {
-        "1440p": "2560x1440",   # 平衡档（默认）
-        "1080p": "1920x1080",   # 流畅档：像素量约为原生全屏的 25%
-        "native": "",           # 不加尺寸：主屏全尺寸（清晰但重）
-}
-
 
 @dataclass(frozen=True)
 class WindowGeometry:
@@ -189,10 +179,11 @@ class DisplaySpec:
 
         mirror: the physical device screen.
         flex: a virtual display that continuously resizes to match the window
-                (needs scrcpy >= 4.1 with ``--flex-display``). Without an
-                explicit ``width``/``height`` the display starts at the
-                ``flex_resolution`` baseline (FLEX_SIZES) instead of the
-                main display's full size.
+                (needs scrcpy >= 4.1 with ``--flex-display``). Always created
+                at the main display's original resolution (bare
+                ``--new-display``; 2026-09-06 user decision - the former
+                baseline-size tiers were withdrawn, smoothness is carried by
+                video_codec=h264 + fps=60 instead).
         fixed: a virtual display with a locked resolution.
         """
 
@@ -200,7 +191,6 @@ class DisplaySpec:
         width: int | None = None
         height: int | None = None
         dpi: int | None = 480
-        flex_resolution: str = "1440p"
 
         def to_flags(self) -> list[str]:
                 """Compile to scrcpy display flags.
@@ -225,18 +215,17 @@ class DisplaySpec:
                         # user-resized from tick one, so orientation flips
                         # (pilipili's portrait video page) letterbox inside
                         # instead of flipping the window.
-                        # Explicit sizes (portrait recommendation, user-pinned
-                        # WxH) always win over flex_resolution. System
-                        # decorations stay ON: the secondary-display launcher
-                        # is the in-session "virtual desktop" (chin long-press).
-                        if self.width is None and self.height is None:
-                                size = FLEX_SIZES.get(self.flex_resolution, "")
-                                if size:
-                                        value = f"{size}/{self.dpi}" if self.dpi else size
-                                        return [
-                                                f"--new-display={value}",
-                                                "--flex-display",
-                                        ]
+                        # Size source (2026-09-06 user decision): ALWAYS the
+                        # original resolution - a bare --new-display (=/dpi
+                        # with a custom density) builds the virtual display at
+                        # the main display's full size. The same-day baseline
+                        # tiers (FLEX_SIZES / flex_resolution) were withdrawn:
+                        # picking a tier confused users; smoothness is carried
+                        # by video_codec=h264 + fps=60 (docs §7). Explicit
+                        # width/height never pin a flex display anyway - flex
+                        # follows the window. System decorations stay ON: the
+                        # secondary-display launcher is the in-session
+                        # "virtual desktop" (chin long-press).
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
                         return [new_display, "--flex-display"]

@@ -178,7 +178,6 @@ def test_settings_api_roundtrip(settings_file, qapp):
                 "audio_policy": "all",
                 "video_codec": "h265",
                 "turn_screen_off": True,
-                "flex_resolution": "1080p",
         }
         assert api.save(dict(values)) == []
         raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
@@ -186,18 +185,8 @@ def test_settings_api_roundtrip(settings_file, qapp):
         assert raw["audio_policy"] == "all"
         assert raw["video_codec"] == "h265"
         assert raw["turn_screen_off"] is True
-        assert raw["flex_resolution"] == "1080p"
+        assert "flex_resolution" not in raw
         assert api.load() == values
-
-
-def test_settings_api_flex_resolution_default(settings_file, qapp):
-        """默认 1440p：load/save 缺键都回 1440p（QML 旧版不认识新键也不丢）。"""
-        api = SettingsApi()
-        assert api.load()["flex_resolution"] == "1440p"
-        # 旧版 QML（不带新键）保存：缺键落默认，不出问题清单
-        assert api.save({"scrcpy_path": "", "adb_path": ""}) == []
-        loaded = api.load()
-        assert loaded["flex_resolution"] == "1440p"
 
 
 def test_settings_api_save_reports_problems(settings_file, qapp):
@@ -491,51 +480,3 @@ def test_settings_page_quality_switch_toggles_state(settings_page):
     settings_page.setProperty("turnScreenOff", False)
     _pump(20)
     assert switch.property("checked") is False
-
-
-# ----------------------------------------- ⑦ flex 虚拟屏分辨率（新）
-
-
-def test_settings_page_flex_resolution_default_load(settings_page):
-    """默认 1440p 回填下拉框（currentIndex 0 = 平衡档）。"""
-    combo = settings_page.findChild(QObject, "flexResolutionCombo")
-    assert combo is not None
-    assert settings_page.property("flexResolution") == "1440p"
-    assert combo.property("currentIndex") == 0
-    assert combo.property("currentText") == "1440p 平衡（默认）"
-
-
-def test_settings_page_flex_resolution_roundtrip_via_real_api(settings_page, settings_file):
-    """改 flexResolution 保存落盘；下拉索引跟随属性；新页读回同值。"""
-    accepted: list[bool] = []
-    settings_page.accepted.connect(lambda: accepted.append(True))
-    settings_page.setProperty("flexResolution", "native")
-    _pump(20)
-    combo = settings_page.findChild(QObject, "flexResolutionCombo")
-    assert combo.property("currentIndex") == 2
-    meta = settings_page.metaObject()
-    meta.invokeMethod(settings_page, "saveChanges")
-    assert accepted == [True]
-    raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
-    assert raw["flex_resolution"] == "native"
-
-    api = SettingsApi()
-    assert api.load()["flex_resolution"] == "native"
-
-
-def test_settings_page_flex_resolution_reload_syncs_combo(settings_page, settings_file):
-    """取消（reloadFromApi）回填：下拉索引跟 saved 值，改动被放弃。"""
-    settings_file.parent.mkdir(parents=True, exist_ok=True)
-    settings_file.write_text(
-        json.dumps({"flex_resolution": "1080p"}), encoding="utf-8")
-    combo = settings_page.findChild(QObject, "flexResolutionCombo")
-    settings_page.setProperty("flexResolution", "native")
-    combo.selectValue("native")
-    _pump(20)
-    assert combo.property("currentIndex") == 2
-    meta = settings_page.metaObject()
-    meta.invokeMethod(settings_page, "cancelChanges")
-    _pump(20)
-    assert settings_page.property("flexResolution") == "1080p"
-    assert combo.property("currentIndex") == 1
-    assert combo.property("currentText") == "1080p 流畅"

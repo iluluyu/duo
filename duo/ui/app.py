@@ -100,7 +100,6 @@ class SettingsApi(QObject):
                         "audio_policy": settings.audio_policy,
                         "video_codec": settings.video_codec,
                         "turn_screen_off": settings.turn_screen_off,
-                        "flex_resolution": settings.flex_resolution,
                 }
 
         @pyqtSlot(result="QVariantList")
@@ -129,7 +128,6 @@ class SettingsApi(QObject):
                         audio_policy=_text(values.get("audio_policy", "latest")),
                         video_codec=_text(values.get("video_codec", "auto")),
                         turn_screen_off=_flag(values.get("turn_screen_off", False)),
-                        flex_resolution=_text(values.get("flex_resolution", "1440p")),
                 )
                 problems = validate(settings)
                 if problems:
