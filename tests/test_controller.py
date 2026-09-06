@@ -726,7 +726,8 @@ def test_audio_latest_restarts_running_sessions_muted(
         assert spawned[1] == build_launch_argv(
                 "tv.danmaku.bili", "S1", portrait=False, muted=True)
         assert "--no-audio" in spawned[1]
-        assert spawned[2] == build_launch_argv("com.tencent.mm", "S1", portrait=False)
+        assert spawned[2] == build_launch_argv(
+                "com.tencent.mm", "S1", portrait=True)  # DEFAULT_PORTRAIT
         assert "--no-audio" not in spawned[2]
         assert procs[0].terminated          # the old bili CLI got SIGTERM
         assert controller._audio_keys == {"com.tencent.mm"}

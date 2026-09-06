@@ -190,7 +190,7 @@ class DisplaySpec:
         mode: DisplayMode = "flex"
         width: int | None = None
         height: int | None = None
-        dpi: int | None = 240
+        dpi: int | None = None
 
         def to_flags(self) -> list[str]:
                 """Compile to scrcpy display flags.

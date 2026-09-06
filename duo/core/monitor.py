@@ -98,20 +98,32 @@ def primary_work_area() -> WorkArea:
 def recommend_landscape(
         area: WorkArea, target_dp: int = LANDSCAPE_TARGET_DP
 ) -> DisplayRecommendation:
-        """Fixed 16:9 landscape preset: 1920x1080/240dpi = 1280x720dp
-        (classic reference-tablet layout; the display then flex-follows the
-        window, so this only sets the startup shape and dp class)."""
-        return DisplayRecommendation(dpi=240)
+        """Fixed 16:9 landscape preset: 1920x1080, window = display size.
+
+        Density is NOT monitor-derived anymore (2026-09-06 晚)： the CLI
+        injects the device's own effective density (wm density, Override
+        first — e.g. Pad 4 Pro 356) so element sizes match the physical
+        screen; this dpi is an inert last-ditch fallback only.
+
+        Researched baselines (real devices): phones 360-420dp short side
+        (Find X8 419dp@480), iPad mini 744pt / iPad 10.9" 820pt, Pixel
+        Tablet 927dp@276, iPad Pro 12.9" 1024pt, user's Pad 4 Pro
+        1078dp@356-override. Density is fixed at display creation (`wm
+        density -d` does not work on virtual displays, verified live),
+        and scrcpy's no-dpi automatic value (201) preserves main-display
+        dp, not element size - hence the explicit device density.
+        """
+        return DisplayRecommendation(dpi=356)
 
 
 def recommend_portrait(
         area: WorkArea, target_dp: int = PORTRAIT_TARGET_DP
 ) -> DisplayRecommendation:
-        """Fixed 9:16 portrait preset: 1080x1920/270dpi = 640x1138dp,
-        window docked to the right edge (same tablet dp class the user
-        verified all day with 1252x2088/313 = 641x1067dp). The window is
-        clamped to the work area; the display preset itself stays 1080x1920
-        because flex re-follows whatever window actually shows."""
+        """Fixed 9:16 portrait preset: 1080x1920, window docked to the right
+        edge; density comes from the device probe (CLI), this dpi is an
+        inert last-ditch fallback. The window is clamped to the work area;
+        the display preset itself stays 1080x1920 because flex re-follows
+        whatever window actually shows."""
         height = min(1920, area.height)
         width = min(1080, area.width)
         window = WindowGeometry(
@@ -121,7 +133,7 @@ def recommend_portrait(
                 height=height,
         )
         return DisplayRecommendation(
-                dpi=270,
+                dpi=356,
                 display_width=1080,
                 display_height=1920,
                 window=window,

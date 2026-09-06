@@ -14,17 +14,18 @@ AREA_1080P = WorkArea(width=1920, height=1040)
 
 
 def test_landscape_4k_recommends_480():
-        """Landscape is a fixed 16:9 preset now: dpi 240 (1920x1080 = 1280x720dp),
+        """Landscape is a fixed 16:9 preset now; dpi is only an inert
+        fallback (real density comes from the device probe in the CLI),
         no window geometry (the initial window equals the display preset)."""
         rec = recommend_landscape(AREA_4K)
-        assert rec.dpi == 240
+        assert rec.dpi == 356
         assert rec.window is None
 
 
 def test_landscape_1080p_scales_down():
         """The preset is monitor-independent (flex follows the window after)."""
         rec = recommend_landscape(AREA_1080P)
-        assert rec.dpi == 240
+        assert rec.dpi == 356
 
 
 def test_portrait_window_geometry():
@@ -37,15 +38,17 @@ def test_portrait_window_geometry():
         assert window.width == 1080
         assert window.height == 1920
         assert window.x == AREA_4K.width - window.width
-        # 640dp layout width: the tablet-ish portrait class the user verified.
-        assert window.width * 160 // rec.dpi == 640
+        # 密度来自设备探测（Pad 4 Pro override 356 → 485dp 短边，元素尺寸
+        # = 设备屏物理尺寸）；这里只验证回退值不再承担 dp 目标。
+        assert rec.dpi == 356
 
 
 def test_portrait_dpi_smaller_than_landscape():
-        """Portrait maps the same pixel width to a smaller dp class."""
+        """Both presets share the device-density fallback (density is
+        device-derived, not orientation-derived)."""
         portrait = recommend_portrait(AREA_4K)
         landscape = recommend_landscape(AREA_4K)
-        assert portrait.dpi > landscape.dpi
+        assert portrait.dpi == landscape.dpi == 356
 
 
 def test_portrait_on_narrow_monitor():
@@ -56,4 +59,4 @@ def test_portrait_on_narrow_monitor():
         assert rec.window.width <= 1000
         assert rec.window.height <= 800
         assert rec.display_width == 1080
-        assert rec.dpi == 270
+        assert rec.dpi == 356

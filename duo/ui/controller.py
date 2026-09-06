@@ -73,9 +73,14 @@ APP_CATALOG: list[tuple[str, str]] = [
 ]
 
 #: Per-app portrait defaults (reading/vocabulary apps want a tall phone).
+#: QQ/微信：竖屏设计的手机 APP，在横屏显示里会自留大片黑边
+#: （同真平板横屏行为，2026-09-06 晚真机验证 QQ SplashActivity
+#: Requested=fill 显示但 UI 内部留黑）；竖屏启动则自然填满。
 DEFAULT_PORTRAIT: dict[str, bool] = {
         "cn.com.langeasy.LangEasyLexis": True,
         "com.tencent.weread": True,
+        "com.tencent.mobileqq": True,
+        "com.tencent.mm": True,
 }
 
 #: Human-readable adb state names for the device card.

@@ -24,14 +24,15 @@ def test_adb_pin_never_becomes_an_argv_flag():
 def test_flex_default_matches_verified_preset():
         """The default args reproduce the experiment-verified session shape.
 
-        16:9 initial preset (2026-09-06 晚，用户定稿)：1920x1080/240dpi =
-        1280x720dp（参考平板横屏）；flex 跟随后初始形状只定开局，之后
-        显示持续随窗口，方向请求被 overlay 锁忽略（无风暴）。
+        16:9 initial preset (2026-09-06 晚，用户定稿)：1920x1080，密度由
+        CLI 从设备实测 wm density（Override 优先，Pad 4 Pro = 356）注入 —
+        元素物理尺寸与设备屏一致；flex 跟随后初始形状只定开局，方向请求
+        被 overlay 锁忽略（无风暴）。
         """
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")
         joined = " ".join(argv)
         assert "--serial=4444bd6b" in argv
-        assert "--new-display=1920x1080/240" in argv
+        assert "--new-display=1920x1080" in argv
         assert "--no-window-aspect-ratio-lock" in argv
         # flex display（2026-09-06 晚定稿）：虚拟屏持续跟随窗口（原生填满，
         # unscaled 渲染）；风暴根因（ROTATES_WITH_CONTENT + APP 方向请求）
