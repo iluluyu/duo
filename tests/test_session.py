@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from duo.core.session import Session, SessionSpec
+from duo.core.session import Session, SessionSpec, display_id_from_log, parse_display_id
 
 
 def _sleep_session(tmp_path: Path) -> Session:
@@ -81,3 +81,40 @@ def test_env_vars_reach_the_child(tmp_path: Path):
         )
         Session(spec).run()
         assert r"C:\\tools\\adb.exe" in spec.log_path.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------- virtual display id parse
+
+
+def test_parse_display_id_from_real_log_line():
+        """The scrcpy announce line (captured live, §7.3 R3) yields the id."""
+        line = "[server] INFO: New display: 1200x1600/280 (id=157)\n"
+        assert parse_display_id(line) == 157
+
+
+def test_parse_display_id_last_match_wins():
+        """Appended sessions rewrite the id: the newest line is authoritative."""
+        log = (
+                "[server] INFO: New display: 1200x1600/280 (id=157)\n"
+                "[server] INFO: Texture: 1200x1600\n"
+                "[server] INFO: New display: 800x600/160 (id=203)\n"
+        )
+        assert parse_display_id(log) == 203
+
+
+def test_parse_display_id_absent():
+        """No announce line (engine starting, mirror session, junk) -> None."""
+        assert parse_display_id("") is None
+        assert parse_display_id("[server] INFO: Texture: 2400x3392\n") is None
+        assert parse_display_id("New display: 1200x1600/280 without id\n") is None
+
+
+def test_display_id_from_log_reads_tail(tmp_path: Path):
+        """The click-time reader parses the file tail; missing file is None."""
+        log_file = tmp_path / "panel-bili.log"
+        assert display_id_from_log(log_file) is None   # never spawned yet
+        log_file.write_text(
+                "noise\n" * 100 + "[server] INFO: New display: 1200x1600/280 (id=158)\n",
+                encoding="utf-8",
+        )
+        assert display_id_from_log(log_file) == 158

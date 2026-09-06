@@ -28,7 +28,12 @@ def test_flex_default_matches_verified_preset():
         assert "--serial=4444bd6b" in argv
         assert "--new-display=/480" in argv
         assert "--flex-display" in argv
-        assert "--start-app=cn.com.langeasy.LangEasyLexis" in argv
+        # '+' prefix is mandatory: without it an app with a live task on the
+        # physical screen never lands on the virtual display (§7.1.4).
+        assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
+        # Virtual displays hide system decorations: with them Android raises
+        # the AOSP SecondaryDisplayLauncher picker on the display (§7.1).
+        assert "--no-vd-system-decorations" in argv
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv
@@ -37,6 +42,26 @@ def test_flex_default_matches_verified_preset():
         assert "--max-fps=90" in argv
         # No positive clipboard flag exists in scrcpy >= 3.0 (experiment finding).
         assert "clipboard" not in joined
+
+
+def test_virtual_display_decorations_off_both_modes():
+        """flex AND fixed sessions both drop system decorations; mirror keeps them."""
+        flex = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
+        assert "--no-vd-system-decorations" in flex
+        fixed = _argv(
+                serial="s",
+                display=DisplaySpec(mode="fixed", width=1200, height=1600, dpi=280),
+        )
+        assert "--no-vd-system-decorations" in fixed
+        mirror = _argv(serial="s", display=DisplaySpec(mode="mirror"))
+        assert "--no-vd-system-decorations" not in mirror
+
+
+def test_start_app_plus_prefix_is_idempotent():
+        """A pre-prefixed package never becomes '++' (scrcpy parses it as '?')."""
+        argv = _argv(serial="s", app_package="+cn.com.langeasy.LangEasyLexis")
+        assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
+        assert not any("++" in a for a in argv)
 
 
 def test_flex_without_dpi_uses_bare_new_display():

@@ -49,6 +49,11 @@ def test_launch_argv_carries_chrome_serial_and_orientation():
         assert "--portrait" not in argv
         # Audio is always requested; the CLI arbitrates ownership.
         assert "--no-audio" not in argv
+        # The panel picks the session log path so it can read the virtual
+        # display id back out of it (startAppOnDisplay).
+        assert argv[argv.index("--session-log") + 1].endswith(
+                "panel-tv.danmaku.bili.log"
+        )
 
 
 def test_launch_argv_portrait_flag():

@@ -137,6 +137,16 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 #   - scrcpy >= 3.0 has no positive ``--clipboard-autosync`` flag (default on,
 #     only ``--no-clipboard-autosync`` exists) — never emit the positive form.
 #   - ``--flex-display`` must be paired with ``--new-display``.
+#   - Virtual displays keep ``--no-vd-system-decorations``: with system
+#     decorations Android auto-starts the AOSP SecondaryDisplayLauncher
+#     (CATEGORY_SECONDARY_HOME) on the virtual display - the "confusing app
+#     selector" (docs/window-experience.md §7.1). No decorations -> no home
+#     task -> apps land directly.
+#   - ``--start-app`` values always carry the ``+`` prefix: without it an app
+#     that already has a live task on the physical screen stays there
+#     ("delivered to running instance") and the virtual display shows
+#     nothing (§7.1.4). The prefix force-stops first, so the task reliably
+#     lands on the new display.
 # ----------------------------------------------------------------------------
 
 DisplayMode = Literal["mirror", "flex", "fixed"]
@@ -173,19 +183,28 @@ class DisplaySpec:
         dpi: int | None = 480
 
         def to_flags(self) -> list[str]:
-                """Compile to scrcpy display flags."""
+                """Compile to scrcpy display flags.
+
+                Virtual displays (flex/fixed) always disable system
+                decorations: with them, Android raises the AOSP
+                SecondaryDisplayLauncher on the display (the "confusing app
+                selector", docs/window-experience.md §7.1) and an empty
+                flex session shows that picker full-screen. Trade-off
+                (recorded, pending Windows check in TODO task 7): with no
+                app the display renders no frames at all.
+                """
                 if self.mode == "mirror":
                         return []
                 if self.mode == "flex":
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
-                        return [new_display, "--flex-display"]
+                        return [new_display, "--flex-display", "--no-vd-system-decorations"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
                 if self.dpi:
                         value += f"/{self.dpi}"
-                return [f"--new-display={value}"]
+                return [f"--new-display={value}", "--no-vd-system-decorations"]
 
 
 @dataclass(frozen=True)
@@ -242,7 +261,12 @@ class EngineArgs:
                 # ADB environment variable instead - see adb_pin_env().
                 argv += self.display.to_flags()
                 if self.app_package:
-                        argv.append(f"--start-app={self.app_package}")
+                        # '+' force-stops before starting: without it an app with
+                        # a live task elsewhere is "delivered" there and never
+                        # lands on our virtual display (§7.1.4). Idempotent so a
+                        # pre-prefixed value never becomes '++'.
+                        package = self.app_package.removeprefix("+")
+                        argv.append(f"--start-app=+{package}")
                 if self.screen_off:
                         argv.append("--turn-screen-off")
                 if self.stay_awake:

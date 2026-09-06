@@ -24,6 +24,7 @@ from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import duo.ui.controller as controller_mod  # noqa: E402
+from duo.core.apps import AdbError  # noqa: E402
 from duo.ui.controller import (  # noqa: E402
         APP_CATALOG,
         MIRROR_KEY,
@@ -116,8 +117,13 @@ def prefs_stub(monkeypatch):
 
 
 @pytest.fixture()
-def no_adb(monkeypatch):
-        """Stub the device monitor and the installed-package lookup."""
+def no_adb(monkeypatch, tmp_path_factory):
+        """Stub the device monitor and the installed-package lookup.
+
+        Panel session logs are also redirected into a temp dir so tests
+        never touch the real data dir (startSession truncates the log file
+        the display-id parser reads back).
+        """
         _StubMonitor.instances = []
         monkeypatch.setattr(controller_mod, "DeviceMonitor", _StubMonitor)
         checked: list[str] = []
@@ -127,6 +133,10 @@ def no_adb(monkeypatch):
                 done(set())
 
         monkeypatch.setattr(controller_mod, "_resolve_installed", fake_resolve_installed)
+        log_root = tmp_path_factory.mktemp("panel-logs")
+        monkeypatch.setattr(
+                controller_mod, "panel_log_path", lambda pkg: log_root / f"{pkg}.log"
+        )
         return checked
 
 
@@ -407,19 +417,168 @@ def test_engine_locked_tracks_sessions(no_adb, prefs_stub, qapp, monkeypatch):
         assert controller.activeSessionCount() == 0
 
 
-def test_duplicate_start_reports_running(no_adb, prefs_stub, qapp, monkeypatch):
-        """Starting a live session twice reports instead of double-spawning."""
+def test_duplicate_start_routes_to_display_move(no_adb, prefs_stub, qapp, monkeypatch, tmp_path):
+        """Starting a live session moves the app onto its display, no 2nd spawn.
+
+        The app may be running on the physical screen (or the user just
+        wants it back on the virtual one): the click must not rebuild the
+        session, it goes through startAppOnDisplay. Without a session log
+        yet the move degrades to a status message.
+        """
         controller = PanelController("/fake/adb.exe")
         _StubMonitor.instances[-1].set_states({"S1": "device"})
         procs: list[_FakeProc] = []
         _spawn_recorder(controller, procs)
+        monkeypatch.setattr(
+                controller_mod, "panel_log_path", lambda pkg: tmp_path / f"{pkg}.log"
+        )
 
         controller.startSession("tv.danmaku.bili")
         statuses: list[str] = []
         controller.statusChanged.connect(statuses.append)
         controller.startSession("tv.danmaku.bili")
-        assert statuses == ["哔哩哔哩 已在运行"]
+        assert statuses == ["哔哩哔哩 虚拟屏未就绪，稍后重试"]
+        assert len(procs) == 1   # degradation, not a session rebuild
+
+
+class _FakeAdb:
+        """Adb stand-in recording shell commands with canned outputs."""
+
+        def __init__(self, binary: str, serial: str, results: list[str] | None = None):
+                self.binary = binary
+                self.serial = serial
+                self.calls: list[tuple[str, ...]] = []
+                self._results = list(results or [])
+
+        def run(self, *args: str, timeout: float = 60.0) -> str:
+                self.calls.append(args)
+                return self._results.pop(0) if self._results else ""
+
+
+RESOLVE_OUTPUT = "cn.com.langeasy.LangEasyLexis/cn.com.langeasy.LangEasyLexis.MainActivity\n"
+
+
+def test_start_app_on_display_moves_running_app(
+        no_adb, prefs_stub, qapp, monkeypatch, tmp_path
+):
+        """Known display id + resolvable component -> am start --display N.
+
+        resolve-activity pre-parses the launchable component, then the app
+        is started onto the virtual display read from the session log -
+        no session rebuild.
+        """
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        log_file = tmp_path / "bili.log"
+        monkeypatch.setattr(controller_mod, "panel_log_path", lambda pkg: log_file)
+        fake = _FakeAdb(
+                "/fake/adb.exe",
+                "S1",
+                results=[RESOLVE_OUTPUT, "Starting: Intent { cmp=... }\n"],
+        )
+        monkeypatch.setattr(controller_mod, "Adb", lambda b, s: fake)
+
+        controller.startSession("tv.danmaku.bili")
+        # The engine writes the announce line after the spawn (startSession
+        # truncated the log), so the fixture writes it post-start.
+        log_file.write_text(
+                "[server] INFO: New display: 1200x1600/280 (id=157)\n", encoding="utf-8"
+        )
+        controller.startAppOnDisplay("tv.danmaku.bili")
+        deadline = time.monotonic() + 5.0
+        while controller.statusText != "已在虚拟屏打开 哔哩哔哩" \
+                and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.01)
+        assert fake.calls == [
+                ("shell", "cmd", "package", "resolve-activity", "--brief",
+                 "tv.danmaku.bili"),
+                ("shell", "am", "start", "--display", "157", "-n",
+                 "cn.com.langeasy.LangEasyLexis/cn.com.langeasy.LangEasyLexis.MainActivity"),
+        ]
+        assert controller.statusText == "已在虚拟屏打开 哔哩哔哩"
         assert len(procs) == 1
+
+
+def test_start_app_on_display_degradations(no_adb, prefs_stub, qapp, monkeypatch, tmp_path):
+        """Every failure path degrades to a status line, never a rebuild."""
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        log_file = tmp_path / "bili.log"
+        monkeypatch.setattr(controller_mod, "panel_log_path", lambda pkg: log_file)
+
+        # Unknown session: chip click for something not tracked.
+        controller.startAppOnDisplay("tv.danmaku.bili")
+        assert controller.statusText == "哔哩哔哩 会话未运行"
+        assert procs == []
+
+        controller.startSession("tv.danmaku.bili")
+
+        # Log without a display line yet (engine still starting).
+        log_file.write_text("[server] INFO: connecting\n", encoding="utf-8")
+        fake = _FakeAdb("/fake/adb.exe", "S1")
+        monkeypatch.setattr(controller_mod, "Adb", lambda b, s: fake)
+        controller.startAppOnDisplay("tv.danmaku.bili")
+        assert controller.statusText == "哔哩哔哩 虚拟屏未就绪，稍后重试"
+        assert fake.calls == []
+
+        def _move_until_status(fake_adb: _FakeAdb, expected: str) -> None:
+                controller.startAppOnDisplay("tv.danmaku.bili")
+                deadline = time.monotonic() + 5.0
+                while controller.statusText != expected and time.monotonic() < deadline:
+                        QApplication.processEvents()
+                        time.sleep(0.01)
+                assert controller.statusText == expected
+
+        # resolve-activity yields nothing usable.
+        log_file.write_text("[server] INFO: New display: 1x1/160 (id=9)\n", encoding="utf-8")
+        fake = _FakeAdb("/fake/adb.exe", "S1", results=["\n"])
+        monkeypatch.setattr(controller_mod, "Adb", lambda b, s: fake)
+        _move_until_status(fake, "打开失败：哔哩哔哩（无法解析应用入口）")
+
+        # am start reports an in-band error.
+        fake = _FakeAdb(
+                "/fake/adb.exe",
+                "S1",
+                results=[RESOLVE_OUTPUT, "Error: Activity class does not exist\n"],
+        )
+        monkeypatch.setattr(controller_mod, "Adb", lambda b, s: fake)
+        _move_until_status(fake, "打开失败：哔哩哔哩（Error: Activity class does not exist）")
+
+        # adb itself fails (device gone mid-click).
+        def boom(*args: str, timeout: float = 60.0) -> str:
+                raise AdbError("adb -s S1 shell failed: device offline")
+
+        fake = _FakeAdb("/fake/adb.exe", "S1")
+        fake.run = boom  # type: ignore[method-assign]
+        monkeypatch.setattr(controller_mod, "Adb", lambda b, s: fake)
+        _move_until_status(fake, "打开失败：哔哩哔哩（adb -s S1 shell failed: device offline）")
+
+        # No session rebuild ever happened; no am start succeeded.
+        assert len(procs) == 1
+
+
+def test_session_log_reset_between_sessions(no_adb, prefs_stub, qapp, monkeypatch, tmp_path):
+        """A fresh session truncates the panel log: no stale display ids.
+
+        The parser takes the LAST 'New display:' line, so a leftover file
+        would hand out the previous run's (dead) display id until the new
+        engine rewrites it.
+        """
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        log_file = tmp_path / "bili.log"
+        monkeypatch.setattr(controller_mod, "panel_log_path", lambda pkg: log_file)
+        log_file.write_text("[server] INFO: New display: 1x1/160 (id=9)\n", encoding="utf-8")
+
+        controller.startSession("tv.danmaku.bili")
+        assert not log_file.exists()   # stale log removed before the spawn
 
 
 # -------------------------------------------------------------------- status

@@ -6,6 +6,7 @@ import argparse
 import signal
 import sys
 import time
+from pathlib import Path
 
 from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info
@@ -173,8 +174,14 @@ def _run_mirror(args: argparse.Namespace) -> int:
         )
         command = engine_args.to_argv(binary=scrcpy_path)
 
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
+        # Panel-managed sessions pass an explicit log path (their controller
+        # tails it for the virtual display id); CLI runs keep one timestamped
+        # file per launch.
+        if args.session_log:
+                log_path = Path(args.session_log)
+        else:
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                log_path = logs_dir() / f"{stamp}-{args.app or 'mirror'}.log"
         session = Session(
                 SessionSpec(
                         command=command,
@@ -300,6 +307,12 @@ def _build_parser() -> argparse.ArgumentParser:
                 default=None,
                 help="experimental G2 corner radius in DIP; default follows "
                      "settings (system rounding). 0 disables, 48 = iPhone-like",
+        )
+        mirror.add_argument(
+                "--session-log",
+                default=None,
+                help="exact session log path (panel-managed sessions; default "
+                     "is a timestamped file under the data dir)",
         )
 
         return parser
