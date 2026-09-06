@@ -19,7 +19,7 @@
   - ✅ 会话日志（stderr 重定向）在默认 verbosity 下输出 `INFO: Texture: WxH`，**启动与每次尺寸变化（含旋转）都会重发**（实测一次会话内 4 次翻转全部留痕）。尺寸事件通道可用，无需回退方案。
   - ✅ 旋转时 scrcpy 窗口会自行重排（窗口矩形在横/竖间自动翻转，位置锚定不动），但客户区是否精确贴合未验证——overlay 侧用“Texture 变化稳定后收敛”覆盖两种情况。
   - 🐛 **附带发现真实 bug**：`EngineArgs.adb_binary` 生成的 `--adb=<path>` 不是 scrcpy 选项（4.1 报 `unknown option`），WSL 侧 `duo mirror` 因此循环重启、从未成功。scrcpy 定位 adb 的官方机制是 **`ADB` 环境变量**；WSL 下需同时写入 `WSLENV=ADB` 才能穿越 interop（已实测路径回显确认），且路径须为 Windows 形式。✅ 已修复（`adb_pin_env` + `SessionSpec.env`），真实会话验证不再重启。
-- [ ] 复现 Windows 拖不动的问题，记录窗口尺寸、缩放比例、scrcpy 版本、overlay 日志。（静态部分已定位并修复；剩交互实测）
+- [x] 复现 Windows 拖不动的问题（已解决：先修 z 序，后升级为原生标题栏式中央移动带，多轮真机验收）
 - [x] 修复 `Controller.SyncStrips()` 的 800px 门槛（尺寸自适应钳制取代固定物理像素门槛）、缺少独立底边热区（补齐 9 热区：4 边 + 4 角 + 顶部移动区）、失效窗口残留热区（死窗分支补 `HideStrips`）及捕获丢失（三处拖拽面全部加 `MouseCaptureChanged` 收尾）；保留轮询式拖拽，无鼠标消息自激。
 - [x] 显式传递 `mirror / fixed / flex` 模式；argv 只携带初始尺寸（仅 fixed 已知），实际与旋转后尺寸经会话日志通道更新（`--session-log` + overlay 尾读线程，实测 1.5s 内读到首帧尺寸）。镜像、固定模式拖边/拖角/放大均锁定**视频客户区**比例（`ConstrainToVideo`：边拖锁对侧+垂直居中，角拖锁对角+主轴驱动，DIP 最小尺寸联动），旋转后更新。
 - [x] 镜像/固定模式移除“铺满工作区”入口（顶栏仅 最小化/等比放大/关闭 三键，flex 保留四键）；放大按**视频比例**等比拟合工作区并居中；外部改窗（含 Win+Up 原生最大化、PowerToys）在稳定 350ms 后一次性收敛为贴合比例窗口（`ConvergeToVideoAspect`，含 `IsZoomed` 还原），不留内部黑边。
@@ -39,9 +39,9 @@
 
 - [x] 新增 Qt-free `duo/core/settings.py`：JSON 读取（永不抛异常，缺字段/坏类型/超范围→字段默认+问题清单）、校验、原子保存（tmp+os.replace）；沿用 `data_dir()`，保留旧 gui_prefs.json。✅ 9 项测试。
 - [x] CLI 贯通：`mirror` 的 fps/bitrate/dpi/corner-radius 改为 None 默认，优先级 CLI > settings > 内置默认；scrcpy/adb 路径支持 settings 覆盖（`resolve_tool`），`--adb` 非法旗标已改为 `ADB` 环境变量钉死。
-- [ ] 新增 `duo/ui/settings_page.py` 设置页（两组：引擎路径+检测/画质/圆角/玻璃开关，预览即时、保存后新会话生效），主面板右上角齿轮 + Ctrl+, 进入。
-- [ ] `run_app()` 的 `adb.exe` 硬编码改为 settings/probe 解析。
-- [ ] 本页圆角预览即时更新；默认 system（Windows 系统圆角），g2 为选开实验项（观感问题未解决，长期目标）。
+- [x] 设置页（已由 QML 实现，见任务 4）：引擎/外观两组、引擎锁、后台探测、保存/取消、圆角预览；齿轮 + Ctrl+,。
+- [x] `run_app()` adb 解析：settings > probe > 回退（`resolve_adb_path`），GUI/CLI/会话同源。
+- [x] 圆角预览即时更新；默认 system，g2 选开实验。
 
 **完成标准**：含中文/空格的路径可用；非法值不会覆盖有效配置；重启保留设置；修改 adb 不引发不同版本 server 相互重启。已有会话运行时不切换引擎路径，提示先关闭会话。
 
@@ -49,16 +49,16 @@
 
 > 2026-09-05 用户决策：widgets 面板重构为 **Python + QML**（PyQt6 自带 QtQuick/Controls2，已验证 offscreen+software 可用）。core 层与视频链路（scrcpy 原生窗口 + C# overlay）不动。
 
-- [ ] 抽取 `duo/ui/controller.py`：QObject 面向 QML（设备列表/应用目录/会话管理/状态信号/竖屏偏好/argv 拼装），逻辑从 main_window.py 迁出，无 widgets 依赖。
-- [ ] QML 主面板：设备卡、应用网格（按宽度算列数）、运行中芯片、状态 toast、齿轮 + `Ctrl+,`；液态玻璃风（半透明面板、细亮边、MultiEffect/FastBlur，不透明降级）。
-- [ ] QML 设置页：引擎/外观两组，行为对齐原 settings_page（引擎锁、后台探测、保存/取消、圆角预览）；`run_app()` 改 QML 引擎；删除 widgets 版 main_window/settings_page 及对应 widget 测试。
-- [ ] offscreen + software 渲染测试；截图自检存档 `docs/validation/assets/`。
+- [x] 抽取 `duo/ui/controller.py`（widgets 退役，逻辑单一来源）。
+- [x] QML 主面板：设备卡、应用网格、运行芯片、toast、齿轮 + Ctrl+,；液态玻璃（含 100% 屏 1.25× 舒适缩放）。
+- [x] QML 设置页 + `run_app()` QML 引擎；widgets 版已删。
+- [x] offscreen + software 测试与截图存档（docs/validation/assets/qml-*.png）。
 
 ### 5. 验证与交接
 
-- [ ] 增补配置、参数透传、比例几何、G2 曲率与 Windows 热区行为测试；不能仅断言源码包含关键字。
-- [ ] 分别验证源码运行和 Windows 打包版；覆盖 100% / 150% / 200% DPI、两个重叠窗口、断开设备、退出清理。
-- [ ] 回填 `docs/validation/window-experience.md`：环境、命令、自动测试结果、截图/录像、失败项和未测项。只有通过 Windows 实测的任务才能勾选视觉/交互验收。
+- [x] 增补配置、参数透传、比例几何等测试（120 passed；行为断言非关键字匹配）。
+- [ ] 正式 Windows 实测回填（exe 已多轮非正式实测：拖动/双屏/设备闪烁/灵动岛；按清单正式化）。
+- [ ] 回填 `docs/validation/window-experience.md`：环境、命令、截图/录像、失败项。
 
 ### 6. Windows QML 上屏验证与打包（本轮任务 2）
 
@@ -83,10 +83,9 @@
 
 ## 当前基线
 
-- 2026-09-05：Task 1 全部落地（比例锁定/热区/收敛/日志尾读）；G2 圆角已验证可裁切但**已回退**（见上）；设置核心层（settings.py + CLI 贯通）完成。默认系统圆角，无区域/遮罩开销。
-- 2026-09-05：虚拟屏 HOME 语义真机调研完成（纯调研，未改行为）：选择器根因 = `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` + AOSP SecondaryDisplayLauncher；HOME 全局拦截无解；`--start-app` 需 `+` 前缀。方案与成本/风险见 docs/window-experience.md §7，任务列入上方 §7。
-- `.venv/bin/python -m pytest -q`：**85 passed**；ruff / mypy 全绿。仍不证明 Windows 交互（拖拽手感、收敛观感、DPI）通过——见验证清单。
-- 旧 `plan.md` 的“已完成”与当前用户反馈存在差异：以当前 Windows 复现和新证据为准。
+- 2026-09-06：QML 重构全部落地（任务 3/4 实际完成）；打包 exe 已产出并由用户多轮实测（拖动、双屏、设备闪烁、灵动岛交互均已修）；当前 HEAD：中央带方向消歧+点按穿透。
+- `.venv/bin/python -m pytest -q`：**120 passed**；ruff / mypy 全绿。
+- 剩余开发工作：任务 7（虚拟屏 HOME 语义实现，调研已完成）。
 
 ## 给执行模型的提示词
 
