@@ -50,15 +50,13 @@ def test_overlay_source_shipped_and_hardened():
         assert "0xE921" in text and "0xE8BB" in text
         # Navigation keys for the chin (BACK=4, HOME=3).
         # mBack chin: tap = BACK (keyevent 4), long-press = HOME (keyevent 3,
-        # physical mirroring only); virtual displays draw a plain back
-        # chevron - the ○ glyph reads as a home button and HOME has nowhere
-        # to go there (AOSP SecondaryDisplayLauncher app picker, see
-        # docs/window-experience.md §7).
+        # physical mirroring) / session close (virtual displays). One ring
+        # glyph for every mode - a mode-switching glyph read as a regression
+        # and was reverted (2026-09-06).
         assert "AdbKey(4)" in text
         assert "AdbKey(3)" in text
         assert "--home" in text
         assert "AdbKey" in text
-        assert "mirror ? 1 : 0" in text
         # Ratio-locked resize: display mode channel, live video sizes tailed
         # from the session log ("INFO: Texture: WxH"), aspect convergence,
         # DIP minimums and capture-loss guards on every drag surface.
