@@ -1266,6 +1266,7 @@ namespace DuoChrome
         // desktop = 1.7 vs 48.8 against the video). The region must be
         // re-applied after every window-rect change - regions do not scale.
         private int _cornerDip;   // 0 = off
+        private int _vdDisplayId = -1;   // virtual display from session log (-1 unknown)
         private Size _lastRegionSize;    // last size seen (defers through churn)
         private Size _lastAppliedSize;   // size the region currently matches
         private bool _regionOff;         // region cleared while resizing
@@ -1905,6 +1906,27 @@ namespace DuoChrome
         /// (verified live, scrcpy 4.1). The session log captures stderr.</summary>
         private void HandleLogLine(string s)
         {
+            // scrcpy logs the virtual display id once, e.g.
+            // "[server] INFO: New display: virtual display id 3 (...)",
+            // so the chin can target the in-session virtual desktop.
+            int nd = s.IndexOf("New display:");
+            if (nd >= 0)
+            {
+                int idAt = s.IndexOf("id=", nd, StringComparison.Ordinal);
+                if (idAt >= 0)
+                {
+                    int digits = idAt + 3;
+                    while (digits < s.Length && char.IsDigit(s[digits])) digits++;
+                    int id;
+                    if (int.TryParse(s.Substring(idAt + 3, digits - idAt - 3), out id)
+                        && id != _vdDisplayId)
+                    {
+                        _vdDisplayId = id;
+                        Log.Write("virtual display id=" + id);
+                    }
+                }
+                return;
+            }
             int at = s.IndexOf("Texture:");
             if (at < 0) return;
             string rest = s.Substring(at + 8).Trim();
@@ -1936,6 +1958,24 @@ namespace DuoChrome
             catch (Exception ex) { Log.Write("keyevent failed: " + ex.Message); }
         }
 
+        /// <summary>Run one ``adb shell`` command line (fire and forget);
+        /// used for the display-targeted HOME that opens the virtual
+        /// desktop. Mirrors AdbKey's lifecycle: never throws into the UI.</summary>
+        private void AdbShell(string args)
+        {
+            try
+            {
+                Process p = new Process();
+                p.StartInfo.FileName = _adb;
+                p.StartInfo.Arguments = "-s " + _serial + " shell " + args;
+                p.StartInfo.CreateNoWindow = true;
+                p.StartInfo.UseShellExecute = false;
+                p.Start();
+                Log.Write("shell: " + args);
+            }
+            catch (Exception ex) { Log.Write("shell failed: " + ex.Message); }
+        }
+
         /// <summary>The chin ring's long-press action. Physical mirroring
         /// (home enabled + display-mode mirror) sends HOME to the phone's
         /// launcher. A virtual display (flex/fixed) has NO launcher to go
@@ -1953,12 +1993,18 @@ namespace DuoChrome
         /// home=1, and must also close rather than send keyevent 3.</summary>
         public void ChinHold()
         {
-            // Long-press = HOME on every display, virtual included: it tells
-            // the user there IS a virtual desktop layer, and vendors are
-            // expected to flesh out virtual-display home behavior over time
-            // (2026-09-06 user decision). Closing stays on the capsule's ✕.
-            // Today, with --no-vd-system-decorations, HOME on a virtual
-            // display may be a visual no-op - that is accepted.
+            // Long-press = HOME everywhere. On a virtual display the bare
+            // keyevent lands on the physical screen, so instead the session's
+            // virtual desktop (secondary-display launcher) is opened with a
+            // display-targeted HOME intent - that page IS the feature the
+            // user asked to keep (2026-09-06). Mirror mode keeps keyevent 3.
+            if (!_displayMode.Equals("mirror") && _vdDisplayId >= 0)
+            {
+                AdbShell("am start --display " + _vdDisplayId
+                    + " -a android.intent.action.MAIN"
+                    + " -c android.intent.category.HOME");
+                return;
+            }
             AdbKey(3);
         }
 

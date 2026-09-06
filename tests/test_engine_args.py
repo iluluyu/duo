@@ -37,9 +37,10 @@ def test_flex_default_matches_verified_preset():
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
-        # Virtual displays hide system decorations: with them Android raises
-        # the AOSP SecondaryDisplayLauncher picker on the display (§7.1).
-        assert "--no-vd-system-decorations" in argv
+        # Virtual displays keep system decorations ON: the secondary-display
+        # launcher is the in-session "virtual desktop" the chin long-press
+        # opens (2026-09-06 decision; suppression cut that page off).
+        assert "--no-vd-system-decorations" not in argv
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv
@@ -50,15 +51,16 @@ def test_flex_default_matches_verified_preset():
         assert "clipboard" not in joined
 
 
-def test_virtual_display_decorations_off_both_modes():
-        """flex AND fixed sessions both drop system decorations; mirror keeps them."""
+def test_virtual_display_decorations_on_both_modes():
+        """flex AND fixed sessions keep decorations (virtual desktop page);
+        mirror never had the flag."""
         flex = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
-        assert "--no-vd-system-decorations" in flex
+        assert "--no-vd-system-decorations" not in flex
         fixed = _argv(
                 serial="s",
                 display=DisplaySpec(mode="fixed", width=1200, height=1600, dpi=280),
         )
-        assert "--no-vd-system-decorations" in fixed
+        assert "--no-vd-system-decorations" not in fixed
         mirror = _argv(serial="s", display=DisplaySpec(mode="mirror"))
         assert "--no-vd-system-decorations" not in mirror
 
@@ -105,12 +107,12 @@ def test_flex_resolution_three_tiers():
         # 尺寸可与 dpi 解耦：无 dpi 时只拼 WxH
         assert new_display(DisplaySpec(mode="flex", dpi=None)) == \
                 "--new-display=2560x1440"
-        # flex 旗标三档齐全
+        # flex 旗标三档齐全（装饰保持开启：虚拟桌面页）
         for value in ("1440p", "1080p", "native"):
                 argv = _argv(serial="s", display=DisplaySpec(
                         mode="flex", dpi=480, flex_resolution=value))
                 assert "--flex-display" in argv
-                assert "--no-vd-system-decorations" in argv
+                assert "--no-vd-system-decorations" not in argv
 
 
 def test_flex_explicit_size_never_overridden_by_resolution():
