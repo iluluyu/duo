@@ -1,4 +1,4 @@
-# Build the Duo panel bundle on Windows: venv + PyInstaller (onedir, win64).
+# Build the Duo panel and deploy the FIXED artifact C:\Tools\Duo.exe.
 # Prereq: 64-bit Windows Python with the py launcher; repo at C:\duo
 # (or pass the repo path as the first argument).
 $ErrorActionPreference = 'Stop'
@@ -19,24 +19,17 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
 $bits = .venv\Scripts\python -c "import struct; print(struct.calcsize('P') * 8)"
 if ($bits -ne '64') { throw "need 64-bit Windows Python for the win64 bundle (got ${bits}-bit)" }
 
-# --onefile: a single portable Duo.exe (user-facing default; slower to
-# start than onedir because it self-extracts to temp on launch).
-# The onedir duo.spec remains available for faster dev iteration:
-#   .venv\Scripts\pyinstaller duo.spec --noconfirm
-.venv\Scripts\pyinstaller --onefile --noconsole --name Duo `
-        --icon assets/duo.ico `
-        --add-data "duo/ui/qml;duo/ui/qml" `
-        --add-data "duo/resources/chrome_overlay.cs;duo/resources" `
-        --hidden-import PyQt6.QtQml --hidden-import PyQt6.QtQuick `
-        gui_entry.py --noconfirm
+# Onefile via the committed spec: dist\Duo.exe (single portable file,
+# self-extracts to temp on launch). The spec is the single source of
+# truth for datas/hiddenimports - no flag soup duplicated here.
+.venv\Scripts\pyinstaller duo.spec --noconfirm
+if (-not (Test-Path 'dist\Duo.exe')) { throw "missing artifact: $repo\dist\Duo.exe" }
 
-# Artifact sanity for the single-file bundle.
-$artifacts = @(
-        'dist\Duo.exe'
-)
-foreach ($f in $artifacts) {
-        if (-not (Test-Path $f)) { throw "missing artifact: $repo\$f" }
-}
+# Deploy the fixed artifact. A running panel locks the file, so close it
+# first (stateless launcher - restartable any time).
+taskkill /IM Duo.exe /F 2>$null
+New-Item -ItemType Directory -Force -Path C:\Tools | Out-Null
+Move-Item -Force dist\Duo.exe C:\Tools\Duo.exe
 
-Write-Output "bundle ready: $repo\dist\Duo.exe (single file, portable)"
-Write-Output "smoke test  : dist\Duo.exe --check; `$LASTEXITCODE (0 = tools found)"
+Write-Output "deployed: C:\Tools\Duo.exe"
+Write-Output "smoke test: C:\Tools\Duo.exe --check; `$LASTEXITCODE (0 = tools found)"

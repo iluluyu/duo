@@ -25,17 +25,13 @@ py -m venv .venv
 ## 打包（onefile 单文件，固定产物 `C:\Tools\Duo.exe`）
 
 ```powershell
-# Windows 侧（管理员），当前固化流程：
-cd $env:TEMP; git -C C:\duo archive HEAD | tar -x   # staging，避免撞工作树
-cd <staging>
-scoop python: python -m pip install pyinstaller PyQt6 pillow
-python -m PyInstaller --onefile --noconsole --name Duo --icon assets/duo.ico `
-  --add-data "duo/ui/qml;duo/ui/qml" --add-data "duo/resources/chrome_overlay.cs;duo/resources" `
-  --hidden-import PyQt6.QtQml --hidden-import PyQt6.QtQuick gui_entry.py
-taskkill /IM Duo.exe /F 2>$null; mv dist\Duo.exe C:\Tools\Duo.exe
-```
+# Windows 侧（管理员）：C:\duo 为最新 main，一键构建 + 部署（spec 为唯一规格，
+# 内含 datas/hiddenimports；脚本负责 venv、pyinstaller、taskkill、部署）
+C:\duo\scripts\build_windows.ps1
 
-（`scripts/build_windows.ps1` 为 onedir 版脚本，按需更新。）
+# 手动等价：cd C:\duo; pyinstaller duo.spec --noconfirm; 部署 dist\Duo.exe
+# （或 scoop python：python3 -m pip install -e ".[gui,build]" 后同上）
+```
 
 ### 产物校验清单
 
