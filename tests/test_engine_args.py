@@ -43,11 +43,11 @@ def test_flex_default_matches_verified_preset():
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
-        # Decorations off + rotation locked at the source: the decorated
-        # flex display ping-ponged orientation at ~2Hz (2026-09-06 A/B on
-        # com.example.piliplus); @-locking the capture kills it for good.
-        assert "--no-vd-system-decorations" in argv
-        assert "--capture-orientation=@" in argv
+        # Fixed display, decorations ON (rotation storms were a resizable-display
+        # artifact), window ratio unlocked, pin veto guards the window rect.
+        assert "--no-vd-system-decorations" not in argv
+        assert "--no-window-aspect-ratio-lock" in argv
+        assert "--flex-display" not in argv
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv

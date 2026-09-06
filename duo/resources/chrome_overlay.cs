@@ -1547,6 +1547,7 @@ namespace DuoChrome
         /// changing legitimately every tick and a bounce there was the
         /// teleport-back bug of the first pin attempt.</summary>
         private Rectangle _pinnedRect = new Rectangle(0, 0, 0, 0);
+        private int _lbtnAt;                            // last tick LBUTTON was held
 
         private void PinCurrentRect()
         {
@@ -1561,6 +1562,21 @@ namespace DuoChrome
             if (!_displayMode.Equals("flex")) return;
             if (_moving || _resizing) return;         // user is driving: never bounce
             if (NativeMethods.IsZoomed(_hwnd)) return; // native maximize is the user's act
+            // Native-border drags never set _moving/_resizing (they run in
+            // the scrcpy window's own modal loop). ANY left-button-down window
+            // change is user action: skip while held, and adopt the result for
+            // a grace period after release instead of bouncing it back (the
+            // "cannot resize the window" bug - pin fought native drags).
+            if ((NativeMethods.GetAsyncKeyState(0x01 /*VK_LBUTTON*/) & 0x8000) != 0)
+            {
+                _lbtnAt = Environment.TickCount;
+                return;
+            }
+            if (_lbtnAt > 0 && Environment.TickCount - _lbtnAt < 1500)
+            {
+                _pinnedRect = wr;                     // adopt the user's new rect
+                return;
+            }
             if (_fakedMax) { _pinnedRect = wr; return; }
             if (_pinnedRect.Width < 8) { _pinnedRect = wr; return; }
             if (wr == _pinnedRect) return;
