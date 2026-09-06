@@ -24,15 +24,14 @@ def test_adb_pin_never_becomes_an_argv_flag():
 def test_flex_default_matches_verified_preset():
         """The default args reproduce the experiment-verified session shape.
 
-        Fixed-size virtual display (2026-09-06 final): resizable displays
-        cannot coexist with orientation-pushing apps (rotation ping-pong,
-        A/B verified); a fixed 2560x1440/480 display cannot rotate - apps
-        letterbox inside it like on a tablet.
+        16:9 initial preset (2026-09-06 晚，用户定稿)：1920x1080/240dpi =
+        1280x720dp（参考平板横屏）；flex 跟随后初始形状只定开局，之后
+        显示持续随窗口，方向请求被 overlay 锁忽略（无风暴）。
         """
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")
         joined = " ".join(argv)
         assert "--serial=4444bd6b" in argv
-        assert "--new-display=2560x1440/480" in argv
+        assert "--new-display=1920x1080/240" in argv
         assert "--no-window-aspect-ratio-lock" in argv
         # flex display（2026-09-06 晚定稿）：虚拟屏持续跟随窗口（原生填满，
         # unscaled 渲染）；风暴根因（ROTATES_WITH_CONTENT + APP 方向请求）
@@ -43,9 +42,7 @@ def test_flex_default_matches_verified_preset():
         assert "--render-fit=stretched" in argv
         assert "--capture-orientation" not in joined
         assert "--no-vd-system-decorations" not in argv
-        # Fixed 2560x1440/480 virtual display (2026-09-06 final): cannot
-        # rotate, orientation-pushing apps letterbox like on a tablet.
-        assert "--new-display=2560x1440/480" in argv
+        # Fixed 2560x1440/480 display era ended; 16:9 preset above is the base.
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
@@ -89,10 +86,10 @@ def test_start_app_plus_prefix_is_idempotent():
 
 
 def test_flex_without_dpi_uses_default_size():
-        """dpi=None 的 flex 会话用默认初始尺寸 2560x1440（无密度后缀），
+        """dpi=None 的 flex 会话用默认初始尺寸 1920x1080（无密度后缀），
         显示随后 flex 跟随窗口（2026-09-06 晚定稿）。"""
         argv = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
-        assert "--new-display=2560x1440" in argv
+        assert "--new-display=1920x1080" in argv
         assert not any(a.endswith("/None") for a in argv)
         assert "--flex-display" in argv
         assert "--no-vd-system-decorations" not in argv

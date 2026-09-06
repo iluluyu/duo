@@ -98,27 +98,31 @@ def primary_work_area() -> WorkArea:
 def recommend_landscape(
         area: WorkArea, target_dp: int = LANDSCAPE_TARGET_DP
 ) -> DisplayRecommendation:
-        """DPI for a maximized flex window (~target_dp layout width)."""
-        dpi = max(160, area.width * 160 // target_dp)
-        return DisplayRecommendation(dpi=dpi)
+        """Fixed 16:9 landscape preset: 1920x1080/240dpi = 1280x720dp
+        (classic reference-tablet layout; the display then flex-follows the
+        window, so this only sets the startup shape and dp class)."""
+        return DisplayRecommendation(dpi=240)
 
 
 def recommend_portrait(
         area: WorkArea, target_dp: int = PORTRAIT_TARGET_DP
 ) -> DisplayRecommendation:
-        """Fixed portrait display + right-edge window, tuned to ~target_dp."""
-        width = min(round(area.height * PORTRAIT_WIDTH_RATIO), round(area.width * 0.9))
-        width = max(width, 480)
-        dpi = max(160, width * 160 // target_dp)
+        """Fixed 9:16 portrait preset: 1080x1920/270dpi = 640x1138dp,
+        window docked to the right edge (same tablet dp class the user
+        verified all day with 1252x2088/313 = 641x1067dp). The window is
+        clamped to the work area; the display preset itself stays 1080x1920
+        because flex re-follows whatever window actually shows."""
+        height = min(1920, area.height)
+        width = min(1080, area.width)
         window = WindowGeometry(
                 x=max(0, area.width - width),
-                y=0,
+                y=max(0, (area.height - height) // 2),
                 width=width,
-                height=area.height,
+                height=height,
         )
         return DisplayRecommendation(
-                dpi=dpi,
-                display_width=width,
-                display_height=area.height,
+                dpi=270,
+                display_width=1080,
+                display_height=1920,
                 window=window,
         )

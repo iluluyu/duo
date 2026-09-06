@@ -14,42 +14,46 @@ AREA_1080P = WorkArea(width=1920, height=1040)
 
 
 def test_landscape_4k_recommends_480():
-        """A 4K work area maps the maximized window to ~1280dp (dpi 480)."""
+        """Landscape is a fixed 16:9 preset now: dpi 240 (1920x1080 = 1280x720dp),
+        no window geometry (the initial window equals the display preset)."""
         rec = recommend_landscape(AREA_4K)
-        assert rec.dpi == 480
+        assert rec.dpi == 240
         assert rec.window is None
 
 
 def test_landscape_1080p_scales_down():
-        """A 1080p work area halves the dpi so the layout width still ~1280dp."""
+        """The preset is monitor-independent (flex follows the window after)."""
         rec = recommend_landscape(AREA_1080P)
         assert rec.dpi == 240
 
 
 def test_portrait_window_geometry():
-        """Portrait recommends a fixed WxH display plus a right-edge window."""
+        """Portrait recommends the 9:16 preset plus a right-edge window."""
         rec = recommend_portrait(AREA_4K)
-        assert rec.display_width is not None
-        assert rec.display_height == AREA_4K.height
+        assert rec.display_width == 1080
+        assert rec.display_height == 1920
         assert rec.window is not None
         window: WindowGeometry = rec.window
-        assert window.height == AREA_4K.height
+        assert window.width == 1080
+        assert window.height == 1920
         assert window.x == AREA_4K.width - window.width
-        assert window.width == rec.display_width
-        # ~640dp layout width for a phone-like portrait layout.
+        # 640dp layout width: the tablet-ish portrait class the user verified.
         assert window.width * 160 // rec.dpi == 640
 
 
 def test_portrait_dpi_smaller_than_landscape():
-        """Portrait maps the same physical width to fewer dp (no giant UI)."""
+        """Portrait maps the same pixel width to a smaller dp class."""
         portrait = recommend_portrait(AREA_4K)
         landscape = recommend_landscape(AREA_4K)
-        assert portrait.dpi < landscape.dpi
+        assert portrait.dpi > landscape.dpi
 
 
 def test_portrait_on_narrow_monitor():
-        """A narrow work area keeps a sane window (>=480px, 90% cap)."""
+        """A narrow work area clamps the window to it (display preset unchanged,
+        flex re-follows whatever window shows)."""
         rec = recommend_portrait(WorkArea(width=1000, height=800))
         assert rec.window is not None
-        assert 480 <= rec.display_width <= 900
-        assert rec.dpi >= 160
+        assert rec.window.width <= 1000
+        assert rec.window.height <= 800
+        assert rec.display_width == 1080
+        assert rec.dpi == 270

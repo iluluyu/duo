@@ -12,7 +12,10 @@
 
 **应用会话三层防御**（2026-09-06 定稿）：
 
-1. 固定 `--new-display=2560x1440/480`：显示不可旋转 → 旋转风暴物理不可能。
+1. 16:9 初始预设 `--new-display=1920x1080/240`（竖屏 1080x1920/270）+
+   `--flex-display` 持续跟随：显示尺寸只由窗口决定；旋转请求被 overlay
+   一次性 `wm set-ignore-orientation-request -d <id> 1` 忽略 → 风暴物理不可能，
+   APP 自己适配或自挔黑边（原生平板语义）。
 2. `--no-window-aspect-ratio-lock`：scrcpy 不再把窗口锁到视频比例；仅 `window_aspect=free`（默认）时传，locked 时不传（scrcpy 原生锁比例，永不黑边）。
 3. overlay 钉扎（`EnforceFlexPin`）：任何外部改窗弹回用户矩形；豁免=拖拽中
    （`_moving/_resizing`/左键按住）；收编=松手 1.5s 内的新矩形。

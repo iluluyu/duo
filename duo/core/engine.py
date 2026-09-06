@@ -190,7 +190,7 @@ class DisplaySpec:
         mode: DisplayMode = "flex"
         width: int | None = None
         height: int | None = None
-        dpi: int | None = 480
+        dpi: int | None = 240
 
         def to_flags(self) -> list[str]:
                 """Compile to scrcpy display flags.
@@ -220,7 +220,11 @@ class DisplaySpec:
                         # The window is a plain viewport: resizing scales the
                         # content (letterbox); no window-side magic.
                         if self.width is None or self.height is None:
-                                size_w, size_h = 2560, 1440
+                                # 16:9 初始形状（2026-09-06 晚，用户定稿）：
+                                # 1920x1080/240 = 1280x720dp（参考平板横屏）；
+                                # 9:16 竖屏由 monitor.recommend_portrait 给
+                                # 1080x1920/270。flex 跟随后这些只定开局形状。
+                                size_w, size_h = 1920, 1080
                         else:
                                 size_w, size_h = self.width, self.height
                         value = f"{size_w}x{size_h}"
