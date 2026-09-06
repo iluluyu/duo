@@ -28,7 +28,8 @@
 
 ## 当前基线（2026-09-06）
 
-- 应用会话：固定 2560×1440/480 虚拟屏 + `--no-window-aspect-ratio-lock`；窗口自由
-  拖改、缩放异步下发（SWP_ASYNCWINDOWPOS）跟手；无钉扎/无显示跟随/无横竖屏干预
-  （方向信 APP，2026-09-06 回退决策）。
+- 应用会话：固定 2560×1440/480 虚拟屏；窗口默认自由（`--no-window-aspect-ratio-lock`，
+  缩放异步下发 SWP_ASYNCWINDOWPOS 跟手），设置 `window_aspect=locked` 可锁内容比例
+  （永不黑边）；无钉扎/无显示跟随/无横竖屏干预（方向信 APP，APP 转屏时 scrcpy
+  原生把窗口贴合新内容）。
 - 测试 179 passed；ruff / mypy 全绿；overlay 经 csc.exe 真机编译通过。

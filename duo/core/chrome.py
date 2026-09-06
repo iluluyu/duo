@@ -105,6 +105,7 @@ def overlay_command(
         display_mode: str = "flex",
         video_width: int | None = None,
         video_height: int | None = None,
+        ratio_lock: bool = False,
         session_log: str | None = None,
         corner_radius_dip: int = 0,
 ) -> list[str]:
@@ -124,8 +125,11 @@ def overlay_command(
         shows the ring glyph; flex/fixed let the window resize freely and
         show a plain back chevron (no home affordance - see above and
         docs/window-experience.md §7). ``video_*``: fixed carries its known
-        initial video size; flex carries the launch display box (the seed for
-        the in-place follow); ``session_log`` is a Windows path.
+        initial video size; flex carries it only in locked mode (the drag
+        ratio-constraint seed; scrcpy itself also enforces the aspect).
+        ``ratio_lock``: flex sessions started with window_aspect=locked -
+        overlay strip drags constrain to the content aspect live.
+        ``session_log`` is a Windows path.
         """
         argv = [
                 exe,
@@ -142,6 +146,8 @@ def overlay_command(
         ]
         if video_width and video_height:
                 argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
+        if ratio_lock:
+                argv += ["--ratio-lock"]
         if session_log:
                 argv += ["--session-log", session_log]
         if corner_radius_dip > 0:
@@ -241,6 +247,7 @@ class ChromeOverlay:
                 display_mode: str = "flex",
                 video_width: int | None = None,
                 video_height: int | None = None,
+                ratio_lock: bool = False,
                 session_log: Path | None = None,
                 corner_radius_dip: int = 0,
         ) -> None:
@@ -260,6 +267,7 @@ class ChromeOverlay:
                         display_mode=display_mode,
                         video_width=video_width,
                         video_height=video_height,
+                        ratio_lock=ratio_lock,
                         session_log=log_arg,
                         corner_radius_dip=corner_radius_dip,
                 )

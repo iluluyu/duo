@@ -166,6 +166,7 @@ namespace DuoChrome
             string mode = "flex", sessionLog = null;
             bool home = false;
             int videoW = 0, videoH = 0, cornerDip = 0;
+            bool ratioLock = false;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
@@ -175,6 +176,7 @@ namespace DuoChrome
                 else if (argv[i] == "--display-mode") mode = argv[i + 1];
                 else if (argv[i] == "--video-w") int.TryParse(argv[i + 1], out videoW);
                 else if (argv[i] == "--video-h") int.TryParse(argv[i + 1], out videoH);
+                else if (argv[i] == "--ratio-lock") ratioLock = true;
                 else if (argv[i] == "--session-log") sessionLog = argv[i + 1];
                 else if (argv[i] == "--corner-radius") int.TryParse(argv[i + 1], out cornerDip);
             }
@@ -182,7 +184,7 @@ namespace DuoChrome
             {
                 Log.Write("usage: --title <t> --serial <s> --adb <path> [--home 0|1] "
                     + "[--display-mode mirror|flex|fixed] [--video-w n] [--video-h n] "
-                    + "[--session-log <path>]");
+                    + "[--ratio-lock] [--session-log <path>]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -199,9 +201,11 @@ namespace DuoChrome
             };
             Log.Write("overlay start title=" + title + " serial=" + serial
                 + " mode=" + mode + " video=" + videoW + "x" + videoH
+                + (ratioLock ? " ratio=locked" : "")
                 + (sessionLog == null ? "" : " log=" + sessionLog));
             using (Controller c = new Controller(
-                title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip))
+                title, serial, adb, home, mode, videoW, videoH, sessionLog,
+                cornerDip, ratioLock))
             {
                 Application.Run();
             }
@@ -1288,12 +1292,14 @@ namespace DuoChrome
         private const int SettleMs = 350;
 
         public Controller(string title, string serial, string adb, bool home,
-            string displayMode, int videoW, int videoH, string sessionLog, int cornerDip)
+            string displayMode, int videoW, int videoH, string sessionLog,
+            int cornerDip, bool ratioLock)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
             _displayMode = displayMode == null ? "flex" : displayMode;
             _videoW = videoW; _videoH = videoH;
+            _forceRatioLock = ratioLock;
             _videoChangedAt = 0;
             _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home, _displayMode);
@@ -1366,10 +1372,21 @@ namespace DuoChrome
         public bool Resizing { get { return _resizing; } }
 
         /// <summary>Whether the window must stay glued to the video aspect
-        /// (mirror and fixed modes with a known size; flex follows freely).
+        /// (mirror and fixed always lock; flex locks only when started with
+        /// --ratio-lock (window_aspect=locked, 2026-09-06): strip drags are
+        /// constrained to the content aspect like a video player - never any
+        /// black bars. Free flex windows (the default) resize freely and
+        /// scrcpy letterboxes whatever shape the user drags; app rotation
+        /// adapts the window natively in both modes.
+        private bool _forceRatioLock;
+
         private bool RatioLock
         {
-            get { return _videoW > 0 && _videoH > 0 && !_displayMode.Equals("flex"); }
+            get
+            {
+                return _videoW > 0 && _videoH > 0
+                    && (_forceRatioLock || !_displayMode.Equals("flex"));
+            }
         }
 
         private double VideoAspect()

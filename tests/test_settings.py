@@ -61,7 +61,8 @@ def test_invalid_values_reported_and_dropped(tmp_path, monkeypatch):
         monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
         (tmp_path / "s.json").write_text(
                 json.dumps({"fps": 999, "bitrate_mbps": "high", "corner_mode": "circle",
-                            "corner_size_dip": True, "glass_enabled": "yes"}),
+                            "corner_size_dip": True, "glass_enabled": "yes",
+                            "window_aspect": "square"}),
                 encoding="utf-8",
         )
         loaded, problems = load_settings()
@@ -70,7 +71,8 @@ def test_invalid_values_reported_and_dropped(tmp_path, monkeypatch):
         assert loaded.corner_mode == Settings().corner_mode
         assert loaded.corner_size_dip == Settings().corner_size_dip
         assert loaded.glass_enabled is True
-        assert len(problems) == 5
+        assert loaded.window_aspect == "free"          # 不在 free|locked -> 默认
+        assert len(problems) == 6
 
 
 def test_save_rejects_invalid(tmp_path, monkeypatch):

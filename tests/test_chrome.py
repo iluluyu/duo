@@ -84,6 +84,9 @@ def test_overlay_source_shipped_and_hardened():
         # the sync-send variant was the original laggy, sticky resize).
         assert "SWP_ASYNCWINDOWPOS" in text
         assert "0x4000" in text
+        # Window aspect setting (2026-09-06): flex locks only when started
+        # with --ratio-lock (window_aspect=locked); free flex stays free.
+        assert "--ratio-lock" in text and "_forceRatioLock" in text
 
 
 def test_compile_command_shape():
@@ -162,6 +165,17 @@ def test_overlay_command_home_off_for_virtual_displays():
         """App windows (virtual displays) disable the long-press-home ring."""
         argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False)
         assert argv[argv.index("--home") + 1] == "0"
+
+
+def test_overlay_command_ratio_lock_opt_in():
+        """--ratio-lock is opt-in (window_aspect=locked); free flex stays silent."""
+        argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False,
+                               display_mode="flex", video_width=2560, video_height=1440,
+                               ratio_lock=True)
+        assert "--ratio-lock" in argv
+        assert argv[argv.index("--video-w") + 1] == "2560"
+        argv = overlay_command("/x/DuoChromeOverlay.exe", "t", "s", "a", False)
+        assert "--ratio-lock" not in argv
 
 
 def test_build_is_fresh_matches_stamp(tmp_path):
