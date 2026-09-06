@@ -34,6 +34,9 @@ def test_flex_default_matches_verified_preset():
         assert "--serial=4444bd6b" in argv
         assert "--new-display=2560x1440/480" in argv
         assert "--no-window-aspect-ratio-lock" in argv
+        # stretched（2026-09-06 定稿）：内容永远铺满自由窗口（无黑边）；
+        # 与钉扎兼容，无反馈环。
+        assert "--render-fit=stretched" in argv
         assert "--flex-display" not in argv
         assert "--capture-orientation" not in " ".join(argv)
         assert "--no-vd-system-decorations" not in argv
