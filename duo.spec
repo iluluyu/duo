@@ -1,14 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec: the Duo panel as a windowed onedir bundle (win64).
+"""PyInstaller spec: the Duo panel as a windowed ONEFILE bundle (win64).
+
+固定产物 = ``C:\\Tools\\Duo.exe``（docs/windows-setup.md 的固化口径）：
+
+    pyinstaller duo.spec --noconfirm        ->  dist\\Duo.exe
+    scripts/build_windows.ps1               ->  构建并部署到 C:\\Tools
 
 Build from the repo root on 64-bit Windows (PyInstaller always targets the
-running interpreter, so a win64 bundle needs 64-bit Windows Python):
-
-    .venv\\Scripts\\pyinstaller duo.spec --noconfirm
-
-Output layout (PyInstaller >= 6 onedir): ``dist\\Duo\\Duo.exe`` plus
-``dist\\Duo\\_internal\\`` - the two always travel together. One-click
-wrapper: ``scripts/build_windows.ps1``.
+running interpreter, so a win64 bundle needs 64-bit Windows Python).
+Onefile self-extracts to temp on launch: slower start, single portable
+file - the established convention (former onedir layout retired 2026-09-06).
 """
 
 import os
@@ -60,8 +61,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="Duo",
     debug=False,
     bootloader_ignore_signals=False,
@@ -71,12 +73,4 @@ exe = EXE(
                     # CLI, so the panel can spawn "Duo.exe mirror ..." sessions
     icon=os.path.join(REPO, "assets/duo.ico"),  # 占位图标（蓝底圆环）；正式
     # 图标到位后只需替换 assets/duo.ico 同名文件并重打，无需改 spec。
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="Duo",
 )
