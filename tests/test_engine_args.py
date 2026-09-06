@@ -44,10 +44,10 @@ def test_flex_default_matches_verified_preset():
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
         assert "--start-app=+cn.com.langeasy.LangEasyLexis" in argv
-        # Virtual displays keep system decorations ON: the secondary-display
-        # launcher is the in-session "virtual desktop" the chin long-press
-        # opens (2026-09-06 decision; suppression cut that page off).
-        assert "--no-vd-system-decorations" not in argv
+        # Decorations are OFF for flex (2026-09-06 decisive A/B on
+        # com.example.piliplus): decorated flex displays ping-pong orientation
+        # at ~2Hz forever; undecorated, apps letterbox and nothing rotates.
+        assert "--no-vd-system-decorations" in argv
         assert "--turn-screen-off" in argv
         assert "--stay-awake" in argv
         assert "--keyboard=uhid" in argv
@@ -58,11 +58,11 @@ def test_flex_default_matches_verified_preset():
         assert "clipboard" not in joined
 
 
-def test_virtual_display_decorations_on_both_modes():
-        """flex AND fixed sessions keep decorations (virtual desktop page);
-        mirror never had the flag."""
+def test_virtual_display_decorations_off_for_flex_only():
+        """flex sessions suppress decorations (rotation-storm fix,
+        2026-09-06 A/B); fixed and mirror never had the flag."""
         flex = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
-        assert "--no-vd-system-decorations" not in flex
+        assert "--no-vd-system-decorations" in flex
         fixed = _argv(
                 serial="s",
                 display=DisplaySpec(mode="fixed", width=1200, height=1600, dpi=280),
@@ -88,7 +88,7 @@ def test_flex_without_dpi_uses_bare_new_display():
         assert "--new-display" in argv
         assert not any(a.startswith("--new-display=") for a in argv)
         assert "--flex-display" in argv
-        assert "--no-vd-system-decorations" not in argv
+        assert "--no-vd-system-decorations" in argv
 
 
 def test_flex_explicit_size_never_pins_display():

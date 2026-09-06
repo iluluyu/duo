@@ -212,23 +212,23 @@ class DisplaySpec:
                         # auto-resizes its window while the user has not
                         # manually resized it; the overlay performs one
                         # no-op size nudge at session start to mark
-                        # user-resized from tick one, so orientation flips
-                        # (pilipili's portrait video page) letterbox inside
-                        # instead of flipping the window.
-                        # Size source (2026-09-06 user decision): ALWAYS the
-                        # original resolution - a bare --new-display (=/dpi
-                        # with a custom density) builds the virtual display at
-                        # the main display's full size. The same-day baseline
-                        # tiers (FLEX_SIZES / flex_resolution) were withdrawn:
-                        # picking a tier confused users; smoothness is carried
-                        # by video_codec=h264 + fps=60 (docs §7). Explicit
-                        # width/height never pin a flex display anyway - flex
-                        # follows the window. System decorations stay ON: the
-                        # secondary-display launcher is the in-session
-                        # "virtual desktop" (chin long-press).
+                        # user-resized from tick one, plus a drag-guarded pin
+                        # veto for anything that slips through.
+                        # NO system decorations (2026-09-06, decisive A/B on
+                        # com.example.piliplus): a decorated flex display
+                        # ping-pongs orientation at ~2Hz forever (WindowManager
+                        # honors the app's portrait request, scrcpy re-asserts
+                        # the window's landscape shape, repeat) - even on the
+                        # app home page, before any video. Undecorated, the
+                        # display never rotates: mismatched apps letterbox.
+                        # Cost: the AOSP secondary-display launcher page is
+                        # gone (chin long-press best-effort). Stability won.
+                        # Size source: always the original resolution - the
+                        # same-day tier option was withdrawn (user decision).
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
-                        return [new_display, "--flex-display"]
+                        return [new_display, "--flex-display",
+                                "--no-vd-system-decorations"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
