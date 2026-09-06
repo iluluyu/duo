@@ -1987,6 +1987,14 @@ namespace DuoChrome
                     {
                         _vdDisplayId = id;
                         Log.Write("virtual display id=" + id);
+                        // 一次性方向忽略锁（2026-09-06 晚定稿）：--flex-display
+                        // 的虚拟屏建屏自带 ROTATES_WITH_CONTENT，APP 方向请求
+                        // 会旋转显示→scrcpy 重申窗口形状→乒乓风暴（上午全天
+                        // A/B 根因）。锁死后方向请求被 WM 层忽略：显示尺寸
+                        // 只随窗口（原生填满），APP 自己适配或自挔黑边。
+                        // "1" 而非 "true"：wm 命令按 int 解析（真机实测）。
+                        AdbShell("wm set-ignore-orientation-request -d "
+                            + id + " 1");
                     }
                 }
                 return;
