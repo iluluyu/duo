@@ -49,6 +49,10 @@ Item {
     property var problems: []          // save()/loadProblems() 的问题清单（红条内容）
     property string cornerMode: "system"   // system | g2 | none
     property bool glassOn: true            // 液态玻璃
+    // 投屏质量（docs/mirroring-quality.md）：键同 Settings 字段
+    property string videoCodec: "auto"     // auto | h264 | h265 | av1
+    property string audioPolicy: "latest"  // latest | all | off
+    property bool turnScreenOff: false     // --turn-screen-off
 
     // ------------------------------------------------------------ 真实合同调用
     // 打开/取消时用 load() 回填（取消即放弃改动）；载入问题一并上红条。
@@ -66,6 +70,9 @@ Item {
         root.cornerMode = (m.corner_mode == null) ? "system" : m.corner_mode
         sizeSlider.value = (m.corner_size_dip == null) ? 48 : m.corner_size_dip
         root.glassOn = (m.glass_enabled == null) ? true : m.glass_enabled
+        root.videoCodec = (m.video_codec == null) ? "auto" : m.video_codec
+        root.audioPolicy = (m.audio_policy == null) ? "latest" : m.audio_policy
+        root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
     }
 
     // 收集当前控件值 → mock 合同的保存键名（同 Settings 字段）
@@ -78,7 +85,10 @@ Item {
             "dpi": dpiAutoSwitch.checked ? null : dpiCell.box.value,
             "corner_mode": root.cornerMode,
             "corner_size_dip": Math.round(sizeSlider.value),
-            "glass_enabled": root.glassOn
+            "glass_enabled": root.glassOn,
+            "video_codec": root.videoCodec,
+            "audio_policy": root.audioPolicy,
+            "turn_screen_off": root.turnScreenOff
         }
     }
 
@@ -311,7 +321,113 @@ Item {
                 }
             }
 
-            // ---------------------------------------------------------- 外观卡片
+            // ------------------------------------------------------ 投屏质量卡片
+            GlassCard {
+                id: qualityCard
+                objectName: "qualityCard"
+                title: "投屏质量"
+
+                // 视频编码四选一（auto = 探测设备硬件编码器择优，
+                // 结果缓存后后续会话免探测）
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    ModeButton {
+                        width: (parent.width - 24) / 4
+                        text: "自动(推荐)"
+                        selected: root.videoCodec === "auto"
+                        Accessible.name: "视频编码：自动（推荐）"
+                        onClicked: root.videoCodec = "auto"
+                    }
+                    ModeButton {
+                        width: (parent.width - 24) / 4
+                        text: "H.264"
+                        selected: root.videoCodec === "h264"
+                        Accessible.name: "视频编码：H.264"
+                        onClicked: root.videoCodec = "h264"
+                    }
+                    ModeButton {
+                        width: (parent.width - 24) / 4
+                        text: "H.265"
+                        selected: root.videoCodec === "h265"
+                        Accessible.name: "视频编码：H.265"
+                        onClicked: root.videoCodec = "h265"
+                    }
+                    ModeButton {
+                        width: (parent.width - 24) / 4
+                        text: "AV1"
+                        selected: root.videoCodec === "av1"
+                        Accessible.name: "视频编码：AV1（需硬件编码器）"
+                        onClicked: root.videoCodec = "av1"
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "自动 = 探测真机硬件编码器择优（H.265 > H.264）；AV1 仅在设备确有硬件编码器时生效"
+                    wrapMode: Text.Wrap
+                }
+
+                // 音频策略三选一
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    ModeButton {
+                        width: (parent.width - 16) / 3
+                        text: "单会话（最新）"
+                        selected: root.audioPolicy === "latest"
+                        Accessible.name: "音频：单会话（最新）"
+                        onClicked: root.audioPolicy = "latest"
+                    }
+                    ModeButton {
+                        width: (parent.width - 16) / 3
+                        text: "全部"
+                        selected: root.audioPolicy === "all"
+                        Accessible.name: "音频：全部会话"
+                        onClicked: root.audioPolicy = "all"
+                    }
+                    ModeButton {
+                        width: (parent.width - 16) / 3
+                        text: "关闭"
+                        selected: root.audioPolicy === "off"
+                        Accessible.name: "音频：关闭"
+                        onClicked: root.audioPolicy = "off"
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "多个会话同时出声会混音嘈杂；最新 = 新会话出声时其余自动静音重启"
+                    wrapMode: Text.Wrap
+                }
+
+                // 镜像时关闭设备屏幕
+                Item {
+                    width: parent.width
+                    height: 32
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "镜像时关闭设备屏幕"
+                        font.family: Style.fontDefault
+                        font.pixelSize: 13
+                        color: Style.ink
+                    }
+                    GlassSwitch {
+                        objectName: "turnScreenOffSwitch"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.turnScreenOff
+                        Accessible.name: "镜像时关闭设备屏幕"
+                        onToggled: root.turnScreenOff = checked
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "黑屏防误触；主要对整机镜像有意义——虚拟屏会话本就与物理屏无关"
+                    wrapMode: Text.Wrap
+                }
+            }
+
+            // ------------------------------------------------------ 外观卡片
             GlassCard {
                 id: appearanceCard
                 objectName: "appearanceCard"

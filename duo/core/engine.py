@@ -211,8 +211,10 @@ class DisplaySpec:
 class VideoSpec:
         """Video encoding parameters.
 
-        ``encoder=None`` lets scrcpy pick the device's default hardware
-        encoder; pinning a specific encoder is a per-device preset decision.
+        ``encoder=None`` lets scrcpy pick the device's default encoder;
+        since the ``video_codec`` setting landed, the pin normally comes
+        from the hardware-encoder probe (duo.core.codec, cached in
+        ``data_dir/encoders.json``) rather than a hand preset.
         """
 
         codec: str = "h265"

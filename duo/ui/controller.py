@@ -14,6 +14,7 @@ offscreen tests can drive everything deterministically).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -130,14 +131,16 @@ def panel_log_path(package: str) -> Path:
         return logs_dir() / f"panel-{package}.log"
 
 
-def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
+def build_launch_argv(package: str, serial: str, portrait: bool, muted: bool = False) -> list[str]:
         """The mirror argv for a panel launch.
 
-        Every panel window gets the borderless chrome. Audio is always
-        requested - the CLI arbitrates ownership (single capture) via the
-        audio lock, so the panel stays out of that policy. Under PyInstaller
-        ``sys.executable`` IS the frozen duo binary, so sessions spawn as
-        ``Duo.exe mirror ...`` and route through the CLI entry.
+        Every panel window gets the borderless chrome. Audio is requested by
+        default - the CLI arbitrates ownership (single capture) via the
+        audio lock and the settings ``audio_policy``; ``muted=True`` pins
+        ``--no-audio`` for restart-muted sessions (see
+        ``_restart_others_muted``). Under PyInstaller ``sys.executable`` IS
+        the frozen duo binary, so sessions spawn as ``Duo.exe mirror ...``
+        and route through the CLI entry.
         """
         frozen = getattr(sys, "frozen", False)
         argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
@@ -153,10 +156,12 @@ def build_launch_argv(package: str, serial: str, portrait: bool) -> list[str]:
         ]
         if portrait:
                 argv.append("--portrait")
+        if muted:
+                argv.append("--no-audio")
         return argv
 
 
-def build_device_mirror_argv(serial: str) -> list[str]:
+def build_device_mirror_argv(serial: str, muted: bool = False) -> list[str]:
         """The argv for direct device mirroring (no virtual display)."""
         frozen = getattr(sys, "frozen", False)
         argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
@@ -170,6 +175,8 @@ def build_device_mirror_argv(serial: str) -> list[str]:
                 "--title",
                 "平板镜像",
         ]
+        if muted:
+                argv.append("--no-audio")
         return argv
 
 
@@ -251,6 +258,9 @@ class PanelController(QObject):
                 self._installed: set[str] | None = None
                 self._portrait_prefs = load_portrait_prefs()
                 self._sessions: dict[str, subprocess.Popen[bytes]] = {}
+                # Keys spawned with audio requested (no --no-audio in argv);
+                # the audio_policy=latest restart consults this set.
+                self._audio_keys: set[str] = set()
                 self._status_text = "就绪"
 
                 # Hops deliver on this object's thread: queued when raised on
@@ -384,6 +394,7 @@ class PanelController(QObject):
                         return
                 portrait = self._portrait_prefs.get(package, False)
                 argv = build_launch_argv(package, serial, portrait)
+                restarted = self._apply_audio_policy(package, serial, argv)
                 # Fresh log per session: the display-id parser takes the last
                 # 'New display:' line, and a stale id from a previous run
                 # would point at a dead display until the engine rewrites it.
@@ -394,9 +405,11 @@ class PanelController(QObject):
                         self._set_status(f"启动失败：{session_label(package)}（{exc}）")
                         return
                 self._sessions[package] = proc
+                self._track_audio(package, argv)
                 self._emit_sessions()
                 orientation = "竖屏" if portrait else "横屏"
-                self._set_status(f"已启动 {session_label(package)} · {orientation}")
+                suffix = f"（{'、'.join(restarted)} 已静音重启）" if restarted else ""
+                self._set_status(f"已启动 {session_label(package)} · {orientation}{suffix}")
 
         @pyqtSlot(str)
         def startAppOnDisplay(self, package: str) -> None:
@@ -485,14 +498,18 @@ class PanelController(QObject):
                 if MIRROR_KEY in self._sessions:
                         self._set_status("设备镜像已在运行")
                         return
+                argv = build_device_mirror_argv(serial)
+                restarted = self._apply_audio_policy(MIRROR_KEY, serial, argv)
                 try:
-                        proc = self._spawn(build_device_mirror_argv(serial))
+                        proc = self._spawn(argv)
                 except OSError as exc:
                         self._set_status(f"启动失败：设备镜像（{exc}）")
                         return
                 self._sessions[MIRROR_KEY] = proc
+                self._track_audio(MIRROR_KEY, argv)
                 self._emit_sessions()
-                self._set_status("已启动 设备镜像")
+                suffix = f"（{'、'.join(restarted)} 已静音重启）" if restarted else ""
+                self._set_status(f"已启动 设备镜像{suffix}")
 
         @pyqtSlot(str)
         def stopSession(self, key: str) -> None:
@@ -558,6 +575,7 @@ class PanelController(QObject):
                 ]
                 for key in dead:
                         del self._sessions[key]
+                        self._audio_keys.discard(key)
                 if dead:
                         self._emit_sessions()
                 return len(dead)
@@ -571,6 +589,96 @@ class PanelController(QObject):
                 """Stop background polling and the reaper (panel closing)."""
                 self._reaper.stop()
                 self._monitor.stop()
+
+        # ------------------------------------------------- audio arbitration
+
+        def _audio_policy(self) -> str:
+                """Fresh ``audio_policy`` from settings (default ``latest``).
+
+                Re-read per launch: the spawned CLI process re-reads the same
+                settings.json itself, so the panel decision and the CLI
+                decision can never diverge mid-launch.
+                """
+                try:
+                        settings, _problems = load_settings()
+                except OSError:
+                        return "latest"
+                return settings.audio_policy
+
+        def _track_audio(self, key: str, argv: list[str]) -> None:
+                """Record whether ``key`` was spawned with audio requested."""
+                if "--no-audio" in argv:
+                        self._audio_keys.discard(key)
+                else:
+                        self._audio_keys.add(key)
+
+        def _apply_audio_policy(
+                self, new_key: str, serial: str, argv: list[str]
+        ) -> list[str]:
+                """Apply ``audio_policy`` to a session about to be spawned.
+
+                Mutates ``argv`` in place (off pins --no-audio) and, under
+                ``latest``, restarts every other running audio session muted
+                FIRST so the audio lock is free when the new session starts.
+                Returns the labels of restarted sessions (for the status line).
+                """
+                policy = self._audio_policy()
+                if policy == "off":
+                        argv.append("--no-audio")
+                        return []
+                if policy != "latest":
+                        return []   # all: parallel audio is the explicit ask
+                return self._restart_others_muted(new_key, serial)
+
+        def _restart_others_muted(self, new_key: str, serial: str) -> list[str]:
+                """audio_policy=latest handover: newest session wins the audio.
+
+                Two parallel audio captures crackle (duo.core.audio_lock).
+                This panel owns its child CLI processes, so it can hand audio
+                to the newcomer: each other live audio session is terminated
+                (its CLI releases the audio lock on SIGTERM), waited for, then
+                respawned with ``--no-audio`` - the same build_*_argv +
+                _spawn path every session already uses, so a restart is just
+                a stop+start with a different flag. Sessions this panel does
+                not own (standalone CLI runs) cannot be restarted; the CLI's
+                AudioLock fallback mutes the new session instead and prints
+                the reason to its session log.
+                """
+                restarted: list[str] = []
+                for key in list(self._sessions):
+                        proc = self._sessions.get(key)
+                        if key == new_key or key not in self._audio_keys:
+                                continue
+                        if proc is None or proc.poll() is not None:
+                                continue
+                        self._sessions.pop(key, None)
+                        self._audio_keys.discard(key)
+                        proc.terminate()
+                        # Bounded wait: the CLI's SIGTERM handler releases the
+                        # audio lock; on timeout respawn anyway (the old one
+                        # dies on its own without taking the lock again).
+                        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                                proc.wait(timeout=5.0)
+                        if key == MIRROR_KEY:
+                                respawn_argv = build_device_mirror_argv(serial, muted=True)
+                        else:
+                                respawn_argv = build_launch_argv(
+                                        key, serial,
+                                        self._portrait_prefs.get(key, False),
+                                        muted=True,
+                                )
+                        panel_log_path(key).unlink(missing_ok=True)
+                        try:
+                                self._sessions[key] = self._spawn(respawn_argv)
+                        except OSError as exc:
+                                self._set_status(
+                                        f"音频切换失败：{session_label(key)}（{exc}）")
+                                continue
+                        self._track_audio(key, respawn_argv)
+                        restarted.append(session_label(key))
+                if restarted:
+                        self._emit_sessions()
+                return restarted
 
         # ------------------------------------------------------- internals
 

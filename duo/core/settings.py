@@ -20,6 +20,8 @@ from pathlib import Path
 from duo.core.paths import data_dir
 
 VALID_CORNER_MODES = ("system", "g2", "none")
+VALID_AUDIO_POLICIES = ("latest", "all", "off")
+VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -43,6 +45,15 @@ class Settings:
                                          # (edge quality/clipping unresolved)
         corner_size_dip: int = 48      # iPhone/iPad-like squircle proportion
         glass_enabled: bool = True
+        # 投屏质量三项（docs/mirroring-quality.md）：
+        # latest = 新会话带音频时，其他音频会话自动重启为 --no-audio
+        # all = 不做单音频仲裁（多会话并行音频，用户自担混音嘈杂）
+        # off = 全部静音
+        audio_policy: str = "latest"
+        # auto = 探测设备硬件编码器并择优（duo.core.codec）；显式指定则用之
+        video_codec: str = "auto"
+        # --turn-screen-off：黑屏防误触，主要对 mirror（整机镜像）有意义
+        turn_screen_off: bool = False
 
 
 def settings_path() -> Path:
@@ -108,6 +119,23 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 problems.append(f"glass_enabled: 期望布尔，实际为 {glass!r}")
                 glass = defaults.glass_enabled
 
+        audio_policy = raw.get("audio_policy", defaults.audio_policy)
+        if audio_policy not in VALID_AUDIO_POLICIES:
+                problems.append(
+                        f"audio_policy: {audio_policy!r} 不在 {VALID_AUDIO_POLICIES}")
+                audio_policy = defaults.audio_policy
+
+        video_codec = raw.get("video_codec", defaults.video_codec)
+        if video_codec not in VALID_VIDEO_CODECS:
+                problems.append(
+                        f"video_codec: {video_codec!r} 不在 {VALID_VIDEO_CODECS}")
+                video_codec = defaults.video_codec
+
+        turn_screen_off = raw.get("turn_screen_off", defaults.turn_screen_off)
+        if not isinstance(turn_screen_off, bool):
+                problems.append(f"turn_screen_off: 期望布尔，实际为 {turn_screen_off!r}")
+                turn_screen_off = defaults.turn_screen_off
+
         return Settings(
                 version=version,
                 scrcpy_path=scrcpy_path,
@@ -118,6 +146,9 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 corner_mode=corner_mode,
                 corner_size_dip=corner_size if corner_size is not None else 0,
                 glass_enabled=glass,
+                audio_policy=audio_policy,
+                video_codec=video_codec,
+                turn_screen_off=turn_screen_off,
         )
 
 
@@ -197,7 +228,9 @@ def resolve_tool(name: str, settings: Settings, found: str | None) -> str | None
 __all__ = [
         "CORNER_RANGE",
         "Settings",
+        "VALID_AUDIO_POLICIES",
         "VALID_CORNER_MODES",
+        "VALID_VIDEO_CODECS",
         "corner_radius_dip",
         "load_settings",
         "resolve_adb_path",

@@ -175,10 +175,16 @@ def test_settings_api_roundtrip(settings_file, qapp):
                 "corner_mode": "g2",
                 "corner_size_dip": 64,
                 "glass_enabled": False,
+                "audio_policy": "all",
+                "video_codec": "h265",
+                "turn_screen_off": True,
         }
         assert api.save(dict(values)) == []
         raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
         assert raw["corner_mode"] == "g2"
+        assert raw["audio_policy"] == "all"
+        assert raw["video_codec"] == "h265"
+        assert raw["turn_screen_off"] is True
         assert api.load() == values
 
 
@@ -426,3 +432,50 @@ def test_settings_page_engine_locked_disables_engine_rows(settings_page):
         settings_page.setProperty("engineLocked", False)
         _pump(30)
         assert adb_field.property("enabled") is True
+
+
+# --------------------------------------------- ⑥ 投屏质量设置项（新）
+
+
+def test_settings_page_quality_defaults_load(settings_page):
+    """Defaults: codec auto, audio latest, screen-off switch off."""
+    switch = settings_page.findChild(QObject, "turnScreenOffSwitch")
+    assert switch is not None
+    assert settings_page.property("videoCodec") == "auto"
+    assert settings_page.property("audioPolicy") == "latest"
+    assert settings_page.property("turnScreenOff") is False
+    assert switch.property("checked") is False
+
+
+def test_settings_page_quality_roundtrip_via_real_api(settings_page, settings_file):
+    """Setting the three properties and saving persists each field."""
+    accepted: list[bool] = []
+    settings_page.accepted.connect(lambda: accepted.append(True))
+    settings_page.setProperty("videoCodec", "h265")
+    settings_page.setProperty("audioPolicy", "off")
+    settings_page.setProperty("turnScreenOff", True)
+    meta = settings_page.metaObject()
+    meta.invokeMethod(settings_page, "saveChanges")
+    assert accepted == [True]
+    raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
+    assert raw["video_codec"] == "h265"
+    assert raw["audio_policy"] == "off"
+    assert raw["turn_screen_off"] is True
+
+    # A fresh page reloads the saved values (reloadFromApi on completion).
+    api = SettingsApi()
+    loaded = api.load()
+    assert loaded["video_codec"] == "h265"
+    assert loaded["audio_policy"] == "off"
+    assert loaded["turn_screen_off"] is True
+
+
+def test_settings_page_quality_switch_toggles_state(settings_page):
+    """The screen-off switch mirrors the page property both ways."""
+    switch = settings_page.findChild(QObject, "turnScreenOffSwitch")
+    settings_page.setProperty("turnScreenOff", True)
+    _pump(20)
+    assert switch.property("checked") is True
+    settings_page.setProperty("turnScreenOff", False)
+    _pump(20)
+    assert switch.property("checked") is False
