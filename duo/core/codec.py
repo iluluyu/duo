@@ -5,7 +5,11 @@ scrcpy can report a device's MediaCodec encoders via
 in ``data_dir/encoders.json`` (with a timestamp + serial) and picks the
 mirroring codec:
 
-    h265 硬件 > h264 硬件 > av1 硬件 > h264 软件 > h264（scrcpy 默认）
+    h264 硬件 > h265 硬件 > av1 硬件 > h264 软件 > h264（scrcpy 默认）
+
+h264-hw is the auto top pick deliberately: the PC side decodes in
+software, where AVC is much cheaper than HEVC (live regression: video
+playback stuttered under h265). h265 remains a manual choice.
 
 AV1 hardware encoders are practically nonexistent on phones, so auto only
 reaches the av1 tier when probing confirms one; without hardware an
@@ -47,10 +51,14 @@ _ENCODER_LINE_RE = re.compile(
         r"--video-codec=(?P<codec>\S+) --video-encoder=(?P<name>\S+)")
 
 #: Codec selection priority for ``video_codec=auto``: pairs of
-#: (codec, hardware-required), best first.
+#: (codec, hardware-required), best first. h264-hw beats h265-hw on
+#: purpose: scrcpy decodes on the PC in *software*, where AVC is far
+#: lighter than HEVC - sustained video playback stuttered under h265 on
+#: the user's rig (2026-09-06 live regression). h265 stays manually
+#: selectable for strong PCs / tight USB bandwidth.
 _AUTO_PRIORITY: tuple[tuple[str, bool], ...] = (
-        ("h265", True),
         ("h264", True),
+        ("h265", True),
         ("av1", True),
         ("h264", False),   # software tier: any h264 entry, hardware preferred
 )
