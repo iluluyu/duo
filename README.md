@@ -1,60 +1,50 @@
 # Duo
 
-> **高效利用 Windows 电脑，让安卓设备成为服务器。**
+> **让安卓设备成为 Windows 的应用服务器。**
 
-Duo 把你的安卓手机/平板变成一台无头**应用服务器**：设备熄屏插电躺在一边，通过 USB/WiFi 向 Windows 提供整个安卓生态。电脑大屏 + 键鼠成为唯一工作界面——在 PC 上流畅使用背单词、阅读等安卓应用，平板屏幕全程熄灭。
+设备熄屏插电，USB 连电脑；Windows 大屏 + 键鼠直接使用安卓应用（背单词、阅读、
+视频……），设备屏幕全程熄灭。
 
-## ✨ 核心特性（规划中，见 [plan.md](./plan.md)）
-
-- 🖥️ **一键投屏** —— 自动发现设备，高帧率（90fps+）高码率镜像
-- ⌨️ **快捷键完备** —— 返回 / 主页 / 多任务 / 音量，PC 键盘直接操控，支持中文输入
-- 📐 **适配电脑屏幕** —— 窗口尺寸贴合显示器，DPI 感知
-- 🚀 **单独打开应用** —— 虚拟显示器（`--new-display`）中独立运行 App，不干扰物理屏幕
-- 🌙 **沉浸模式** —— 设备黑屏 + 保持唤醒，纯"服务器"运行
-- ⚡ **一键预设** —— 如"背单词模式"：2K 虚拟显示 + 90fps + 黑屏 + 自动启动指定 App
-
-## 🧱 架构
+## 架构
 
 ```
-Windows (Duo Shell, PyQt6) ──> scrcpy 引擎 ──> Android 设备（无头服务器）
+Windows (PyQt6-QML 面板 + C# overlay) ──> scrcpy 引擎 ──> Android（无头服务器）
 ```
 
-Duo 是 scrcpy 引擎之上的自研壳：复用其成熟的视频流/控制协议/虚拟显示能力，专注做好交互、预设与体验层。
+- **整机镜像**：设备画面投窗，等比缩放。
+- **应用会话**：应用进固定 2560×1440 虚拟屏独立运行，不碰物理屏；多应用可进同一屏
+  （音频不重叠）。窗口纯 Windows 行为：自由拖改、永不自调。
+- **窗口体验**：无边框 + 灵动岛（移动/缩放/通知栏）、下巴返回/HOME、系统圆角。
+- **质量**：编码器探测自动钉硬件（h264 优先）、60fps（120Hz 面板整除）、FLAC 音频、
+  多会话音频仲裁（latest）。
 
-## 🚀 快速开始（开发阶段）
+## 快速开始
 
 ```bash
-# 需要 Python 3.11+ 与 scrcpy、adb 在 PATH 中
 git clone https://github.com/iluluyu/duo.git
-cd duo
-pip install -e .
-
-python -m duo --check   # 环境自检：探测 scrcpy / adb
-python -m duo           # 启动 GUI（M1 起可用）
+cd duo && pip install -e .
+python -m duo --check   # 环境自检
+python -m duo           # GUI 面板
 ```
 
-安卓设备需开启 **USB 调试**（设置 → 开发者选项）。
+需要 Python 3.11+、scrcpy/adb 在 PATH、设备 USB 调试授权。
+Windows 安装与打包（onefile → `C:\Tools\Duo.exe`）见 [docs/windows-setup.md](docs/windows-setup.md)。
 
-## 📋 路线图
+## 文档
 
-| 里程碑 | 内容 | 状态 |
-|--------|------|------|
-| M0 | 仓库与骨架 | 🚧 进行中 |
-| M1 | MVP 投屏（设备发现 / 会话管理 / 默认调优） | ⬜ |
-| M2 | 快捷键中心 + 预设系统 | ⬜ |
-| M3 | 应用启动器（图标 / 搜索 / 一键进入） | ⬜ |
-| M4 | 体验打磨（托盘 / 无线向导 / 剪贴板） | ⬜ |
-| M5 | 打包发布 v1.0 | ⬜ |
+| 文档 | 内容 |
+|---|---|
+| [TODO.md](TODO.md) | 待办（动态跟随虚拟屏、自研客户端）与基线 |
+| [docs/window-experience.md](docs/window-experience.md) | 窗口语义 + 虚拟屏/横竖屏真机调研存档 |
+| [docs/mirroring-quality.md](docs/mirroring-quality.md) | 编码/帧率/音频/旗标决策记录 |
+| [docs/windows-setup.md](docs/windows-setup.md) | Windows 安装、打包、排障 |
 
-下一轮实现与交接见 **[TODO.md](./TODO.md)**（窗口缩放、G2 圆角、设置页与玻璃视觉），技术细节见 **[窗口体验实施说明](./docs/window-experience.md)**。
+## 开发规范
 
-长期路线与历史实验见 **[plan.md](./plan.md)**；其中旧验收记录不代表当前版本已完成 Windows 回归。
+Python 3.11+，ruff + mypy + pytest（179 passed）全绿；8 空格缩进；C# 保持
+C# 5 兼容（`ensure_built()` 现场编译）；测试跑 offscreen+software 后端。
 
-## 📄 许可证
+## 许可证
 
 - Duo 本体：[MIT](./LICENSE)
-- 捆绑/依赖的第三方组件（scrcpy: Apache-2.0, adb 等）在发布时附带声明
-
-## 🤝 贡献
-
-目前为个人项目，Issue/PR 欢迎。开发规范：Python 3.11+，ruff 格式化，8 空格缩进。
+- 依赖第三方（scrcpy: Apache-2.0, adb 等）发布时附带声明
