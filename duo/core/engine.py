@@ -143,11 +143,11 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 #     device hardware encoder and the PC-side decoder - so explicit-size-less
 #     flex sessions pin a baseline size from FLEX_SIZES (settings
 #     ``flex_resolution``, docs/mirroring-quality.md §6).
-#   - Virtual displays keep ``--no-vd-system-decorations``: with system
-#     decorations Android auto-starts the AOSP SecondaryDisplayLauncher
-#     (CATEGORY_SECONDARY_HOME) on the virtual display - the "confusing app
-#     selector" (docs/window-experience.md §7.1). No decorations -> no home
-#     task -> apps land directly.
+#   - Virtual displays keep system decorations ON: the AOSP
+#     SecondaryDisplayLauncher that appears is the in-session "virtual
+#     desktop" the chin's long-press opens (2026-09-06 user decision -
+#     flipping back from the earlier suppression, which left app sessions
+#     with no reachable desktop page).
 #   - ``--start-app`` values always carry the ``+`` prefix: without it an app
 #     that already has a live task on the physical screen stays there
 #     ("delivered to running instance") and the virtual display shows
@@ -219,6 +219,10 @@ class DisplaySpec:
                         # Explicit sizes (portrait recommendation, user-pinned
                         # WxH) always win: flex_resolution only backstops the
                         # no-explicit-size path, it never overrides WxH.
+                        # System decorations stay ON: the secondary-display
+                        # launcher is the in-session "virtual desktop" the
+                        # chin's long-press opens (2026-09-06 user decision;
+                        # the earlier suppression cut that page off entirely).
                         if self.width is None and self.height is None:
                                 size = FLEX_SIZES.get(self.flex_resolution, "")
                                 if size:
@@ -226,17 +230,16 @@ class DisplaySpec:
                                         return [
                                                 f"--new-display={value}",
                                                 "--flex-display",
-                                                "--no-vd-system-decorations",
                                         ]
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
-                        return [new_display, "--flex-display", "--no-vd-system-decorations"]
+                        return [new_display, "--flex-display"]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
                 if self.dpi:
                         value += f"/{self.dpi}"
-                return [f"--new-display={value}", "--no-vd-system-decorations"]
+                return [f"--new-display={value}"]
 
 
 @dataclass(frozen=True)
