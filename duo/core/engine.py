@@ -229,9 +229,14 @@ class DisplaySpec:
                         # scrcpy locks the window to the video aspect
                         # by default; free windows need the explicit unlock
                         # (2026-09-06 定稿：自由窗口，比例永不锁）。
+                        # stretched：内容永远铺满窗口（沉浸，无黑边）；形状
+                        # 差远时有拉伸失真——窗口形状是用户的选择，贴合
+                        # 内容比例时零失真。纯客户端渲染，不回传设备，
+                        # 与钉扎（窗口形状稳定）无反馈环。
                         return [
                                 f"--new-display={value}",
                                 "--no-window-aspect-ratio-lock",
+                                "--render-fit=stretched",
                         ]
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
