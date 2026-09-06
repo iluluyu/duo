@@ -53,6 +53,7 @@ Item {
     property string videoCodec: "auto"     // auto | h264 | h265 | av1
     property string audioPolicy: "latest"  // latest | all | off
     property bool turnScreenOff: false     // --turn-screen-off
+    property bool aspectLocked: false      // window_aspect: locked？（默认 free 自由窗口）
     // flex 虚拟屏分辨率档位已撤（2026-09-06 用户决策）：一律原始分辨率，
     // 性能由 codec=h264+fps=60 承担，无往返字段。
 
@@ -75,6 +76,7 @@ Item {
         root.videoCodec = (m.video_codec == null) ? "auto" : m.video_codec
         root.audioPolicy = (m.audio_policy == null) ? "latest" : m.audio_policy
         root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
+        root.aspectLocked = (m.window_aspect != null) && (m.window_aspect === "locked")
     }
 
     // 收集当前控件值 → mock 合同的保存键名（同 Settings 字段）
@@ -90,7 +92,8 @@ Item {
             "glass_enabled": root.glassOn,
             "video_codec": root.videoCodec,
             "audio_policy": root.audioPolicy,
-            "turn_screen_off": root.turnScreenOff
+            "turn_screen_off": root.turnScreenOff,
+            "window_aspect": root.aspectLocked ? "locked" : "free"
         }
     }
 
@@ -434,6 +437,35 @@ Item {
                 id: appearanceCard
                 objectName: "appearanceCard"
                 title: "外观"
+
+                // 窗口比例行为（2026-09-06 定稿）：自由 = 默认，任意形状；
+                // 锁定 = 拖拽约束在内容比例内（像视频播放器，永不黑边）。
+                // APP 转屏时两种模式都由 scrcpy 原生把窗口贴合新内容。
+                Item {
+                    width: parent.width
+                    height: 32
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "锁定窗口比例（贴合内容）"
+                        font.family: Style.fontDefault
+                        font.pixelSize: 13
+                        color: Style.ink
+                    }
+                    GlassSwitch {
+                        objectName: "aspectLockSwitch"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.aspectLocked
+                        Accessible.name: "锁定窗口比例（贴合内容）"
+                        onToggled: root.aspectLocked = checked
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "开 = 拖拽约束在内容比例内，永不黑边（像视频播放器）；关 = 自由窗口（默认），任意形状，APP 转屏时窗口自动贴合内容"
+                    wrapMode: Text.Wrap
+                }
 
                 // 圆角模式三选一
                 Row {

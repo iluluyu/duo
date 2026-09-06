@@ -22,6 +22,7 @@ from duo.core.paths import data_dir
 VALID_CORNER_MODES = ("system", "g2", "none")
 VALID_AUDIO_POLICIES = ("latest", "all", "off")
 VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
+VALID_WINDOW_ASPECTS = ("free", "locked")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -56,6 +57,12 @@ class Settings:
         video_codec: str = "auto"
         # --turn-screen-off：黑屏防误触，主要对 mirror（整机镜像）有意义
         turn_screen_off: bool = False
+        # 应用会话窗口比例（2026-09-06 定稿）：
+        # free = 自由窗口（默认）：任意形状拖拽；APP 转屏时 scrcpy 原生
+        #   贴合内容（窗口随内容转，无黑边）；用户拖出非内容比例时黑边
+        # locked = 锁定内容比例：拖拽被约束在内容比例内（像视频播放器），
+        #   黑边永不出现
+        window_aspect: str = "free"
 
 # 历史（2026-09-06）：曾有 flex_resolution 基准分辨率档（1440p/1080p/native），
 # 用户决策撤除——档位选择造成困扰，flex 一律原始分辨率；性能由
@@ -143,6 +150,12 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 problems.append(f"turn_screen_off: 期望布尔，实际为 {turn_screen_off!r}")
                 turn_screen_off = defaults.turn_screen_off
 
+        window_aspect = raw.get("window_aspect", defaults.window_aspect)
+        if window_aspect not in VALID_WINDOW_ASPECTS:
+                problems.append(
+                        f"window_aspect: {window_aspect!r} 不在 {VALID_WINDOW_ASPECTS}")
+                window_aspect = defaults.window_aspect
+
         # 注意：这里只读上方已知键。settings.json 里已撤除的键（如历史
         # flex_resolution）或任何多余键都会被无害忽略，不进 problems。
         return Settings(
@@ -158,6 +171,7 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 audio_policy=audio_policy,
                 video_codec=video_codec,
                 turn_screen_off=turn_screen_off,
+                window_aspect=window_aspect,
         )
 
 

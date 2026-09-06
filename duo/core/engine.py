@@ -192,7 +192,7 @@ class DisplaySpec:
         height: int | None = None
         dpi: int | None = 480
 
-        def to_flags(self) -> list[str]:
+        def to_flags(self, window_aspect: str = "free") -> list[str]:
                 """Compile to scrcpy display flags.
 
                 Virtual displays (flex/fixed) always disable system
@@ -226,16 +226,17 @@ class DisplaySpec:
                         value = f"{size_w}x{size_h}"
                         if self.dpi:
                                 value += f"/{self.dpi}"
-                        return [
-                                f"--new-display={value}",
-                                # scrcpy locks the window to the video aspect
-                                # by default: when an orientation-pushing app
-                                # rotates the content, scrcpy RESIZES the
-                                # window to match (the "window flips to
-                                # portrait" bug). With the lock off, the video
-                                # just letterboxes inside the user's window.
-                                "--no-window-aspect-ratio-lock",
-                        ]
+                        argv = [f"--new-display={value}"]
+                        # 窗口比例（settings.window_aspect，2026-09-06 定稿）：
+                        # free（默认）= 传 --no-window-aspect-ratio-lock，窗口
+                        #   自由拖任意形状；APP 转屏时 scrcpy 原生把窗口贴合
+                        #   新内容（无黑边），仅用户拖出的非内容比例才 letterbox。
+                        # locked = 不传：scrcpy 原生把窗口锁到内容比例（拖拽
+                        #   受限、像视频播放器），黑边永不出现。
+                        # 两种模式下 overlay 都零干预显示/方向。
+                        if window_aspect == "free":
+                                argv.append("--no-window-aspect-ratio-lock")
+                        return argv
                 if self.width is None or self.height is None:
                         raise ValueError("fixed display mode requires width and height")
                 value = f"{self.width}x{self.height}"
@@ -290,6 +291,7 @@ class EngineArgs:
         window_width: int | None = None
         window_height: int | None = None
         borderless: bool = False
+        window_aspect: str = "free"          # free | locked（settings.window_aspect）
         print_fps: bool = True            # stderr 周期 fps 行 → 会话日志（卡顿诊断）
 
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
@@ -299,7 +301,7 @@ class EngineArgs:
                 # scrcpy 4.1 has no --adb option ("unknown option" + restart
                 # loop, found live 2026-09-05). The pin happens through the
                 # ADB environment variable instead - see adb_pin_env().
-                argv += self.display.to_flags()
+                argv += self.display.to_flags(window_aspect=self.window_aspect)
                 if self.app_package:
                         # '+' force-stops before starting: without it an app with
                         # a live task elsewhere is "delivered" there and never

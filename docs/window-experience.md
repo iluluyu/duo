@@ -8,12 +8,12 @@
 |---|---|---|
 | 整机镜像 | 跟随设备画面，scrcpy 自管 | 等比锁定（`ConvergeToVideoAspect`：外部改窗 350ms 后收敛） |
 | 固定虚拟屏（竖屏等） | 同上 | 同上 |
-| 应用会话（flex） | **纯 Windows 窗口**：拖哪是哪；缩放异步下发（SWP_ASYNCWINDOWPOS，不阻塞于目标窗口重排） | 自由缩放；虚拟屏恒定 2560×1440，方向由 APP 自主请求（app 全屏→转屏→scrcpy 窗口随视频重排），我们零干预（2026-09-06 回退跟随/钉扎） |
+| 应用会话（flex） | **纯 Windows 窗口**：拖哪是哪；缩放异步下发（SWP_ASYNCWINDOWPOS，不阻塞于目标窗口重排）；`window_aspect=locked`（设置项，2026-09-06 定稿）可改为约束在内容比例内（像视频播放器） | 自由缩放（默认）或比例锁定（设置）；虚拟屏恒定 2560×1440，方向由 APP 自主请求，APP 转屏时 scrcpy 原生把窗口贴合新内容（无黑边）；我们零干预 |
 
 **应用会话三层防御**（2026-09-06 定稿）：
 
 1. 固定 `--new-display=2560x1440/480`：显示不可旋转 → 旋转风暴物理不可能。
-2. `--no-window-aspect-ratio-lock`：scrcpy 不再把窗口锁到视频比例（"窗口翻竖屏"源头）。
+2. `--no-window-aspect-ratio-lock`：scrcpy 不再把窗口锁到视频比例；仅 `window_aspect=free`（默认）时传，locked 时不传（scrcpy 原生锁比例，永不黑边）。
 3. overlay 钉扎（`EnforceFlexPin`）：任何外部改窗弹回用户矩形；豁免=拖拽中
    （`_moving/_resizing`/左键按住）；收编=松手 1.5s 内的新矩形。
 
