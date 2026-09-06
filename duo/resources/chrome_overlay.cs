@@ -1671,11 +1671,45 @@ namespace DuoChrome
                 _haveLastRect = true;
                 _settleSince = Environment.TickCount;
             }
-            if (_settleSince < 0 || _resizing || _moving || _fakedMax || !RatioLock)
-                return;
+            if (_settleSince < 0 || _resizing || _moving || _fakedMax) return;
             if (Environment.TickCount - _settleSince < SettleMs) return;
             _settleSince = -1;                     // one-shot per settle
-            ConvergeToVideoAspect(wr);
+            if (RatioLock) ConvergeToVideoAspect(wr);
+            else if (_displayMode.Equals("flex")) FlexFitToTexture(wr);
+        }
+
+        /// <summary>Flex sessions: the virtual display follows the window,
+        /// but Android CLAMPS the display to what the app supports
+        /// (resizeableActivity min/max) and snaps it to the density grid -
+        /// so after a user resize the texture rarely equals the client and
+        /// the app letterboxes inside the window ("the app has its own
+        /// ideas", live-verified 2026-09-06: window 1600x900 stable, texture
+        /// ~916x826). One shot after the resize settles, snap the client to
+        /// the texture's exact size: 1:1 pixel mapping, no letterbox, and
+        /// the follow loop terminates (window==texture -> the display
+        /// request is the same size -> nothing moves again).</summary>
+        private void FlexFitToTexture(Rectangle wr)
+        {
+            if (_videoW <= 0 || _videoH <= 0) return;
+            if (Environment.TickCount - _videoChangedAt < 500) return;
+            Rectangle client = ClientRect();
+            int cw = client.Width, ch = client.Height;
+            if (cw <= 0 || ch <= 0) return;
+            // Small corrections only (density-grid snap, app rounding): a
+            // BIG mismatch means the app clamps the display (stale texture
+            // in flight or resizeableActivity limits) - jumping the window
+            // there fights the laggy follower and can oscillate, so the
+            // user's window wins and the app letterboxes inside it.
+            if (Math.Abs(cw - _videoW) > cw / 4) return;
+            if (Math.Abs(ch - _videoH) > ch / 4) return;
+            int dxL = client.Left - wr.Left, dyT = client.Top - wr.Top;
+            int dxR = wr.Right - client.Right, dyB = wr.Bottom - client.Bottom;
+            if (Math.Abs(cw - _videoW) <= 2 && Math.Abs(ch - _videoH) <= 2) return;
+            NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero,
+                client.Left, client.Top, _videoW + dxL + dxR, _videoH + dyT + dyB,
+                0x0004 /*SWP_NOZORDER*/ | 0x0010 /*SWP_NOACTIVATE*/);
+            Log.Write("flex fit to texture " + _videoW + "x" + _videoH
+                + " (client was " + cw + "x" + ch + ")");
         }
 
         /// <summary>Reshape the window so its client area exactly matches
