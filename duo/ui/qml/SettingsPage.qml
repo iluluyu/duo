@@ -53,6 +53,9 @@ Item {
     property string videoCodec: "auto"     // auto | h264 | h265 | av1
     property string audioPolicy: "latest"  // latest | all | off
     property bool turnScreenOff: false     // --turn-screen-off
+    property string flexResolution: "1440p"  // 1440p | 1080p | native
+    // 属性是唯一状态源：改动（回填或保存前赋值）都同步下拉框索引
+    onFlexResolutionChanged: flexResCombo.selectValue(flexResolution)
 
     // ------------------------------------------------------------ 真实合同调用
     // 打开/取消时用 load() 回填（取消即放弃改动）；载入问题一并上红条。
@@ -73,6 +76,7 @@ Item {
         root.videoCodec = (m.video_codec == null) ? "auto" : m.video_codec
         root.audioPolicy = (m.audio_policy == null) ? "latest" : m.audio_policy
         root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
+        root.flexResolution = (m.flex_resolution == null) ? "1440p" : m.flex_resolution
     }
 
     // 收集当前控件值 → mock 合同的保存键名（同 Settings 字段）
@@ -88,7 +92,8 @@ Item {
             "glass_enabled": root.glassOn,
             "video_codec": root.videoCodec,
             "audio_policy": root.audioPolicy,
-            "turn_screen_off": root.turnScreenOff
+            "turn_screen_off": root.turnScreenOff,
+            "flex_resolution": root.flexResolution
         }
     }
 
@@ -364,6 +369,117 @@ Item {
                 CaptionText {
                     width: parent.width
                     text: "自动 = 探测真机硬件编码器择优（H.265 > H.264）；AV1 仅在设备确有硬件编码器时生效"
+                    wrapMode: Text.Wrap
+                }
+
+                // flex 虚拟屏基准分辨率（下拉）：裸 --new-display 会把虚拟屏
+                // 建成主屏全尺寸，全屏动画双端吃满（docs/mirroring-quality.md §6）
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    CaptionText {
+                        width: 96
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "虚拟屏分辨率"
+                        font.pixelSize: 13
+                        color: Style.ink
+                    }
+                    ComboBox {
+                        id: flexResCombo
+                        objectName: "flexResolutionCombo"
+                        width: parent.width - 104
+                        height: 32
+                        model: [
+                            { value: "1440p", label: "1440p 平衡（默认）" },
+                            { value: "1080p", label: "1080p 流畅" },
+                            { value: "native", label: "原始分辨率（清晰但重）" }
+                        ]
+                        textRole: "label"
+                        font.family: Style.fontDefault
+                        font.pixelSize: 13
+                        Accessible.name: "虚拟屏分辨率"
+                        onActivated: root.flexResolution = model[currentIndex].value
+
+                        // 回填：按值定位下拉项（reloadFromApi 调用）
+                        function selectValue(value) {
+                            for (var i = 0; i < model.length; i++) {
+                                if (model[i].value === value) {
+                                    currentIndex = i
+                                    return
+                                }
+                            }
+                            currentIndex = 0
+                        }
+
+                        background: Rectangle {
+                            radius: 8
+                            color: "#FFFFFF"
+                            border.width: 1
+                            border.color: flexResCombo.activeFocus
+                                          ? Style.accent : Style.hairline
+                            Behavior on border.color { ColorAnimation { duration: 140 } }
+                        }
+                        contentItem: Text {
+                            text: flexResCombo.displayText
+                            font: flexResCombo.font
+                            color: Style.ink
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 10
+                            rightPadding: 26
+                            elide: Text.ElideRight
+                        }
+                        indicator: Text {
+                            x: flexResCombo.width - width - 10
+                            y: (flexResCombo.height - height) / 2
+                            text: "▾"
+                            font.pixelSize: 12
+                            color: Style.ink2
+                        }
+                        delegate: ItemDelegate {
+                            id: flexResOption
+                            width: flexResCombo.width
+                            height: 30
+                            highlighted: flexResCombo.highlightedIndex === index
+                            required property var modelData
+                            contentItem: Text {
+                                text: flexResOption.modelData.label
+                                font.family: Style.fontDefault
+                                font.pixelSize: 13
+                                color: Style.ink
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 10
+                            }
+                            background: Rectangle {
+                                radius: 6
+                                color: flexResOption.highlighted
+                                       ? Qt.alpha(Style.accent, 0.12) : "transparent"
+                            }
+                        }
+                        popup: Popup {
+                            y: flexResCombo.height + 2
+                            width: flexResCombo.width
+                            padding: 4
+                            implicitHeight: contentItem.implicitHeight + 8
+                            background: Rectangle {
+                                radius: 8
+                                color: "#FFFFFF"
+                                border.width: 1
+                                border.color: Style.hairline
+                            }
+                            contentItem: ListView {
+                                clip: true
+                                implicitHeight: contentHeight
+                                model: flexResCombo.popup.visible
+                                       ? flexResCombo.delegateModel : null
+                                currentIndex: flexResCombo.highlightedIndex
+                                spacing: 2
+                            }
+                        }
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "应用会话虚拟屏的基准分辨率；flex 仍跟随窗口缩放，此项定清晰度与流畅度的平衡"
                     wrapMode: Text.Wrap
                 }
 

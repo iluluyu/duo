@@ -174,6 +174,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 width=args.width,
                 height=args.height,
                 dpi=dpi,
+                flex_resolution=settings.flex_resolution,
         )
         # Display recommendation from the PC monitor when not pinned.
         engine_window: dict[str, int | None] = {}
@@ -188,6 +189,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 width=args.width or rec.display_width,
                                 height=args.height or rec.display_height,
                                 dpi=dpi or rec.dpi,
+                                flex_resolution=display.flex_resolution,
                         )
                         # Position the window but never lock its size: the user
                         # manages window geometry (e.g. PowerToys zones) and
@@ -209,10 +211,18 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                         width=display.width,
                                         height=display.height,
                                         dpi=rec.dpi,
+                                        flex_resolution=display.flex_resolution,
                                 )
                         engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"
-                print(f"display: {display.mode} dpi={display.dpi} ({area_text})", flush=True)
+                # 诊断行带上实际拼出的 new-display：卡顿时一眼看出虚拟屏尺寸。
+                new_display = next(
+                        (f.removeprefix("--new-display=") for f in display.to_flags()
+                         if f.startswith("--new-display=")),
+                        "设备默认",
+                )
+                print(f"display: {display.mode} dpi={display.dpi} "
+                      f"new-display={new_display} ({area_text})", flush=True)
         video = _resolve_video(scrcpy_path, serial, codec_setting, bitrate, fps)
         adb = Adb(adb_path, serial)
 
