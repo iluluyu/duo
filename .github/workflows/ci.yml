@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# Rapid successive pushes only keep the newest run per branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -12,16 +18,49 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff check duo tests
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .[dev]
+      # Same gates as local development (scripts + tests included).
+      - run: ruff check .
+      - run: mypy duo
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install -e .[dev]
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      # Headless Qt (offscreen) still needs the platform libraries.
+      - run: >
+          sudo apt-get update && sudo apt-get install -y
+          libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libglib2.0-0
+      # gui extra installs PyQt6 so the GUI/QML tests run instead of skipping.
+      - run: pip install -e .[dev,gui]
       - run: pytest -v
+
+  # Package the Windows exe on every push so duo.spec drift is caught here,
+  # not on the deployment box; the artifact doubles as a downloadable build.
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .[build]
+      - run: python -m PyInstaller duo.spec --noconfirm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Duo-windows
+          path: dist/Duo.exe
+          if-no-files-found: error
