@@ -555,10 +555,14 @@ namespace DuoChrome
             // display with no launcher to go home to (see ChinHold). The
             // single control stays centered either way - only the glyph
             // changes, so no layout or width bookkeeping is needed.
-            bool mirror = displayMode != null && displayMode.Equals("mirror");
+            // mBack homage: one centered ring for every mode. Tap = BACK
+            // (AdbKey 4); press-and-hold = Ctrl.ChinHold() (HOME on physical
+            // mirroring, session close on virtual displays). The glyph never
+            // changes by mode - users learn one shape (2026-09-06: a mode-
+            // switching glyph read as a regression; reverted).
             Buttons.Add(new NavButton(
                 new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
-                mirror ? 1 : 0, delegate { Ctrl.AdbKey(4); }));
+                1, delegate { Ctrl.AdbKey(4); }));
             _hold = new Timer { Interval = HoldMs };
             _hold.Tick += delegate
             {
