@@ -22,11 +22,17 @@ def test_adb_pin_never_becomes_an_argv_flag():
 
 
 def test_flex_default_matches_verified_preset():
-        """The default args reproduce the experiment-verified session shape."""
+        """The default args reproduce the experiment-verified session shape.
+
+        The default flex_resolution (settings default 1440p) pins the virtual
+        display baseline at 2560x1440: a bare --new-display would size the
+        display at the main display's full resolution and max out both the
+        device encoder and the PC decoder during fullscreen animations.
+        """
         argv = _argv(serial="4444bd6b", app_package="cn.com.langeasy.LangEasyLexis")
         joined = " ".join(argv)
         assert "--serial=4444bd6b" in argv
-        assert "--new-display=/480" in argv
+        assert "--new-display=2560x1440/480" in argv
         assert "--flex-display" in argv
         # '+' prefix is mandatory: without it an app with a live task on the
         # physical screen never lands on the virtual display (§7.1.4).
@@ -65,11 +71,65 @@ def test_start_app_plus_prefix_is_idempotent():
 
 
 def test_flex_without_dpi_uses_bare_new_display():
-        """dpi=None emits a bare --new-display (engine picks default density)."""
-        argv = _argv(serial="s", display=DisplaySpec(mode="flex", dpi=None))
+        """native（不加尺寸）+ dpi=None emits a bare --new-display (scrcpy
+        then sizes the display at the main display's default - the lag-prone
+        shape, kept only for the native tier)."""
+        argv = _argv(serial="s",
+                     display=DisplaySpec(mode="flex", dpi=None,
+                                         flex_resolution="native"))
         assert "--new-display" in argv
         assert not any(a.startswith("--new-display=") for a in argv)
         assert "--flex-display" in argv
+
+
+def test_flex_resolution_three_tiers():
+        """三档 flex_resolution → 三种 --new-display 形状（卡顿修复的核心）。
+
+        裸 --new-display 会把虚拟屏建成主屏全尺寸（2400x3392 面板实测同尺寸），
+        全屏动画时设备端硬编 + PC 端软解双端吃满；1440p/1080p 钉住基准尺寸。
+        """
+        assert DisplaySpec().flex_resolution == "1440p"   # 默认值 = 平衡档
+
+        def new_display(spec: DisplaySpec) -> str:
+                argv = EngineArgs(serial="s", display=spec).to_argv()
+                return next(f for f in argv if f.startswith("--new-display"))
+
+        assert new_display(DisplaySpec(mode="flex", dpi=480)) == \
+                "--new-display=2560x1440/480"
+        assert new_display(DisplaySpec(mode="flex", dpi=480,
+                                       flex_resolution="1080p")) == \
+                "--new-display=1920x1080/480"
+        assert new_display(DisplaySpec(mode="flex", dpi=480,
+                                       flex_resolution="native")) == \
+                "--new-display=/480"
+        # 尺寸可与 dpi 解耦：无 dpi 时只拼 WxH
+        assert new_display(DisplaySpec(mode="flex", dpi=None)) == \
+                "--new-display=2560x1440"
+        # flex 旗标三档齐全
+        for value in ("1440p", "1080p", "native"):
+                argv = _argv(serial="s", display=DisplaySpec(
+                        mode="flex", dpi=480, flex_resolution=value))
+                assert "--flex-display" in argv
+                assert "--no-vd-system-decorations" in argv
+
+
+def test_flex_explicit_size_never_overridden_by_resolution():
+        """带显式尺寸的 spec（竖屏推荐/fixed 路径）不被 flex_resolution 覆盖。"""
+        spec = DisplaySpec(mode="flex", width=1120, height=1872, dpi=313,
+                           flex_resolution="1080p")
+        argv = _argv(serial="s", display=spec)
+        assert "--new-display=/313" in argv
+        assert not any(a.startswith("--new-display=1920x1080") for a in argv)
+        assert not any(a.startswith("--new-display=2560x1440") for a in argv)
+
+
+def test_fixed_mode_ignores_flex_resolution():
+        """fixed 模式已有显式尺寸，flex_resolution 不参与拼装。"""
+        display = DisplaySpec(mode="fixed", width=2560, height=1440, dpi=268,
+                              flex_resolution="native")
+        argv = _argv(serial="s", display=display)
+        assert "--new-display=2560x1440/268" in argv
+        assert "--flex-display" not in argv
 
 
 def test_fixed_display_size_and_dpi():
@@ -170,3 +230,16 @@ def test_borderless_flag():
         assert "--window-borderless" in argv
         argv = _argv(serial="s")
         assert "--window-borderless" not in argv
+
+
+def test_print_fps_on_by_default():
+        """会话默认带 --print-fps：stderr 周期 fps 行进日志（卡顿诊断）。"""
+        argv = _argv(serial="s")
+        assert "--print-fps" in argv
+        assert "--print-fps" in _argv(serial="s", display=DisplaySpec(mode="mirror"))
+
+
+def test_print_fps_opt_out():
+        """print_fps=False 不发旗标（未来 UI 开关的预留位）。"""
+        argv = _argv(serial="s", print_fps=False)
+        assert not any(a.startswith("--print-fps") for a in argv)

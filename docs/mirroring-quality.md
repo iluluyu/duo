@@ -1,9 +1,10 @@
 # 投屏质量：探测数据与底层旗标调研
 
 配套代码：`duo/core/codec.py`（探测/缓存/择优）、`duo/core/settings.py`
-（`audio_policy` / `video_codec` / `turn_screen_off`）、`duo/core/engine.py`
-（EngineArgs 编译）。本文是 settings 新三项的设计记录 + scrcpy 4.1 性能相关
-旗标的逐项采纳/拒绝结论。所有"实测"均在真机 OPD2409 上完成（2026-09-06）。
+（`audio_policy` / `video_codec` / `turn_screen_off` / `flex_resolution`）、
+`duo/core/engine.py`（EngineArgs 编译）。本文是 settings 投屏质量各设置项的
+设计记录 + scrcpy 4.1 性能相关旗标的逐项采纳/拒绝结论。所有“实测”均在真机
+OPD2409 上完成（2026-09-06）。
 
 ## 1. 真机编码器探测结果（scrcpy --list-encoders）
 
@@ -146,3 +147,40 @@ h265 硬件 > h264 硬件 > av1 硬件 > h264 软件 > h264（scrcpy 默认）
 ## 6. PC 端 GPU 解码：现状与取舍
 
 scrcpy PC 端为跨平台纯软解（libavcodec + SDL 内存帧），无 GPU 解码旗标。自建 backend 三档评估：fork 加 D3D11VA（高维护成本，弃）；自研客户端（scrcpy-server + socket 协议 + D3D11VA + QML 渲染，即 plan.md 长期目标"宿主自拥有视频表面"，收益含 GPU 解码/真 AA 圆角/窗口嵌入，需单独立项）；**当前最优 = 喂饱软解**：h264 + 1440p 虚拟屏 + 60fps ≈ 4K120 原生负载的 1/4 以下，现代 CPU 无压力。
+
+## 7. flex 虚拟屏分辨率（settings.flex_resolution）与日志 fps 诊断
+
+### 进应用动画卡顿的确诊与修复
+
+确诊（2026-09-06）：flex 会话此前拼裸 `--new-display`（无尺寸），scrcpy 会把
+虚拟屏建成**主屏全尺寸**——2400x3392 面板上开会话，虚拟屏即 2400x3392。
+全屏动画（应用内翻页、列表惯性滚动）时设备端硬编与 PC 端软解**双端吃满**，
+进应用动画必卡。修复即 `settings.flex_resolution`，engine 按档拼
+`--new-display=WxH`（engine.py `FLEX_SIZES`）：
+
+| 值 | `--new-display` | 定位 |
+|---|---|---|
+| `1440p`（默认） | `2560x1440` | 平衡档：像素量约为原生全屏的 45% |
+| `1080p` | `1920x1080` | 流畅档：约为原生的 25%，低配机首选 |
+| `native` | 不加尺寸 | 原始分辨率：清晰但重（修复前行为） |
+
+规则：
+
+- 只注入**无显式尺寸**的 flex 会话；竖屏推荐尺寸、fixed 显式尺寸、用户
+  `--width/--height` 一律优先，绝不被覆盖。
+- flex 仍跟随窗口缩放，此档只是把初始/最大尺寸从主屏全尺寸压到基准档；
+  mirror（整机镜像）永远用物理屏原分辨率，与本设置无关。
+
+### 用日志 fps 行诊断卡顿
+
+会话默认带 `--print-fps`（engine.py `print_fps`）：scrcpy 周期（约每秒）把
+fps 行打到 stderr，会话日志本就在收集——面板管理的会话在
+`data_dir/logs/panel-<包名>.log`，CLI 会话在 `data_dir/logs/<时间戳>-<应用>.log`。
+卡顿复现时打开日志看 fps 行，二分定位瓶颈在哪一端：
+
+- **设备端 fps 明显掉**（如 90→个位数）：瓶颈在**编码/采集侧**。依次调：
+  `flex_resolution` 降档（1440p→1080p）、`bitrate_mbps` 降档；确认
+  `video_codec=auto` 钉到的是硬件编码器（软编必卡，见 §1）。
+- **设备端 fps 正常但画面卡**：瓶颈在 **PC 解码侧**。调法：降
+  `flex_resolution`、换更强的 PC；软解下 HEVC 明显重于 AVC，可显式切
+  `video_codec=h264`（见 §6）。

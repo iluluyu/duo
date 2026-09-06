@@ -8,6 +8,7 @@ import pytest
 
 import duo.core.settings as settings_mod
 from duo.core.settings import (
+        VALID_FLEX_RESOLUTIONS,
         Settings,
         corner_radius_dip,
         load_settings,
@@ -167,3 +168,49 @@ def test_quality_fields_save_rejects_invalid(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         save_settings(Settings(video_codec="mpeg2"))
     assert not (tmp_path / "s.json").exists()
+
+
+# --------------------------------------------- flex 虚拟屏基准分辨率（新）
+
+
+def test_flex_resolution_default_is_1440p():
+        """默认 1440p 平衡档：无显式尺寸的 flex 会话钉 2560x1440，
+        避免虚拟屏 = 主屏全尺寸（双端吃满，进应用动画卡）。"""
+        fresh = Settings()
+        assert fresh.flex_resolution == "1440p"
+        assert Settings().flex_resolution in VALID_FLEX_RESOLUTIONS
+
+
+def test_flex_resolution_roundtrip(tmp_path, monkeypatch):
+        """三档值持久化并读回。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        save_settings(Settings(flex_resolution="1080p"))
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.flex_resolution == "1080p"
+        save_settings(Settings(flex_resolution="native"))
+        loaded, _problems = load_settings()
+        assert loaded.flex_resolution == "native"
+
+
+def test_flex_resolution_invalid_reported_and_dropped(tmp_path, monkeypatch):
+        """非法值（不在三档内/类型错）逐字段回退默认并上报。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(
+                json.dumps({"flex_resolution": "720p"}), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert loaded.flex_resolution == "1440p"
+        assert len(problems) == 1
+        assert "flex_resolution" in problems[0]
+        (tmp_path / "s.json").write_text(
+                json.dumps({"flex_resolution": 1080}), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert loaded.flex_resolution == "1440p"
+        assert len(problems) == 1
+
+
+def test_flex_resolution_save_rejects_invalid(tmp_path, monkeypatch):
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        with pytest.raises(ValueError):
+                save_settings(Settings(flex_resolution="4320p"))
+        assert not (tmp_path / "s.json").exists()

@@ -163,7 +163,7 @@ DisplayMode = Literal["mirror", "flex", "fixed"]
 #: encoder/decoder pixel count off the "full main display" worst case.
 FLEX_SIZES: dict[str, str] = {
         "1440p": "2560x1440",   # 平衡档（默认）
-        "1080p": "1920x1080",   # 流畅档：像素量约为原生全屏的 29%
+        "1080p": "1920x1080",   # 流畅档：像素量约为原生全屏的 25%
         "native": "",           # 不加尺寸：主屏全尺寸（清晰但重）
 }
 
