@@ -62,7 +62,7 @@ Item {
         var m = settingsApi.load()
         scrcpyRow.text = (m.scrcpy_path == null) ? "" : m.scrcpy_path
         adbRow.text = (m.adb_path == null) ? "" : m.adb_path
-        fpsCell.box.value = (m.fps == null) ? 90 : m.fps          // null 也算缺省
+        fpsCell.box.value = (m.fps == null) ? 60 : m.fps          // null 也算缺省（60：120Hz 面板整除节拍）
         bitrateCell.box.value = (m.bitrate_mbps == null) ? 30 : m.bitrate_mbps
         var dpi = (m.dpi == null) ? null : m.dpi
         dpiAutoSwitch.checked = (dpi === null)          // 自动 = 无自定义密度

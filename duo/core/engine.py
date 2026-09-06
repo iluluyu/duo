@@ -137,6 +137,12 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 #   - scrcpy >= 3.0 has no positive ``--clipboard-autosync`` flag (default on,
 #     only ``--no-clipboard-autosync`` exists) — never emit the positive form.
 #   - ``--flex-display`` must be paired with ``--new-display``.
+#   - A bare ``--new-display`` sizes the virtual display at the MAIN display's
+#     full resolution (verified live on a 2400x3392 panel: the virtual display
+#     came up 2400x3392). Full-screen animations then max out BOTH ends - the
+#     device hardware encoder and the PC-side decoder - so explicit-size-less
+#     flex sessions pin a baseline size from FLEX_SIZES (settings
+#     ``flex_resolution``, docs/mirroring-quality.md §6).
 #   - Virtual displays keep ``--no-vd-system-decorations``: with system
 #     decorations Android auto-starts the AOSP SecondaryDisplayLauncher
 #     (CATEGORY_SECONDARY_HOME) on the virtual display - the "confusing app
@@ -150,6 +156,16 @@ def probe_binary(path: str, name: str = "") -> ToolInfo:
 # ----------------------------------------------------------------------------
 
 DisplayMode = Literal["mirror", "flex", "fixed"]
+
+#: Baseline ``--new-display`` sizes for flex sessions without an explicit
+#: size (settings ``flex_resolution``). Flex keeps following window resizes,
+#: so this only caps the initial/max resolution - the point is keeping the
+#: encoder/decoder pixel count off the "full main display" worst case.
+FLEX_SIZES: dict[str, str] = {
+        "1440p": "2560x1440",   # 平衡档（默认）
+        "1080p": "1920x1080",   # 流畅档：像素量约为原生全屏的 29%
+        "native": "",           # 不加尺寸：主屏全尺寸（清晰但重）
+}
 
 
 @dataclass(frozen=True)
@@ -173,7 +189,10 @@ class DisplaySpec:
 
         mirror: the physical device screen.
         flex: a virtual display that continuously resizes to match the window
-                (needs scrcpy >= 4.1 with ``--flex-display``).
+                (needs scrcpy >= 4.1 with ``--flex-display``). Without an
+                explicit ``width``/``height`` the display starts at the
+                ``flex_resolution`` baseline (FLEX_SIZES) instead of the
+                main display's full size.
         fixed: a virtual display with a locked resolution.
         """
 
@@ -181,6 +200,7 @@ class DisplaySpec:
         width: int | None = None
         height: int | None = None
         dpi: int | None = 480
+        flex_resolution: str = "1440p"
 
         def to_flags(self) -> list[str]:
                 """Compile to scrcpy display flags.
@@ -196,6 +216,18 @@ class DisplaySpec:
                 if self.mode == "mirror":
                         return []
                 if self.mode == "flex":
+                        # Explicit sizes (portrait recommendation, user-pinned
+                        # WxH) always win: flex_resolution only backstops the
+                        # no-explicit-size path, it never overrides WxH.
+                        if self.width is None and self.height is None:
+                                size = FLEX_SIZES.get(self.flex_resolution, "")
+                                if size:
+                                        value = f"{size}/{self.dpi}" if self.dpi else size
+                                        return [
+                                                f"--new-display={value}",
+                                                "--flex-display",
+                                                "--no-vd-system-decorations",
+                                        ]
                         value = f"/{self.dpi}" if self.dpi else ""
                         new_display = f"--new-display={value}" if value else "--new-display"
                         return [new_display, "--flex-display", "--no-vd-system-decorations"]
@@ -253,6 +285,7 @@ class EngineArgs:
         window_width: int | None = None
         window_height: int | None = None
         borderless: bool = False
+        print_fps: bool = True            # stderr 周期 fps 行 → 会话日志（卡顿诊断）
 
         def to_argv(self, binary: str = "scrcpy") -> list[str]:
                 """Compile to a full argv for the scrcpy binary."""
@@ -275,6 +308,10 @@ class EngineArgs:
                         argv.append("--stay-awake")
                 argv.append(f"--keyboard={self.keyboard}")
                 argv += self.video.to_flags()
+                if self.print_fps:
+                        # fps 行进会话日志：设备端掉帧 = 编码/采集侧，设备端正常
+                        # 而画面卡 = PC 解码侧（docs/mirroring-quality.md §6）。
+                        argv.append("--print-fps")
                 if not self.audio:
                         argv.append("--no-audio")
                 else:

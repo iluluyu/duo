@@ -119,12 +119,22 @@ def test_cache_rejects_bad_entries(tmp_path):
 # ------------------------------------------------------- selection priority
 
 
-def test_auto_prefers_h265_hardware(encoders):
-    """Tier 1: h265 hardware beats everything (the OPD2409 case)."""
+def test_auto_prefers_h264_hardware(encoders):
+    """Tier 1: h264 hardware beats everything, including h265 hw.
+
+    The PC side decodes in software where AVC is far lighter than HEVC
+    (2026-09-06 live regression: h265 made video playback stutter)."""
     choice = resolve_codec("auto", encoders)
-    assert choice == CodecChoice(
-        "h265", "c2.qti.hevc.encoder", True,
-        "自动选择：h265 硬件编码（c2.qti.hevc.encoder）")
+    assert choice.codec == "h264"
+    assert choice.hardware
+    assert "h264" in choice.note
+
+
+def test_auto_h265_only_when_no_h264_hardware(encoders):
+    """h265 hw is tier 2: picked only without any h264 hardware."""
+    stripped = [e for e in encoders if e.codec != "h264" or not e.hardware]
+    choice = resolve_codec("auto", stripped)
+    assert choice.codec == "h265" and choice.hardware
 
 
 def test_auto_falls_to_h264_hardware():

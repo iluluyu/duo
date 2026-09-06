@@ -22,6 +22,7 @@ from duo.core.paths import data_dir
 VALID_CORNER_MODES = ("system", "g2", "none")
 VALID_AUDIO_POLICIES = ("latest", "all", "off")
 VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
+VALID_FLEX_RESOLUTIONS = ("1440p", "1080p", "native")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -37,7 +38,9 @@ class Settings:
         version: int = 1
         scrcpy_path: str = ""
         adb_path: str = ""
-        fps: int | None = 90
+        fps: int | None = 60        # 60: even pacing on 120Hz panels (90
+                                     # would judder 2:1); 120 for max UI
+                                     # smoothness on strong PCs
         bitrate_mbps: int | None = 30
         dpi: int | None = None
         corner_mode: str = "system"    # system = DWM default rounding;
@@ -54,6 +57,11 @@ class Settings:
         video_codec: str = "auto"
         # --turn-screen-off：黑屏防误触，主要对 mirror（整机镜像）有意义
         turn_screen_off: bool = False
+        # flex 虚拟屏基准分辨率（docs/mirroring-quality.md §6）：无显式尺寸的
+        # flex 会话据此拼 --new-display=WxH。裸 --new-display 会把虚拟屏建成
+        # 主屏全尺寸（2400x3392 面板 → 2400x3392 虚拟屏），全屏动画时设备端
+        # 硬编与 PC 端软解双端吃满，进应用动画必卡。native = 不加尺寸。
+        flex_resolution: str = "1440p"
 
 
 def settings_path() -> Path:
@@ -136,6 +144,12 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 problems.append(f"turn_screen_off: 期望布尔，实际为 {turn_screen_off!r}")
                 turn_screen_off = defaults.turn_screen_off
 
+        flex_resolution = raw.get("flex_resolution", defaults.flex_resolution)
+        if flex_resolution not in VALID_FLEX_RESOLUTIONS:
+                problems.append(
+                        f"flex_resolution: {flex_resolution!r} 不在 {VALID_FLEX_RESOLUTIONS}")
+                flex_resolution = defaults.flex_resolution
+
         return Settings(
                 version=version,
                 scrcpy_path=scrcpy_path,
@@ -149,6 +163,7 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 audio_policy=audio_policy,
                 video_codec=video_codec,
                 turn_screen_off=turn_screen_off,
+                flex_resolution=flex_resolution,
         )
 
 
@@ -230,6 +245,7 @@ __all__ = [
         "Settings",
         "VALID_AUDIO_POLICIES",
         "VALID_CORNER_MODES",
+        "VALID_FLEX_RESOLUTIONS",
         "VALID_VIDEO_CODECS",
         "corner_radius_dip",
         "load_settings",
