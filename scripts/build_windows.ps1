@@ -26,8 +26,15 @@ if ($bits -ne '64') { throw "need 64-bit Windows Python for the win64 bundle (go
 if (-not (Test-Path 'dist\Duo.exe')) { throw "missing artifact: $repo\dist\Duo.exe" }
 
 # Deploy the fixed artifact. A running panel locks the file, so close it
-# first (stateless launcher - restartable any time).
-taskkill /IM Duo.exe /F 2>$null
+# first (stateless launcher - restartable any time). NOTE: no `2>$null`
+# here - under $ErrorActionPreference='Stop' PS 5.1 turns a native command's
+# stderr redirect into a terminating NativeCommandError when Duo.exe is not
+# running ("process not found" on stderr), which silently killed the deploy
+# step after a successful build. | Out-Null + reading $LASTEXITCODE is safe
+# both ways (1/128 = not running, which is fine).
+taskkill /IM Duo.exe /F | Out-Null
+$kill = $LASTEXITCODE
+Write-Output "taskkill exit: $kill (1/128 = not running, fine)"
 New-Item -ItemType Directory -Force -Path C:\Tools | Out-Null
 Move-Item -Force dist\Duo.exe C:\Tools\Duo.exe
 

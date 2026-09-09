@@ -25,11 +25,23 @@
 - [ ] 中文输入：uhid 候选窗落物理屏是否复现 → 决定 `--display-ime-policy=local`
 - [ ] piliplus 全流程（首页→视频→全屏→拖窗缩放不中断播放）：拖窗链路已真机验证
       （2026-09-06，源码+打包 exe），播放中缩放复验待回填
+- [ ] 面板新交互真机回归：顶栏胶囊/固定卡/搜索/右键菜单（含按比例打开
+      16:9 与 9:16 各一例）/运行卡 hover 关闭；出图基线 qml_shots 已过
+- [ ] 机身比例预设：wm size 派生的横/竖预设真机验证（aspects.py 逻辑已就位）
+- [ ] 固定比例会话（--width/--height fixed 模式）与 flex 自由窗口的混用回归
 
-## 当前基线（2026-09-06）
+## 当前基线（2026-09-07 UI 重构后）
 
-- 应用会话：固定 2560×1440/480 虚拟屏；窗口默认自由（`--no-window-aspect-ratio-lock`，
-  缩放异步下发 SWP_ASYNCWINDOWPOS 跟手），设置 `window_aspect=locked` 可锁内容比例
-  （永不黑边）；无钉扎/无显示跟随/无横竖屏干预（方向信 APP，APP 转屏时 scrcpy
-  原生把窗口贴合新内容）。
-- 测试 179 passed；ruff / mypy 全绿；overlay 经 csc.exe 真机编译通过。
+- 面板结构：顶栏胶囊（首页/设置两页常驻）→ 设备卡 → 固定应用卡（置顶，
+  玻璃卡）→ 搜索（拼音首字母+标签过滤）→ 应用网格（裸排，拼音序）→
+  运行卡（底部玻璃卡，hover 露出 ✕，无横竖屏字样）→ Toast。
+- 图标：预设品牌色 squircle + 单字（duo/core/icon_presets.py，Qt SVG 基线
+  光学居中）；未知应用色板哈希 fallback；真实 APK 图标到达后覆盖。
+- 目录 28 应用（duo/core/catalog.py，覆盖预装 QQ/QQ NT/TIM 等
+  `pm list -3` 漏掉的应用）；右键菜单：打开/置顶/按比例打开（横竖各 4
+  档+机身，duo/core/aspects.py，复用 `--display fixed` 既有管线）。
+- 设置页：无标题行（胶囊即导航）、删 DPI/圆角控件（隐形透传）、
+  音频「仅最新会话/全部会话/静音」、探测瞬时提示 2.5s、单保存钮。
+- 测试 242 passed；ruff / mypy 全绿；UI 规范 docs/ui/DESIGN.md 为验收
+  标准（两轮 agy Opus 品味评审已消化）；方案稿 docs/ui/mockups/。
+- 镜像/会话链路无改动（flex 自由窗口、方向信 APP 维持）。
