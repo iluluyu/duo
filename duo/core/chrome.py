@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -68,6 +69,19 @@ class ChromeError(RuntimeError):
 def source_stamp() -> str:
         """Content hash of the overlay source (cache invalidation key)."""
         return hashlib.sha256(OVERLAY_SOURCE.read_bytes()).hexdigest()
+
+
+def borderless_for(top_mode: str) -> bool:
+        """Whether scrcpy should run with ``--window-borderless``.
+
+        2026-09-09 真机定稿：上巴 native = 真系统标题栏，必须让 scrcpy
+        建自己的带框窗口——SDL 对 ``--window-borderless`` 的无边框窗
+        自己接管 WM_NCCALCSIZE 并答“客户区=整窗”，事后补的 WS_CAPTION
+        永远占不到标题带（用户真机：上巴系统“见不到相关的内容”；跨进
+        程子类化拦截被 Windows 禁用，实测 ERROR_ACCESS_DENIED）。沉浸/
+        无 上巴仍走无边框 + overlay 胶囊。
+        """
+        return top_mode != "native"
 
 
 def build_is_fresh(exe: Path, stamp_file: Path, stamp: str) -> bool:
@@ -107,6 +121,8 @@ def overlay_command(
         video_height: int | None = None,
         session_log: str | None = None,
         corner_radius_dip: int = 0,
+        top_bar_mode: str = "immersive",
+        bottom_bar_mode: str = "immersive",
 ) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
@@ -126,6 +142,14 @@ def overlay_command(
         docs/window-experience.md §7). ``video_*``: fixed carries its known
         initial video size; flex stays free (the pin guards the window
         shape, sizes are irrelevant). ``session_log`` is a Windows path.
+        ``top_bar_mode``/``bottom_bar_mode`` (validated
+        immersive|native|none by duo.core.settings) pick which edge bars
+        the overlay owns: ``native`` hands that edge to the system window
+        frame and the overlay stays silent there; ``none`` (2026-09-09)
+        hides that edge's bar ENTIRELY - the overlay never creates/shows
+        it, resize affordances remain; both default to the immersive
+        chrome. This function only forwards the strings; the enum contract
+        is enforced upstream.
         """
         argv = [
                 exe,
@@ -139,6 +163,10 @@ def overlay_command(
                 "1" if home else "0",
                 "--display-mode",
                 display_mode,
+                "--chrome-top",
+                top_bar_mode,
+                "--chrome-bottom",
+                bottom_bar_mode,
         ]
         if video_width and video_height:
                 argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
@@ -243,6 +271,8 @@ class ChromeOverlay:
                 video_height: int | None = None,
                 session_log: Path | None = None,
                 corner_radius_dip: int = 0,
+                top_bar_mode: str = "immersive",
+                bottom_bar_mode: str = "immersive",
         ) -> None:
                 self._title = title
                 self._serial = serial
@@ -262,6 +292,8 @@ class ChromeOverlay:
                         video_height=video_height,
                         session_log=log_arg,
                         corner_radius_dip=corner_radius_dip,
+                        top_bar_mode=top_bar_mode,
+                        bottom_bar_mode=bottom_bar_mode,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 
@@ -274,9 +306,21 @@ class ChromeOverlay:
                 """Spawn the overlay with its output captured to a session log."""
                 log_path = logs_dir() / "overlay" / "chrome-latest.log"
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                # 可诊断性（2026-09-09 用户真机测试失败但零证据可查）：
+                # 启动即把源码指纹 + 模式 + 完整 argv 写进 duo 自己的
+                # 日志目录（不依赖 overlay 进程的 %TEMP% 可写性）。
+                # 下次“没有成功”时，这行直接回答“跑的是哪个版本/什么参数”。
+                banner = (
+                        f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                        f"source={source_stamp()[:12]} "
+                        f"top={self.command[self.command.index('--chrome-top') + 1]} "
+                        f"bottom={self.command[self.command.index('--chrome-bottom') + 1]} "
+                        f"argv={self.command}\n"
+                ).encode("utf-8", errors="replace")
                 # The child inherits the descriptor; the parent-side handle can
                 # close right after the spawn (same pattern as Session.start).
                 with open(log_path, "ab") as log_file:
+                        log_file.write(banner)
                         self._proc = subprocess.Popen(
                                 self.command,
                                 stdout=log_file,

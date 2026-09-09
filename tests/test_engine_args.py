@@ -126,6 +126,28 @@ def test_mirror_mode_emits_no_display_flags():
         assert not any(a.startswith(prefixes) for a in argv)
 
 
+def test_vd_keep_content_flag():
+        """vd_keep_content → scrcpy --no-vd-destroy-content（虚拟屏专用）。
+
+        默认断开即销毁虚拟屏（应用退回主屏）；True 时保留内容。镜像
+        模式没有自建显示，即便误传也恒不发射。"""
+        assert "--no-vd-destroy-content" not in _argv(serial="s")
+        argv = _argv(serial="s", vd_keep_content=True)
+        assert "--no-vd-destroy-content" in argv
+        fixed = _argv(
+                serial="s",
+                display=DisplaySpec(mode="fixed", width=1600, height=900),
+                vd_keep_content=True,
+        )
+        assert "--no-vd-destroy-content" in fixed
+        mirror = _argv(
+                serial="s",
+                display=DisplaySpec(mode="mirror"),
+                vd_keep_content=True,
+        )
+        assert "--no-vd-destroy-content" not in mirror
+
+
 def test_video_encoder_optional():
         """A pinned encoder is emitted; the default lets scrcpy choose."""
         pinned = _argv(serial="s", video=VideoSpec(encoder="c2.qti.hevc.encoder"))
@@ -198,7 +220,14 @@ def test_window_size_emitted_for_fixed():
 
 
 def test_borderless_flag():
-        """--chrome sessions emit --window-borderless; default keeps decorations."""
+        """--chrome sessions emit --window-borderless; default keeps decorations.
+
+        2026-09-09 架构分叉（上巴 native = 真系统标题栏）：borderless 只
+        在沉浸/无 上巴时传——scrcpy 自己建带框窗口，系统标题栏从一开
+        始就在（SDL 无边框窗会接管 WM_NCCALCSIZE，后补 WS_CAPTION 永
+        远占不到标题带）。此处验证引擎侧开关；CLI 的组合决策见
+        tests/test_cli.py。
+        """
         argv = _argv(serial="s", borderless=True)
         assert "--window-borderless" in argv
         argv = _argv(serial="s")

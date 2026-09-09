@@ -17,6 +17,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6.QtCore")
 
+from duo.core.settings import Settings  # noqa: E402
 from duo.ui.controller import (  # noqa: E402
         DEFAULT_PORTRAIT,
         build_device_mirror_argv,
@@ -24,6 +25,18 @@ from duo.ui.controller import (  # noqa: E402
         load_portrait_prefs,
         save_portrait_prefs,
 )
+
+
+@pytest.fixture(autouse=True)
+def _pin_settings(monkeypatch):
+        """Pin the settings the argv builders re-read per launch.
+
+        build_launch_argv / build_device_mirror_argv load fresh settings to
+        inject --chrome-top/--chrome-bottom; bare argv tests must not depend
+        on the host machine's settings.json.
+        """
+        monkeypatch.setattr(
+                "duo.ui.controller.load_settings", lambda: (Settings(), []))
 
 
 class _StubFile:

@@ -22,6 +22,7 @@ from duo.core.paths import data_dir
 VALID_CORNER_MODES = ("system", "g2", "none")
 VALID_AUDIO_POLICIES = ("latest", "all", "off")
 VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
+VALID_BAR_MODES = ("immersive", "native", "none")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -54,6 +55,10 @@ class Settings:
         audio_policy: str = "latest"
         # auto = 探测设备硬件编码器并择优（duo.core.codec）；显式指定则用之
         video_codec: str = "auto"
+        # 窗口栏模式（语义见 docs/window-experience.md §10）；默认：上巴
+        # 沉浸、下巴不显示（scrcpy 右键已是返回）
+        top_bar_mode: str = "immersive"
+        bottom_bar_mode: str = "none"
         # --turn-screen-off：黑屏防误触，主要对 mirror（整机镜像）有意义
         turn_screen_off: bool = False
 
@@ -138,6 +143,18 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                         f"video_codec: {video_codec!r} 不在 {VALID_VIDEO_CODECS}")
                 video_codec = defaults.video_codec
 
+        top_bar_mode = raw.get("top_bar_mode", defaults.top_bar_mode)
+        if top_bar_mode not in VALID_BAR_MODES:
+                problems.append(
+                        f"top_bar_mode: {top_bar_mode!r} 不在 {VALID_BAR_MODES}")
+                top_bar_mode = defaults.top_bar_mode
+
+        bottom_bar_mode = raw.get("bottom_bar_mode", defaults.bottom_bar_mode)
+        if bottom_bar_mode not in VALID_BAR_MODES:
+                problems.append(
+                        f"bottom_bar_mode: {bottom_bar_mode!r} 不在 {VALID_BAR_MODES}")
+                bottom_bar_mode = defaults.bottom_bar_mode
+
         turn_screen_off = raw.get("turn_screen_off", defaults.turn_screen_off)
         if not isinstance(turn_screen_off, bool):
                 problems.append(f"turn_screen_off: 期望布尔，实际为 {turn_screen_off!r}")
@@ -157,6 +174,8 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 glass_enabled=glass,
                 audio_policy=audio_policy,
                 video_codec=video_codec,
+                top_bar_mode=top_bar_mode,
+                bottom_bar_mode=bottom_bar_mode,
                 turn_screen_off=turn_screen_off,
         )
 
@@ -238,6 +257,7 @@ __all__ = [
         "CORNER_RANGE",
         "Settings",
         "VALID_AUDIO_POLICIES",
+        "VALID_BAR_MODES",
         "VALID_CORNER_MODES",
         "VALID_VIDEO_CODECS",
         "corner_radius_dip",

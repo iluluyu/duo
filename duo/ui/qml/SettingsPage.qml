@@ -18,7 +18,9 @@
 //
 // 状态出口：保存成功发 accepted()（Main 侧接 ctrl.resolveAdb() + pop，
 //           对齐旧 widgets 版 _refresh_after_settings 语义）；
-//           返回/取消发 cancelled()（Main 侧接 StackView.pop）。
+//           Esc 发 cancelled()（Main 侧接 StackView.pop；页面无标题行/
+//           返回钮——顶栏胶囊即导航，DESIGN §3.9；底部仅一个保存按钮，
+//           返回即放弃）。
 
 import QtQuick
 import QtQuick.Controls.Basic
@@ -47,14 +49,30 @@ Item {
     // 引擎锁：Main.qml 绑 ctrl.engineLocked；true 时引擎路径行禁用 + 提示条
     property bool engineLocked: false
     property var problems: []          // save()/loadProblems() 的问题清单（红条内容）
-    property string cornerMode: "system"   // system | g2 | none
     property bool glassOn: true            // 液态玻璃
     // 投屏质量（docs/mirroring-quality.md）：键同 Settings 字段
     property string videoCodec: "auto"     // auto | h264 | h265 | av1
     property string audioPolicy: "latest"  // latest | all | off
     property bool turnScreenOff: false     // --turn-screen-off
+    // 窗口栏（串流窗口上巴/下巴）——默认值语义：应用未单独设置（右键菜单
+    // 「窗口栏 ▸」写 gui_prefs.json bars 节）时生效，按应用的选择优先于此。
+    // immersive = 无边框 + overlay 悬浮控件；native = 系统原生栏；none =
+    // 该边永不建栏（2026-09-09 第三态：scrcpy 右键已是返回，下巴常显冗
+    // 余——新默认上巴 immersive、下巴 none）。
+    // 键同 Settings 字段，经 --chrome-top/--chrome-bottom 下发到 overlay。
+    property string topBarMode: "immersive"          // immersive | native
+    property string bottomBarMode: "none"  // immersive | native | none
     // flex 虚拟屏分辨率档位已撤（2026-09-06 用户决策）：一律原始分辨率，
     // 性能由 codec=h264+fps=60 承担，无往返字段。
+
+    // ---- 隐形透传（DESIGN §3.8 后端兼容）----------------------------------
+    // DPI / 圆角控件已从页面删除，但 SettingsApi.save(values) 按整表构造
+    // Settings：map 里缺哪一键，那一键就落回默认值——丢键等于把用户的
+    // dpi / corner_mode / corner_size_dip 静默重置。load() 读入的原值存放
+    // 在此，collect() 原样带回，全程不经任何控件（settings.json 手改仍生效）。
+    property var dpiPass: null                  // int | null（null = 跟随显示密度）
+    property string cornerModePass: "system"    // system | g2 | none
+    property int cornerSizePass: 48             // DIP，仅 g2 模式有意义
 
     // ------------------------------------------------------------ 真实合同调用
     // 打开/取消时用 load() 回填（取消即放弃改动）；载入问题一并上红条。
@@ -66,15 +84,16 @@ Item {
         adbRow.text = (m.adb_path == null) ? "" : m.adb_path
         fpsCell.box.value = (m.fps == null) ? 60 : m.fps          // null 也算缺省（60：120Hz 面板整除节拍）
         bitrateCell.box.value = (m.bitrate_mbps == null) ? 30 : m.bitrate_mbps
-        var dpi = (m.dpi == null) ? null : m.dpi
-        dpiAutoSwitch.checked = (dpi === null)          // 自动 = 无自定义密度
-        dpiCell.box.value = (dpi === null) ? 480 : dpi  // 480 仅为禁用态占位值
-        root.cornerMode = (m.corner_mode == null) ? "system" : m.corner_mode
-        sizeSlider.value = (m.corner_size_dip == null) ? 48 : m.corner_size_dip
         root.glassOn = (m.glass_enabled == null) ? true : m.glass_enabled
         root.videoCodec = (m.video_codec == null) ? "auto" : m.video_codec
         root.audioPolicy = (m.audio_policy == null) ? "latest" : m.audio_policy
         root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
+        root.topBarMode = (m.top_bar_mode == null) ? "immersive" : m.top_bar_mode
+        root.bottomBarMode = (m.bottom_bar_mode == null) ? "none" : m.bottom_bar_mode
+        // 隐形透传：被删控件的字段只存不发，collect() 原样带回
+        root.dpiPass = (m.dpi === undefined || m.dpi == null) ? null : m.dpi
+        root.cornerModePass = (m.corner_mode == null) ? "system" : m.corner_mode
+        root.cornerSizePass = (m.corner_size_dip == null) ? 48 : m.corner_size_dip
     }
 
     // 收集当前控件值 → mock 合同的保存键名（同 Settings 字段）
@@ -84,13 +103,17 @@ Item {
             "adb_path": adbRow.text.trim(),
             "fps": fpsCell.box.value,
             "bitrate_mbps": bitrateCell.box.value,
-            "dpi": dpiAutoSwitch.checked ? null : dpiCell.box.value,
-            "corner_mode": root.cornerMode,
-            "corner_size_dip": Math.round(sizeSlider.value),
             "glass_enabled": root.glassOn,
             "video_codec": root.videoCodec,
             "audio_policy": root.audioPolicy,
-            "turn_screen_off": root.turnScreenOff
+            "turn_screen_off": root.turnScreenOff,
+            "top_bar_mode": root.topBarMode,
+            "bottom_bar_mode": root.bottomBarMode,
+            // 隐形透传：控件已删但 SettingsApi.save 按整表构造，丢键即
+            // 重置为默认值——load 读进来的原值必须原样带回
+            "dpi": root.dpiPass,
+            "corner_mode": root.cornerModePass,
+            "corner_size_dip": root.cornerSizePass
         }
     }
 
@@ -105,7 +128,7 @@ Item {
         root.accepted()
     }
 
-    // 取消：回填放弃改动 + 发 cancelled（返回键、取消按钮、Esc 共用）
+    // 取消：回填放弃改动 + 发 cancelled（返回键与 Esc 共用；取消按钮已删）
     function cancelChanges() {
         root.reloadFromApi()
         root.cancelled()
@@ -121,70 +144,23 @@ Item {
 
     Component.onCompleted: reloadFromApi()
 
-    onCornerModeChanged: previewCanvas.requestPaint()
-    onGlassOnChanged: previewCanvas.requestPaint()
-
     // --------------------------------------------------------------- 页面骨架
     Rectangle {  // 页面底色（推入 StackView 后盖住主面板）
         anchors.fill: parent
         color: Style.bg
     }
 
-    // 顶部返回行：‹ + 标题
-    Item {
-        id: header
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: 48
-        anchors.leftMargin: 16
-        anchors.rightMargin: 16
-
-        AbstractButton {
-            id: backBtn
-            width: 32
-            height: 32
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            Accessible.name: "返回"
-            contentItem: Text {
-                text: "‹"
-                font.family: Style.fontDefault
-                font.pixelSize: 20
-                color: Style.ink
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: 16
-                color: backBtn.down ? Qt.rgba(0, 0, 0, 0.08)
-                                    : (backBtn.hovered ? Style.hoverWash : "transparent")
-                Behavior on color { ColorAnimation { duration: 140 } }
-            }
-            onClicked: root.cancelChanges()
-        }
-        Text {
-            text: "设置"
-            anchors.left: backBtn.right
-            anchors.leftMargin: 10
-            anchors.verticalCenter: parent.verticalCenter
-            font.family: Style.fontDefault
-            font.pixelSize: 20
-            font.weight: Font.DemiBold
-            color: Style.ink
-        }
-    }
-
-    // 中部：单列内容，放不下即滚动（480x640 起，窄时单列滚动）
+    // 无标题行/返回按钮（DESIGN.md §3.9）：顶栏胶囊即导航（「设置」段亮起），
+    // Esc = 取消返回；内容自画布顶端起排（胶囊 16+32 下方让位）。
     ScrollView {
         id: scroller
-        anchors.top: header.bottom
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: footer.top
         anchors.leftMargin: 16
         anchors.rightMargin: 16
-        anchors.topMargin: 2
+        anchors.topMargin: 64
         anchors.bottomMargin: 8
         contentWidth: availableWidth
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -192,7 +168,7 @@ Item {
         Column {
             id: contentCol
             width: scroller.availableWidth
-            spacing: 10
+            spacing: 12
 
             // 保存/载入问题红条（空清单时隐藏）
             Rectangle {
@@ -239,7 +215,7 @@ Item {
                 Rectangle {
                     width: parent.width
                     height: visible ? lockHint.implicitHeight + 16 : 0
-                    radius: 8
+                    radius: 10
                     visible: root.engineLocked
                     color: Qt.alpha(Style.warn, 0.14)
                     Text {
@@ -256,13 +232,15 @@ Item {
                     }
                 }
 
+                // FPS / 码率两格等分（DPI 控件已删：flex 会话自动取设备
+                // 密度，面板路径不再手动指定；CLI --dpi 仍可用——DESIGN §3.8）
                 Row {
                     width: parent.width
                     spacing: 12
 
                     NumberCell {
                         id: fpsCell
-                        width: (parent.width - 24) / 3
+                        width: (parent.width - 12) / 2
                         title: "FPS"
                         boxFrom: 1
                         boxTo: 240
@@ -270,55 +248,11 @@ Item {
                     }
                     NumberCell {
                         id: bitrateCell
-                        width: (parent.width - 24) / 3
+                        width: (parent.width - 12) / 2
                         title: "码率 Mbps"
                         boxFrom: 1
                         boxTo: 200
                         accessName: "视频码率 Mbps"
-                    }
-
-                    // DPI + 自动开关：开 = 跟随显示推荐（dpi 为 null）
-                    Column {
-                        id: dpiCell
-                        property alias box: dpiBox
-                        width: (parent.width - 24) / 3
-                        spacing: 6
-                        Item {
-                            width: parent.width
-                            height: 20
-                            CaptionText {
-                                text: "DPI"
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                            Text {
-                                id: dpiAutoLabel
-                                anchors.right: dpiAutoSwitch.left
-                                anchors.rightMargin: 6
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "自动"
-                                font.family: Style.fontDefault
-                                font.pixelSize: 12
-                                color: Style.ink
-                            }
-                            GlassSwitch {
-                                id: dpiAutoSwitch
-                                objectName: "dpiAutoSwitch"
-                                small: true
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                Accessible.name: "DPI 自动"
-                            }
-                        }
-                        NumberBox {
-                            id: dpiBox
-                            objectName: "dpiBox"
-                            width: parent.width
-                            from: 120
-                            to: 640
-                            enabled: !dpiAutoSwitch.checked
-                            accessName: "DPI"
-                        }
                     }
                 }
             }
@@ -363,42 +297,46 @@ Item {
                         onClicked: root.videoCodec = "av1"
                     }
                 }
-                CaptionText {
-                    width: parent.width
-                    text: "自动 = 探测真机硬件编码器择优（H.265 > H.264）；AV1 仅在设备确有硬件编码器时生效"
-                    wrapMode: Text.Wrap
-                }
 
-                // 音频策略三选一
+                // 音频策略三选一：行首行标签与 FPS/码率同构（选项名已
+                // 自说明，不配说明文字——DESIGN §3.8）
+                Item {
+                    width: parent.width
+                    height: 20
+                    CaptionText {
+                        objectName: "audioRowLabel"
+                        text: "音频"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
                 Row {
                     width: parent.width
                     spacing: 8
                     ModeButton {
+                        objectName: "audioLatest"
                         width: (parent.width - 16) / 3
-                        text: "单会话（最新）"
+                        text: "仅最新会话"
                         selected: root.audioPolicy === "latest"
-                        Accessible.name: "音频：单会话（最新）"
+                        Accessible.name: "音频：仅最新会话"
                         onClicked: root.audioPolicy = "latest"
                     }
                     ModeButton {
+                        objectName: "audioAll"
                         width: (parent.width - 16) / 3
-                        text: "全部"
+                        text: "全部会话"
                         selected: root.audioPolicy === "all"
                         Accessible.name: "音频：全部会话"
                         onClicked: root.audioPolicy = "all"
                     }
                     ModeButton {
+                        objectName: "audioMute"
                         width: (parent.width - 16) / 3
-                        text: "关闭"
+                        text: "静音"
                         selected: root.audioPolicy === "off"
-                        Accessible.name: "音频：关闭"
+                        Accessible.name: "音频：静音"
                         onClicked: root.audioPolicy = "off"
                     }
-                }
-                CaptionText {
-                    width: parent.width
-                    text: "多个会话同时出声会混音嘈杂；最新 = 新会话出声时其余自动静音重启"
-                    wrapMode: Text.Wrap
                 }
 
                 // 镜像时关闭设备屏幕
@@ -429,100 +367,101 @@ Item {
                 }
             }
 
+            // ------------------------------------------------------ 窗口栏卡片
+            // 串流窗口上巴/下巴模式（默认值）：两行分段控件，同音频行的行标签
+            // + 分段按钮构型。immersive = 无边框 + overlay 悬浮控件；native =
+            // 系统原生栏；none = 该边永不建栏（下巴默认即此）。应用未单独
+            // 设置（右键菜单「窗口栏 ▸」按应用覆盖）时生效，随启动 argv 注入
+            // --chrome-top/--chrome-bottom。
+            GlassCard {
+                id: windowBarCard
+                objectName: "windowBarCard"
+                title: "窗口栏（默认）"
+
+                // 上巴：沉浸 | 系统
+                Item {
+                    width: parent.width
+                    height: 20
+                    CaptionText {
+                        objectName: "topBarRowLabel"
+                        text: "上巴"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    ModeButton {
+                        objectName: "topBarImmersive"
+                        width: (parent.width - 8) / 2
+                        text: "沉浸"
+                        selected: root.topBarMode === "immersive"
+                        Accessible.name: "上巴：沉浸"
+                        onClicked: root.topBarMode = "immersive"
+                    }
+                    ModeButton {
+                        objectName: "topBarNative"
+                        width: (parent.width - 8) / 2
+                        text: "系统"
+                        selected: root.topBarMode === "native"
+                        Accessible.name: "上巴：系统"
+                        onClicked: root.topBarMode = "native"
+                    }
+                }
+
+                // 下巴：沉浸 | 系统 | 不显示（none 三选，等分三格）
+                Item {
+                    width: parent.width
+                    height: 20
+                    CaptionText {
+                        objectName: "bottomBarRowLabel"
+                        text: "下巴"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    ModeButton {
+                        objectName: "bottomBarImmersive"
+                        width: (parent.width - 16) / 3
+                        text: "沉浸"
+                        selected: root.bottomBarMode === "immersive"
+                        Accessible.name: "下巴：沉浸"
+                        onClicked: root.bottomBarMode = "immersive"
+                    }
+                    ModeButton {
+                        objectName: "bottomBarNative"
+                        width: (parent.width - 16) / 3
+                        text: "系统"
+                        selected: root.bottomBarMode === "native"
+                        Accessible.name: "下巴：系统"
+                        onClicked: root.bottomBarMode = "native"
+                    }
+                    ModeButton {
+                        objectName: "bottomBarNone"
+                        width: (parent.width - 16) / 3
+                        text: "不显示"
+                        selected: root.bottomBarMode === "none"
+                        Accessible.name: "下巴：不显示"
+                        onClicked: root.bottomBarMode = "none"
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "应用未单独设置时生效；沉浸 = 无边框悬浮控件，系统 = 保留系统原生栏，" +
+                          "不显示 = 该边不建栏（scrcpy 右键已是返回，下巴常显冗余）"
+                    wrapMode: Text.Wrap
+                }
+            }
+
             // ------------------------------------------------------ 外观卡片
             GlassCard {
                 id: appearanceCard
                 objectName: "appearanceCard"
                 title: "外观"
-
-                // 圆角模式三选一
-                Row {
-                    width: parent.width
-                    spacing: 8
-                    ModeButton {
-                        width: (parent.width - 16) / 3
-                        text: "系统圆角(默认)"
-                        selected: root.cornerMode === "system"
-                        Accessible.name: "圆角模式：系统圆角(默认)"
-                        onClicked: root.cornerMode = "system"
-                    }
-                    ModeButton {
-                        width: (parent.width - 16) / 3
-                        text: "G2 大圆角"
-                        selected: root.cornerMode === "g2"
-                        Accessible.name: "圆角模式：G2 大圆角（实验）"
-                        onClicked: root.cornerMode = "g2"
-                    }
-                    ModeButton {
-                        width: (parent.width - 16) / 3
-                        text: "直角"
-                        selected: root.cornerMode === "none"
-                        Accessible.name: "圆角模式：直角"
-                        onClicked: root.cornerMode = "none"
-                    }
-                }
-
-                // 大小滑块：仅 g2 模式可用（0-96 DIP）
-                Item {
-                    width: parent.width
-                    height: 32
-                    opacity: sizeSlider.enabled ? 1 : 0.45
-                    Slider {
-                        id: sizeSlider
-                        objectName: "cornerSlider"
-                        anchors.left: parent.left
-                        anchors.right: valueLabel.left
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        from: 0
-                        to: 96
-                        stepSize: 1
-                        value: 48
-                        padding: 9
-                        enabled: root.cornerMode === "g2"
-                        Accessible.name: "圆角大小"
-                        background: Rectangle {
-                            x: sizeSlider.leftPadding
-                            y: sizeSlider.topPadding
-                               + sizeSlider.availableHeight / 2 - height / 2
-                            width: sizeSlider.availableWidth
-                            height: 4
-                            radius: 2
-                            color: Style.hairline
-                            Rectangle {
-                                width: sizeSlider.visualPosition * parent.width
-                                height: parent.height
-                                radius: 2
-                                color: Style.accent
-                                visible: sizeSlider.enabled
-                            }
-                        }
-                        handle: Rectangle {
-                            x: sizeSlider.leftPadding
-                               + sizeSlider.visualPosition
-                                 * (sizeSlider.availableWidth - width)
-                            y: sizeSlider.topPadding
-                               + sizeSlider.availableHeight / 2 - height / 2
-                            width: 18
-                            height: 18
-                            radius: 9
-                            color: "#FFFFFF"
-                            border.width: 1
-                            border.color: sizeSlider.hovered ? Style.accent : Style.hairline
-                            Behavior on border.color { ColorAnimation { duration: 140 } }
-                        }
-                        onValueChanged: previewCanvas.requestPaint()
-                    }
-                    Text {
-                        id: valueLabel
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: Math.round(sizeSlider.value) + " DIP"
-                        font.family: Style.fontDefault
-                        font.pixelSize: 13
-                        color: Style.ink
-                    }
-                }
 
                 // 液态玻璃开关
                 Item {
@@ -545,108 +484,12 @@ Item {
                         onToggled: root.glassOn = checked
                     }
                 }
-
-                // 预览区：Canvas 按模式/大小即时重绘
-                Canvas {
-                    id: previewCanvas
-                    objectName: "cornerPreview"
-                    width: parent.width
-                    height: 80
-                    antialiasing: true
-                    Accessible.role: Accessible.Graphic
-                    Accessible.name: "圆角外观预览"
-
-                    onPaint: {
-                        var ctx = getContext("2d")
-                        ctx.reset()
-                        ctx.clearRect(0, 0, width, height)
-                        var bx = 14, by = 8
-                        var bw = width - 28, bh = height - 30
-                        var r = Math.min(Math.round(sizeSlider.value),
-                                         bw / 2, bh / 2)
-                        ctx.lineWidth = 1
-                        ctx.beginPath()
-                        if (root.cornerMode === "none") {
-                            ctx.rect(bx, by, bw, bh)          // 直角
-                        } else if (root.cornerMode === "system") {
-                            // system：Windows 系统小圆角的示意半径
-                            roundRectPath(ctx, bx, by, bw, bh, 10)
-                        } else {
-                            // g2：四阶（n=4）超椭圆大圆角，半径跟随滑块
-                            squirclePath(ctx, bx, by, bw, bh, r, 4)
-                        }
-                        // 液态玻璃开 → 淡蓝玻璃感；关 → 平淡灰面
-                        ctx.fillStyle = root.glassOn ? "rgba(231,240,251,0.9)" : "#F0F0F3"
-                        ctx.fill()
-                        ctx.strokeStyle = "#D8D8DC"
-                        ctx.stroke()
-                        // 底部注记
-                        var note = root.cornerMode === "system"
-                                   ? "Windows 系统圆角"
-                                   : (root.cornerMode === "g2"
-                                      ? "G2 超椭圆 · " + Math.round(sizeSlider.value) + " DIP"
-                                      : "直角")
-                        ctx.font = "12px '" + Style.fontDefault + "', 'Noto Sans CJK SC', sans-serif"
-                        ctx.fillStyle = "#86868B"
-                        ctx.textAlign = "center"
-                        ctx.fillText(note, width / 2, height - 6)
-                    }
-
-                    // 普通圆角矩形路径（arcTo 四角）
-                    function roundRectPath(ctx, x, y, w, h, r) {
-                        ctx.moveTo(x + r, y)
-                        ctx.lineTo(x + w - r, y)
-                        ctx.arcTo(x + w, y, x + w, y + r, r)
-                        ctx.lineTo(x + w, y + h - r)
-                        ctx.arcTo(x + w, y + h, x + w - r, y + h, r)
-                        ctx.lineTo(x + r, y + h)
-                        ctx.arcTo(x, y + h, x, y + h - r, r)
-                        ctx.lineTo(x, y + r)
-                        ctx.arcTo(x, y, x + r, y, r)
-                        ctx.closePath()
-                    }
-
-                    // 超椭圆（squircle）路径：每个角是一段四分之一样本曲线
-                    function squirclePath(ctx, x, y, w, h, r, n) {
-                        var p = 2 / n            // 指数：n=4 → iOS 风格 G2 连续曲率
-                        var samples = 24
-                        ctx.moveTo(x + r, y)
-                        ctx.lineTo(x + w - r, y)
-                        // 右上角：中心 (x+w-r, y+r)，从 (0,-r) 扫到 (r,0)
-                        for (var i = 0; i <= samples; i++) {
-                            var t = (i / samples) * Math.PI / 2
-                            ctx.lineTo(x + w - r + r * Math.pow(Math.sin(t), p),
-                                       y + r - r * Math.pow(Math.cos(t), p))
-                        }
-                        ctx.lineTo(x + w, y + h - r)
-                        // 右下角：中心 (x+w-r, y+h-r)，从 (r,0) 扫到 (0,r)
-                        for (i = 0; i <= samples; i++) {
-                            t = (i / samples) * Math.PI / 2
-                            ctx.lineTo(x + w - r + r * Math.pow(Math.cos(t), p),
-                                       y + h - r + r * Math.pow(Math.sin(t), p))
-                        }
-                        ctx.lineTo(x + r, y + h)
-                        // 左下角：中心 (x+r, y+h-r)，从 (0,r) 扫到 (-r,0)
-                        for (i = 0; i <= samples; i++) {
-                            t = (i / samples) * Math.PI / 2
-                            ctx.lineTo(x + r - r * Math.pow(Math.sin(t), p),
-                                       y + h - r + r * Math.pow(Math.cos(t), p))
-                        }
-                        ctx.lineTo(x, y + r)
-                        // 左上角：中心 (x+r, y+r)，从 (-r,0) 扫到 (0,-r)
-                        for (i = 0; i <= samples; i++) {
-                            t = (i / samples) * Math.PI / 2
-                            ctx.lineTo(x + r - r * Math.pow(Math.cos(t), p),
-                                       y + r - r * Math.pow(Math.sin(t), p))
-                        }
-                        ctx.closePath()
-                    }
-                }
             }
         }
     }
 
-    // 底部操作行：取消（放弃改动） + 保存
+    // 底部：仅一个保存主按钮（Esc/顶栏胶囊返回即放弃——DESIGN §3.9，
+    // 取消按钮与返回钮冗余）
     Item {
         id: footer
         anchors.left: parent.left
@@ -657,22 +500,13 @@ Item {
         anchors.rightMargin: 16
         anchors.bottomMargin: 12
 
-        Row {
+        PrimaryButton {
+            objectName: "saveButton"
             anchors.right: parent.right
-            spacing: 10
-            SecButton {
-                text: "取消"
-                width: 76
-                Accessible.name: "取消"
-                onClicked: root.cancelChanges()   // 放弃改动：回填 + cancelled
-            }
-            PrimaryButton {
-                objectName: "saveButton"
-                text: "保存"
-                width: 76
-                Accessible.name: "保存设置"
-                onClicked: root.saveChanges()
-            }
+            text: "保存"
+            width: 76
+            Accessible.name: "保存设置"
+            onClicked: root.saveChanges()
         }
     }
 
@@ -737,7 +571,7 @@ Item {
         }
     }
 
-    // 次要按钮（浏览/检测/取消）：白底描边，hover 洗色 140ms
+    // 次要按钮（浏览/检测）：白底描边，hover 洗色 140ms
     component SecButton: AbstractButton {
         id: sbtn
         implicitHeight: 32
@@ -751,7 +585,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
-            radius: 8
+            radius: 10
             color: !sbtn.enabled ? Qt.rgba(0, 0, 0, 0.03)
                                  : (sbtn.down ? Qt.rgba(0, 0, 0, 0.08)
                                               : (sbtn.hovered ? Style.hoverWash : "#FFFFFF"))
@@ -776,7 +610,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
-            radius: 8
+            radius: 10
             // 派生 hover/pressed 色（整合时换 Style singleton）
             color: pbtn.enabled ? (pbtn.down ? Style.accentPress
                                              : (pbtn.hovered ? Style.accentHover : Style.accent))
@@ -803,7 +637,7 @@ Item {
             elide: Text.ElideRight
         }
         background: Rectangle {
-            radius: 8
+            radius: 10
             color: mbtn.selected ? Qt.alpha(Style.accent, 0.14)
                                  : (mbtn.hovered ? Style.hoverWash : "transparent")
             border.width: 1
@@ -878,7 +712,7 @@ Item {
             inputMethodHints: Qt.ImhFormattedNumbersOnly
         }
         background: Rectangle {
-            radius: 8
+            radius: 10
             color: nbox.enabled ? "#FFFFFF" : Qt.rgba(0, 0, 0, 0.03)
             border.width: 1
             border.color: nbox.activeFocus ? Style.accent : Style.hairline
@@ -888,7 +722,7 @@ Item {
             x: parent.width - width
             width: 28
             height: parent.height
-            radius: 8
+            radius: 10
             color: nbox.up.pressed ? Style.hoverWash : "transparent"
             Text {
                 anchors.centerIn: parent
@@ -901,7 +735,7 @@ Item {
             x: 0
             width: 28
             height: parent.height
-            radius: 8
+            radius: 10
             color: nbox.down.pressed ? Style.hoverWash : "transparent"
             Text {
                 anchors.centerIn: parent
@@ -946,25 +780,48 @@ Item {
         property alias text: field.text
         property bool probing: false
         property string statusText: ""
-        property color statusColor: Style.ink2
+        property real statusOpacity: 0   // 瞬时提示：结果波起→淡出（见 fadeTimer）
         width: parent.width
         spacing: 6
 
-        Item {  // 行首字段名，行尾短结果标签（绿“✓ 版本/✓ 可执行”，
-                // 红“✗ 无法运行…/✗ 未在 PATH…”）
+        // 行首字段名；行尾检测结果为瞬时提示——深底胶囊波起，约 2.5s
+        // 后淡出，不留常驻绿/红字（DESIGN §3.8；保存失败仍走红条）
+        Item {
             width: parent.width
-            height: 20
+            height: 26
             CaptionText {
                 text: prow.tool + " 路径"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
             }
-            CaptionText {
+            Rectangle {
+                id: statusPill
+                objectName: prow.tool + "ProbeStatus"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: prow.probing ? "检测中…" : prow.statusText
-                color: prow.probing ? Style.ink2 : prow.statusColor
-                visible: text.length > 0
+                width: statusLabel.implicitWidth + 20
+                height: 26
+                radius: 14
+                color: "#E61D1D1F"   // 深底胶囊，白字；成败只靠 ✓/✗ 区分
+                visible: statusLabel.text.length > 0
+                opacity: prow.statusOpacity
+                Behavior on opacity { NumberAnimation { duration: Style.durFast } }
+                Text {
+                    id: statusLabel
+                    objectName: prow.tool + "ProbeStatusLabel"
+                    anchors.centerIn: parent
+                    text: prow.probing ? "检测中…" : prow.statusText
+                    color: "#FFFFFF"
+                    font.family: Style.fontDefault
+                    font.pixelSize: 12
+                }
+            }
+            // 结果可见约 2.36s 后开始 140ms 淡出，整体在 2.5s 收场；
+            // 重复探测 restart，计时重置
+            Timer {
+                id: fadeTimer
+                interval: 2360
+                onTriggered: prow.statusOpacity = 0
             }
         }
         Row {
@@ -986,7 +843,7 @@ Item {
                 rightPadding: 10
                 Accessible.name: prow.tool + " 路径"
                 background: Rectangle {
-                    radius: 8
+                    radius: 10
                     color: field.enabled ? "#FFFFFF" : Qt.rgba(0, 0, 0, 0.03)
                     border.width: 1
                     border.color: field.activeFocus ? Style.accent : Style.hairline
@@ -1009,12 +866,15 @@ Item {
             }
         }
 
-        // 异步检测：结果经 probeDone 信号回流行内标签
+        // 异步检测：结果经 probeDone 信号回流行内胶囊；“检测中…”属进行
+        // 状态，不计时；只有结果才启动淡出计时
         function beginProbe() {
             if (prow.probing)
                 return
             prow.probing = true
             prow.statusText = ""
+            prow.statusOpacity = 1
+            fadeTimer.stop()
             settingsApi.probe(prow.tool, field.text.trim())
         }
 
@@ -1034,17 +894,16 @@ Item {
                     return
                 prow.probing = false
                 // 文案对齐 widgets 版：区分“填了路径但无法运行”与
-                // “PATH 里没有，可手动填写”两种可指导性错误
+                // “PATH 里没有，可手动填写”两种可指导性错误；波起后淡出
                 if (ok) {
                     prow.statusText = detail !== "" ? "✓ " + detail : "✓ 可执行"
-                    prow.statusColor = Style.success
                 } else if (field.text.trim() !== "") {
                     prow.statusText = "✗ 无法运行，请检查路径"
-                    prow.statusColor = Style.danger
                 } else {
                     prow.statusText = "✗ 未在 PATH 找到，可手动填写路径"
-                    prow.statusColor = Style.danger
                 }
+                prow.statusOpacity = 1
+                fadeTimer.restart()
             }
         }
     }

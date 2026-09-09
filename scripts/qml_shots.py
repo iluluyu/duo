@@ -1,4 +1,4 @@
-"""真数据 QML 出图：主面板 / 设置页默认 / 设置页 g2（多模态自检用）。
+"""真数据 QML 出图：主面板 / 设置页默认（多模态自检用）。
 
 offscreen + software 渲染；只在 adb 边界打桩（一台在线设备 + 目录应用全部
 已装 + 偏好/设置落到临时目录），其余全走生产代码路径：真实 PanelController、
@@ -8,10 +8,9 @@ offscreen + software 渲染；只在 adb 边界打桩（一台在线设备 + 目
 
     .venv/bin/python scripts/qml_shots.py
 
-输出三张 PNG 到 docs/validation/assets/：
+输出两张 PNG 到 docs/validation/assets/：
     qml-main.png           主面板正常态（设备在线、目录应用已装、状态 toast）
-    qml-settings.png       设置页默认态（system 圆角、dpi 自动、玻璃开）
-    qml-settings-g2.png    设置页 g2 态（G2 大圆角 + 滑块 72 + 预览重绘）
+    qml-settings.png       设置页默认态（DPI/圆角控件已删，仅剩玻璃开关）
 """
 
 from __future__ import annotations
@@ -74,7 +73,7 @@ def patch_adb_boundary() -> None:
         """把 adb / 磁盘边界换掉：出图绝不触碰真实设备与真实用户数据。"""
         controller_mod.DeviceMonitor = _StubMonitor  # type: ignore[assignment]
         controller_mod._resolve_installed = (  # type: ignore[assignment]
-                lambda adb, done: done({package for _, package in APP_CATALOG})
+                lambda adb, done: done({preset.package for preset in APP_CATALOG})
         )
         controller_mod._prefs_path = lambda: TMP / "gui_prefs.json"  # type: ignore[assignment]
         settings_mod.settings_path = lambda: TMP / "settings.json"  # type: ignore[assignment]
@@ -124,18 +123,10 @@ def main() -> int:
                 return 2
         gear.click()
         pump(600)
-        grab(window, "qml-settings.png")
-
-        # g2 态：cornerMode=g2 + 滑块 72，Canvas 预览即时重绘
-        page = window.findChild(QObject, "settingsPageQml")
-        slider = window.findChild(QObject, "cornerSlider")
-        if page is None or slider is None:
-                print("[fatal] 找不到设置页/滑块", file=sys.stderr)
+        if window.findChild(QObject, "settingsPageQml") is None:
+                print("[fatal] 设置页未推入", file=sys.stderr)
                 return 2
-        page.setProperty("cornerMode", "g2")
-        slider.setProperty("value", 72)
-        pump(400)
-        grab(window, "qml-settings-g2.png")
+        grab(window, "qml-settings.png")
 
         # 按测试同款顺序拆卸：先杀 QML 引擎（绑定不再重估），再停控制器，
         # 避免进程退出期 GC 顺序导致的 "ctrl of null" 绑定噪音。
