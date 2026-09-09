@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<!-- docs/ui/mockups/panel.html — Duo 主面板方案稿（纯静态、零 JS、零外部依赖）。
+     全部令牌取自 docs/ui/DESIGN.md；本文件只做展示，不进产品代码。
+     同一套组件类渲染两种窗口：窄 420×660 与 宽 720×480（映射 QML anchors +
+     cellWidth=宽/floor(宽/92) 的自适应；网格列数由 auto-fill/minmax 驱动）。
+     布局对应 duo/ui/qml/Main.qml 的目标态：顶栏通栏胶囊 / 设备卡 / 固定应用卡 /
+     镜像卡 / 搜索 / 应用网格（区内滚动）/ 运行卡 / 右键菜单（一级 + 固定比例▸/窗口栏▸
+     二级 / 镜像卡菜单）/ Toast（层级依 DESIGN.md §3）。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duo 主面板 · 方案稿</title>
+<style>
+/* ============ 令牌（与 DESIGN.md / Style.qml 一致，不发明新值） ============ */
+:root{
+  --bg:#F5F5F7;            /* 云母画布 */
+  --display:#E8E8ED;       /* 方案稿展示底（非产品令牌，仅页面装裱） */
+  --ink:#1D1D1F;           /* 主文字 */
+  --ink2:#86868B;          /* 次文字 */
+  --accent:#007AFF;        /* 唯一强调色 */
+  --accent-hi:#2E90FF;     /* 强调 hover */
+  --running:#34C759;       /* 在线/运行中绿 */
+  --danger:#FF3B30;        /* 危险（✕ hover 线条，§2 色板） */
+  --card:rgba(255,255,255,.72);      /* 卡填充 */
+  --seg:#fff;                        /* 分段选中段：不透明纯白（与胶囊底强色差） */
+  --card-bd:rgba(255,255,255,.65);   /* 卡亮边 */
+  --flyout:rgba(255,255,255,.60);    /* 胶囊浮层填充 */
+  --menu:rgba(255,255,255,.52);       /* 菜单浮层：毛玻璃染色层 */
+  --menu-blur:blur(28px) saturate(1.1);/* 菜单浮层：高斯模糊（真实现=圆角蒙版采样模糊） */
+  --wash:rgba(0,0,0,.04);            /* hover 洗色 */
+  --hair:rgba(0,0,0,.12);            /* 发丝线 */
+  --shadow:0 8px 24px rgba(0,0,0,.10); /* 唯一阴影 */
+  --dur:140ms;             /* 唯一时长 */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--display);
+  font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:13px;color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;align-items:center;
+  padding:48px 20px 96px;
+}
+button{font:inherit;border:0;background:none;color:inherit;cursor:pointer}
+
+/* ============ 应用图标模板：品牌色微渐变 squircle + 单字 + 顶部内亮边 ============ */
+.app-ic{
+  width:60px;height:60px;border-radius:14px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(180deg,var(--l),var(--c));
+  color:#fff;font-size:28px;font-weight:600;user-select:none;
+  box-shadow:0 1px 2px rgba(0,0,0,.08);               /* 纯渐变 squircle：顶部亮边已删（Qt SVG 下读成黑线） */
+}
+.app-ic.ink{color:var(--ink)}          /* 亮底用深字（不背单词 / 美团） */
+.app-ic.sm{width:44px;height:44px;border-radius:10px;font-size:20px}
+.app-ic.dark{box-shadow:0 1px 2px rgba(0,0,0,.08)}
+
+/* ============ 面板画框（1:1；窄 / 宽同一套组件类） ============ */
+.panel-sec+.panel-sec{margin-top:64px}
+.panel-sec .sec-title{margin-bottom:12px}
+.frame{
+  width:420px;height:660px;flex:none;border-radius:12px;overflow:hidden;
+  border:1px solid var(--hair);box-shadow:var(--shadow);
+}
+.frame--wide{width:720px;height:480px}
+.panel{
+  position:relative;overflow:hidden;width:100%;height:100%;  /* BFC：卡列 margin-top 不再穿透（绝对层锚回画框顶/底） */
+  background:
+    radial-gradient(340px 340px at -40px -30px,rgba(0,122,255,.06),rgba(0,122,255,.03) 55%,transparent 72%),
+    radial-gradient(400px 400px at 480px 710px,rgba(251,114,153,.05),rgba(251,114,153,.03) 55%,transparent 72%),
+    var(--bg);
+}
+
+/* 顶栏通栏胶囊：亚克力横条整行覆盖画布（左右各让出页面留白 20，不贴窗口边），
+   替代原标题行与齿轮（DESIGN.md §3.2）。两段均分通栏（flex:1）、文字居中：
+   量测宽 ≈（通栏 − 4）/ 2，−4 = 条内边距 2×2（条间不留 gap，严格对半）。
+   当前段 = 白 72% 填充 + 主文字（DemiBold 属选中态），非当前段透明 +
+   次色，hover 洗色；段高 28 / 圆角 14 = 16 − 内边距 2（同心） */
+.topcap{
+  position:absolute;top:16px;left:20px;right:20px;z-index:5;
+  display:flex;padding:2px;height:32px;border-radius:16px;
+  background:var(--menu);backdrop-filter:var(--menu-blur);border:1px solid var(--card-bd);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+}
+.seg{
+  flex:1;                                   /* 均分：两段各占通栏一半，文字居中 */
+  height:28px;border-radius:14px;
+  font-size:13px;color:var(--ink2);display:flex;align-items:center;justify-content:center;
+  transition:background-color var(--dur),color var(--dur);
+}
+.seg:not(.on){cursor:pointer}               /* 非当前段可点；选中段 default */
+.seg:not(.on):hover{background:var(--wash)}
+.seg.on{background:var(--seg);color:var(--ink);font-weight:600;cursor:default}   /* 选中段不透明纯白，与胶囊底 60% 白强色差（2026-09-08） */
+
+/* 模拟系统装饰：32px 标题栏区（rgba(0,0,0,.02) 底 + Windows 风格 ─ □ ✕ 浅灰），
+   非产品组件；胶囊 top:16 跨坐其下缘，其下内容自胶囊底（48）+12 起 */
+.titlebar{
+  position:absolute;top:0;left:0;right:0;height:32px;z-index:4;
+  background:rgba(0,0,0,.02);
+  display:flex;align-items:center;justify-content:flex-end;gap:20px;
+  padding:0 12px;font-size:11px;line-height:1;color:var(--ink2);user-select:none;
+}
+
+/* 设备卡 → 固定应用卡 → 镜像卡 → 搜索：纵向卡列，卡距 12（层级顺序依 DESIGN.md §3）。
+   宽窗同结构：仅设备卡限宽 480，其余卡全宽。
+   标题行已由悬浮胶囊替代：卡列自胶囊底（48）+12 起（顶部 0–32 为模拟标题栏区） */
+.panel-top{display:flex;flex-direction:column;gap:12px;margin:60px 20px 0}
+.panel--wide .device-card{max-width:480px}   /* 宽窗限宽：不整幅拉伸 */
+/* 设备卡 = 纯状态：绿点 + 在线 + serial，右侧留白（投屏按钮移至镜像卡，§3.5） */
+.device-card{
+  height:76px;border-radius:16px;
+  background:var(--card);border:1px solid var(--card-bd);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  display:flex;align-items:center;padding-right:12px;
+}
+.dev-left{display:flex;align-items:center;gap:12px;margin-left:14px}
+.dev-dot{width:8px;height:8px;border-radius:50%;background:var(--running);flex:none}  /* 绿点统一 8px（§3.7） */
+.dev-text{display:flex;flex-direction:column;gap:2px}
+.dev-state{font-size:15px;font-weight:600;line-height:20px}
+.dev-serial{font-size:12px;color:var(--ink2);line-height:16px}
+/* 镜像卡（§3.5）：固定应用卡与搜索之间的同语言玻璃卡 —— 圆角 16 / cardFill+blur /
+   亮边 / 内边距 12 / 高 64；左「设备镜像」15px/600 ink，右「投屏」强调钮 */
+.mirrorcard{
+  height:64px;border-radius:16px;padding:0 12px;
+  background:var(--card);border:1px solid var(--card-bd);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.mc-title{font-size:15px;font-weight:600;line-height:20px}
+/* 「投屏」强调按钮（镜像卡右侧，§3.5）：68×32 / 圆角 16 */
+.mirror{
+  width:68px;height:32px;border-radius:16px;flex:none;
+  background:var(--accent);color:#fff;font-size:13px;font-weight:600;
+  transition:background-color var(--dur);
+}
+.mirror:hover{background:var(--accent-hi)}
+
+/* 搜索框：胶囊与卡合流 —— 高 36 / 圆角 18（=高/2），卡材质常态，聚焦升亚克力 */
+.search{
+  height:36px;border-radius:18px;
+  background:var(--card);border:1px solid var(--card-bd);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  display:flex;align-items:center;gap:8px;padding:0 12px;
+  transition:background-color var(--dur);
+}
+.search:focus-within{background:var(--flyout);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+.search svg{flex:none;color:var(--ink2)}
+.search input{flex:1;min-width:0;border:0;outline:0;background:none;font:inherit;font-size:12px;color:var(--ink)}
+.search input::placeholder{color:var(--ink2)}
+
+/* 固定应用卡（置顶）：与设备卡同语言的玻璃卡 —— 圆角 16 / cardFill+blur /
+   亮边 / 内边距 12 / 零阴影（分层靠材质对比，铁律 8）；卡内 44px 图标横排间距 12，
+   无标题、无说明文字、无按钮；窄窗放不下自然换行（flex-wrap） */
+.pinbar{
+  display:flex;flex-wrap:wrap;gap:12px;padding:12px;border-radius:16px;
+  background:var(--card);border:1px solid var(--card-bd);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+}
+.pin{border-radius:10px}
+.pin .app-ic{transition:opacity var(--dur)}
+.pin:hover .app-ic{opacity:.85}
+
+/* 应用网格：列数随容器宽度自适应 —— auto-fill ≥92px 等分拉伸，
+   即 QML cellWidth = 宽 / floor(宽/92) 的 CSS 等价物；行高固定 102 节奏 */
+.grid-wrap{position:relative;height:178px;margin:12px 20px 0}  /* 插镜像卡后自 354 起，压缩至 532：fade 止于运行卡（top 544）上方，不叠卡、留呼吸 12（§3.8） */
+.grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));grid-auto-rows:102px;
+  width:100%;height:100%;overflow-y:auto;scrollbar-width:none;
+}
+.grid::-webkit-scrollbar{display:none}
+.grid-wrap::after{ /* 底部滚动暗示（装裱层，pointer-events 穿透） */
+  content:"";position:absolute;left:0;right:0;bottom:0;height:36px;
+  background:linear-gradient(180deg,rgba(245,245,247,0),rgba(245,245,247,.9));
+  pointer-events:none;
+}
+.panel--wide .grid-wrap{height:106px}        /* 宽窗 480 装入镜像卡后网格与运行卡不可兼得：本档呈无会话态（§3.8 仅会话时出现），
+                                             网格让满余高 354→460（底留 20 与左右留白同节奏，首行 102 + 滚动暗示）；运行卡与 fade 关系见窄窗 */
+.tile{
+  width:100%;height:102px;position:relative;
+  display:flex;flex-direction:column;align-items:center;padding-top:12px;
+  cursor:default;
+}
+.tile.off{opacity:.4;pointer-events:none}   /* 未安装：整体 40%、禁点 */
+.icwrap{position:relative;width:60px;height:60px}
+/* hover 洗色只作用于图标区：68×68 圆角 14 洗色块叠于 60px 图标之下，不洗整格 */
+.icwrap::before{
+  content:"";position:absolute;left:-4px;top:-4px;width:68px;height:68px;border-radius:14px;
+  background:transparent;transition:background-color var(--dur);
+}
+.tile:hover .icwrap::before,.tile.is-hover .icwrap::before{background:var(--wash)}
+.tlabel{
+  margin-top:6px;font-size:12px;line-height:16px;color:var(--ink);
+  max-width:88px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+/* 角标降噪：磁贴默认无角标；仅未置顶 hover 才露出 ☆（已置顶在固定栏，无角标概念） */
+.badge{
+  position:absolute;top:-4px;right:-4px;width:26px;height:26px;border-radius:50%;
+  background:var(--card);border:1px solid var(--card-bd);
+  display:flex;align-items:center;justify-content:center;
+  font-size:12px;color:var(--accent);
+  opacity:0;transition:opacity var(--dur);
+}
+.badge.dim{color:var(--ink2)}
+.tile:hover .badge,.tile.is-hover .badge{opacity:1}
+
+/* 运行卡（底部，仅有会话时出现，DESIGN.md §3.8）：与固定应用卡同语言的玻璃卡
+   （圆角 16 / cardFill+blur / 亮边 / 内边距 12），芯片横排 Flow 换行，无标题。
+   底距两窗统一 56（为 Toast 让位）；芯片 = 绿点 + 标签（点击拉回该会话虚拟屏），
+   hover 洗色并露出 ✕（关闭会话）；✕ 常驻占位仅透明度过渡，避免宽度跳动（无位移纪律） */
+.running{
+  position:absolute;left:20px;right:20px;bottom:56px;
+  display:flex;flex-wrap:wrap;gap:8px;padding:12px;border-radius:16px;
+  background:var(--card);border:1px solid var(--card-bd);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+}
+.chip{
+  display:inline-flex;align-items:center;gap:8px;height:32px;
+  padding:0 8px;border-radius:16px;         /* 胶囊 = 高度/2 */
+  transition:background-color var(--dur);
+}
+.chip:hover,.chip.is-hover{background:var(--wash)}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--running);flex:none}  /* 绿点统一 8px（§3.7） */
+.chip .lbl{font-size:12px;transition:color var(--dur)}
+.chip:hover .lbl,.chip.is-hover .lbl{color:var(--accent)}
+.stop{
+  width:24px;height:24px;border-radius:12px;color:var(--ink2);flex:none;
+  display:flex;align-items:center;justify-content:center;opacity:0;
+  transition:opacity var(--dur),background-color var(--dur),color var(--dur);
+}
+.chip:hover .stop,.chip.is-hover .stop{opacity:1}
+.stop:hover{background:rgba(255,59,48,.08);color:var(--danger)}  /* 极淡危险色洗底 + 危险色线条（§3.7） */
+
+/* 右键上下文菜单（呈打开状态，DESIGN.md §3.7）：一级 = 打开 / 置顶到固定卡 + 发丝线
+   分隔 + 显示模式（自适应窗口＝选中态 4px 强调点 / 固定比例・窗口栏＝右侧细箭头），
+   比例与窗口栏列表均不入一级。窄窗一级居中左（68..236，top 52 → 底 211），二级浮于
+   其右，与左置镜像卡菜单（24..192）横向不叠、下缘让运行卡（top ≈548）。
+   菜单度量（一级二级同套）：条目 28 / 小节头 20 / 内边距 4 / 条目圆角 8（同心 12−4）；
+   比例项 = 比例名（左）+ 比例示意（右，1.5px 次色描边圆角矩形，横屏最大边宽 16 /
+   竖屏最大边高 14），当前比例左侧 4px 强调点；窗口栏项 = 跟随默认/沉浸/系统 纯文字
+   （跟随默认呈选中态点示例）；小节头 11px 次色 */
+.menu{
+  position:absolute;left:68px;top:52px;z-index:6;min-width:168px;
+  padding:4px;border-radius:12px;
+  background:var(--menu);backdrop-filter:var(--menu-blur);border:1px solid var(--card-bd);
+  backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);
+}
+.mi{
+  display:flex;align-items:center;height:28px;padding:0 12px;border-radius:8px;
+  font-size:13px;color:var(--ink);transition:background-color var(--dur);
+}
+.mi:hover{background:var(--wash)}
+.mi .g{width:4px;height:4px;border-radius:50%;margin-right:8px;background:transparent;flex:none}
+.mi.sel .g{background:var(--accent)}      /* 选中项强调点（一级 自适应窗口 / 二级 16:9） */
+.mdiv{height:1px;background:var(--hair);margin:4px 12px}
+.mhead{                                  /* 小节头：高 20，与条目左对齐（12） */
+  height:20px;margin-top:4px;padding:0 12px;
+  display:flex;align-items:center;font-size:11px;color:var(--ink2);
+}
+.rbox{margin-left:auto;flex:none;display:block;color:var(--ink2)}  /* 比例示意（「固定比例」二级专用；该二级本帧未展开，类与度量保留为规格） */
+.rbox rect{fill:none;stroke:currentColor;stroke-width:1.5}
+.arr{margin-left:auto;flex:none;color:var(--ink2)}   /* 「固定比例」「窗口栏」行右侧细箭头（1.5px 描边，与搜索/✕ 同图标语言） */
+/* 窗口栏二级菜单（每应用窗口栏设置，同款亚克力浮层、同套度量：圆角 12 / 条目 28
+   圆角 8 / 小节头 20 / 内边距 4）：小节头「上巴」「下巴」（11px 次色）各携三项 ——
+   跟随默认（选中态 4px 强调点示例）/ 沉浸 / 系统，高 220。锚定规则与比例二级同款：
+   稍抬于「窗口栏」行上缘 13（一级盒相对 top 112 → 画框 164，行上缘 177）。
+   窄窗浮于一级右侧 —— 左缘叠入 4px（232..400，右缘距画框恰 20，同留白节奏，不溢出；
+   向左展开必撞左置镜像卡菜单 24..192 × 268..343，一级亦无右移余地，故仍向右）。
+   宽窗一级居右（432..600），二级向左展开（右缘叠入一级左缘 4px → 268..436），
+   与镜像卡菜单（440..608）让开 4px；两窗下缘均 384，不出画框。「固定比例」二级
+   （横屏 21:9/16:9/4:3/1:1/机身 + 竖屏 3:4/2:3/5:7/9:16/机身，当前 16:9，冻结比例集
+   依 §3.7）同款浮层度量不变 —— 静态稿同一时刻仅展开一个二级，本帧呈「窗口栏」 */
+.menu--bars{left:calc(100% - 3px);top:112px}
+.panel--wide .menu{left:432px}
+.panel--wide .menu--bars{left:auto;right:calc(100% - 3px)}
+/* 镜像卡右键菜单（§3.5）：复用菜单浮层同一套类；叠于镜像卡上 —— 窄窗卡左下角
+   （top 268 让开 15px 标题行，下缘 343 止于网格 354 上方），宽窗错位至卡中右部
+   （440..608，不遮标题与投屏钮，下缘 321 < 网格 354）；两窗均不出画框 */
+.menu--mirror{left:24px;top:268px}
+.panel--wide .menu--mirror{left:440px;top:246px}
+
+/* Toast（底部居中胶囊） */
+.toast{
+  position:absolute;left:0;right:0;bottom:16px;z-index:8;
+  width:max-content;height:36px;margin:0 auto;padding:0 16px;border-radius:18px;
+  background:rgba(29,29,31,.9);color:#fff;font-size:13px;
+  display:flex;align-items:center;
+}
+
+/* ============ 区块二：图标系统全览 ============ */
+.icons-sec{width:100%;max-width:880px;margin-top:64px}
+.sec-title{font-size:15px;font-weight:600;text-align:center}
+.sec-note{font-size:12px;color:var(--ink2);text-align:center;margin-top:4px}
+.ic-grid{
+  display:grid;grid-template-columns:repeat(9,80px);justify-content:center;
+  gap:24px 16px;margin-top:28px;
+}
+.ic-cell{display:flex;flex-direction:column;align-items:center;gap:8px}
+.ic-name{font-size:11px;color:var(--ink2);white-space:nowrap}
+.hr{height:1px;background:var(--hair);margin:28px 0}
+.fb-row{display:flex;justify-content:center;gap:16px}
+
+/* ============ 区块三：交互态特写 ============ */
+.states{display:flex;gap:32px;justify-content:center;margin-top:64px;flex-wrap:wrap}
+.state{display:flex;flex-direction:column;align-items:center;gap:12px}
+.state-note{font-size:11px;color:var(--ink2)}
+.state .tile{width:92px}
+</style>
+</head>
+<body>
+
+<!-- ================= 面板 · 窄窗口 420×660（1:1） ================= -->
+<section class="panel-sec" aria-label="Duo 主面板窄窗口方案稿">
+<h2 class="sec-title">面板 · 窄窗口 420×660</h2>
+<section class="frame">
+  <div class="panel">
+
+    <!-- 模拟系统装饰：Windows 风格标题栏（─ □ ✕ 浅灰），非产品 UI，其下内容整体让位 -->
+    <div class="titlebar" aria-hidden="true"><span>─</span><span>□</span><span>✕</span></div>
+
+    <!-- 顶栏通栏胶囊（替代标题行）：首页 = 当前段，设置 = 非当前（分段左对齐、纯文字、无图标） -->
+    <nav class="topcap">
+      <button class="seg on">首页</button>
+      <button class="seg">设置</button>
+    </nav>
+
+    <!-- 设备卡（纯状态，无按钮）→ 固定应用卡 → 镜像卡 → 搜索：卡列间距 12（层级依 DESIGN.md §3） -->
+    <div class="panel-top">
+      <div class="device-card">
+        <div class="dev-left">
+          <span class="dev-dot"></span>
+          <div class="dev-text">
+            <span class="dev-state">在线</span>
+            <span class="dev-serial">ADB-2024</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 固定应用卡（置顶）：微信 / QQ / 哔哩哔哩 / 微信读书；网格不再重复出现 -->
+      <div class="pinbar">
+        <button class="pin" aria-label="微信"><div class="app-ic sm" style="--c:#07C160;--l:#1BC66D">微</div></button>
+        <button class="pin" aria-label="QQ"><div class="app-ic sm" style="--c:#12B7F5;--l:#25BDF6">Q</div></button>
+        <button class="pin" aria-label="哔哩哔哩"><div class="app-ic sm" style="--c:#FB7299;--l:#FB7DA1">哔</div></button>
+        <button class="pin" aria-label="微信读书"><div class="app-ic sm" style="--c:#3E7BFA;--l:#4D86FA">读</div></button>
+      </div>
+
+      <!-- 镜像卡（§3.5）：左「设备镜像」/ 右「投屏」强调钮；右键弹菜单（浮层见下） -->
+      <div class="mirrorcard">
+        <span class="mc-title">设备镜像</span>
+        <button class="mirror">投屏</button>
+      </div>
+
+      <!-- 搜索（清空按钮：有文字时才出现，空态不渲染） -->
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input type="text" placeholder="搜索" aria-label="搜索">
+      </div>
+    </div>
+
+    <!-- 应用网格：拼音首字母序，不含固定栏四应用；高德地图 hover 态（未置顶 ☆），拼多多未安装 40% -->
+    <div class="grid-wrap">
+      <div class="grid">
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#00BE06;--l:#14C31A">奇</div></div><div class="tlabel">爱奇艺</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic ink" style="--c:#F5A623;--l:#F6AD35">不</div></div><div class="tlabel">不背单词</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#2932E1;--l:#3A42E3">百</div></div><div class="tlabel">百度</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0089FF;--l:#1492FF">钉</div></div><div class="tlabel">钉钉</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic dark" style="--c:#1C1C1E;--l:#2E2E30">抖</div></div><div class="tlabel">抖音</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0095FF;--l:#149DFF">e</div></div><div class="tlabel">饿了么</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#3370FF;--l:#437BFF">飞</div></div><div class="tlabel">飞书</div></div>
+        <div class="tile is-hover"><div class="icwrap"><div class="app-ic" style="--c:#118EE9;--l:#2497EB">高</div><span class="badge dim">☆</span></div><div class="tlabel">高德地图</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#E93A32;--l:#EB4A42">京</div></div><div class="tlabel">京东</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#3DC34B;--l:#4DC359">酷</div></div><div class="tlabel">酷安</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic ink" style="--c:#F7B500;--l:#F8BB14">团</div></div><div class="tlabel">美团</div></div>
+        <div class="tile off"><div class="icwrap"><div class="app-ic" style="--c:#E02E24;--l:#E23F36">拼</div></div><div class="tlabel">拼多多</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#FF6B00;--l:#FF7714">腾</div></div><div class="tlabel">腾讯视频</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#12B7F5;--l:#25BDF6">T</div></div><div class="tlabel">TIM</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#D34B2F;--l:#D75940">W</div></div><div class="tlabel">WPS Office</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#C20C0C;--l:#C71F1F">云</div></div><div class="tlabel">网易云音乐</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#E6162D;--l:#E8293E">微</div></div><div class="tlabel">微博</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#FF2442;--l:#FF3651">红</div></div><div class="tlabel">小红书</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#1677FF;--l:#2982FF">支</div></div><div class="tlabel">支付宝</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0084FF;--l:#148EFF">知</div></div><div class="tlabel">知乎</div></div>
+      </div>
+    </div>
+
+    <!-- 运行卡（有会话才出现）：第一枚呈 hover 态（洗色 + ✕ 露出），第二枚常态（✕ 隐藏） -->
+    <div class="running">
+      <div class="chip is-hover">
+        <span class="dot"></span><span class="lbl">哔哩哔哩</span>
+        <button class="stop" aria-label="关闭 哔哩哔哩">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round"><path d="M1 1l8 8M9 1l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="chip">
+        <span class="dot"></span><span class="lbl">微信读书</span>
+        <button class="stop" aria-label="关闭 微信读书">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round"><path d="M1 1l8 8M9 1l-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 右键菜单（打开状态）：一级 = 打开 / 置顶到固定卡 / 分隔 / 自适应窗口（选中态
+         4px 强调点）/ 固定比例（右侧细箭头 ▸）/ 窗口栏（右侧细箭头 ▸）；展开二级 =
+         「窗口栏」—— 小节头「上巴」+ 跟随默认（选中态点示例）/ 沉浸 / 系统，小节头
+         「下巴」+ 同三项（每应用窗口栏设置；全局默认见 settings.html「窗口栏（默认）」）。
+         「固定比例」二级（横屏 21:9/16:9/4:3/1:1/机身 + 竖屏 3:4/2:3/5:7/9:16/机身，
+         当前 16:9）同款浮层度量不变，静态稿同一时刻仅展开一个二级，浮于一级右侧错位 4px -->
+    <div class="menu" role="menu">
+      <div class="mi"><span class="g"></span>打开</div>
+      <div class="mi"><span class="g"></span>置顶到固定卡</div>
+      <div class="mdiv"></div>
+      <div class="mi sel"><span class="g"></span>自适应窗口</div>
+      <div class="mi"><span class="g"></span>固定比例<svg class="arr" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 2.5 3.5 3.5-3.5 3.5"/></svg></div>
+      <div class="mi"><span class="g"></span>窗口栏<svg class="arr" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 2.5 3.5 3.5-3.5 3.5"/></svg></div>
+      <div class="menu menu--bars">
+        <div class="mhead">上巴</div>
+        <div class="mi sel"><span class="g"></span>跟随默认</div>
+        <div class="mi"><span class="g"></span>沉浸</div>
+        <div class="mi"><span class="g"></span>系统</div>
+        <div class="mhead">下巴</div>
+        <div class="mi sel"><span class="g"></span>跟随默认</div>
+        <div class="mi"><span class="g"></span>沉浸</div>
+        <div class="mi"><span class="g"></span>系统</div>
+      </div>
+    </div>
+
+    <!-- 镜像卡右键菜单（打开状态，§3.5）：打开投屏 / 分隔 / 镜像时关闭设备屏幕
+         （勾选态 = 左 4px 强调点）；叠卡左下角，与右侧应用菜单分立不叠 -->
+    <div class="menu menu--mirror" role="menu">
+      <div class="mi"><span class="g"></span>打开投屏</div>
+      <div class="mdiv"></div>
+      <div class="mi sel"><span class="g"></span>镜像时关闭设备屏幕</div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast">已置顶 微信</div>
+
+  </div>
+</section>
+</section>
+
+<!-- ================= 面板 · 宽窗口 720×480（同一套组件类） ================= -->
+<section class="panel-sec" aria-label="Duo 主面板宽窗口方案稿">
+<h2 class="sec-title">面板 · 宽窗口 720×480</h2>
+<section class="frame frame--wide">
+  <div class="panel panel--wide">
+
+    <!-- 模拟系统装饰：Windows 风格标题栏（─ □ ✕ 浅灰），非产品 UI -->
+    <div class="titlebar" aria-hidden="true"><span>─</span><span>□</span><span>✕</span></div>
+
+    <!-- 顶栏通栏胶囊：与窄窗同一套类，两页常驻 -->
+    <nav class="topcap">
+      <button class="seg on">首页</button>
+      <button class="seg">设置</button>
+    </nav>
+
+    <!-- 设备卡（纯状态，限宽 480）→ 固定应用卡（全宽，图标左起流动）→ 镜像卡 → 搜索：与窄窗同一组类 -->
+    <div class="panel-top">
+      <div class="device-card">
+        <div class="dev-left">
+          <span class="dev-dot"></span>
+          <div class="dev-text">
+            <span class="dev-state">在线</span>
+            <span class="dev-serial">ADB-2024</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 固定应用卡：全宽铺开，与窄窗同一置顶集（网格不再重复出现） -->
+      <div class="pinbar">
+        <button class="pin" aria-label="微信"><div class="app-ic sm" style="--c:#07C160;--l:#1BC66D">微</div></button>
+        <button class="pin" aria-label="QQ"><div class="app-ic sm" style="--c:#12B7F5;--l:#25BDF6">Q</div></button>
+        <button class="pin" aria-label="哔哩哔哩"><div class="app-ic sm" style="--c:#FB7299;--l:#FB7DA1">哔</div></button>
+        <button class="pin" aria-label="微信读书"><div class="app-ic sm" style="--c:#3E7BFA;--l:#4D86FA">读</div></button>
+      </div>
+
+      <!-- 镜像卡（§3.5）：与窄窗同一套类，全宽 -->
+      <div class="mirrorcard">
+        <span class="mc-title">设备镜像</span>
+        <button class="mirror">投屏</button>
+      </div>
+
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input type="text" placeholder="搜索" aria-label="搜索">
+      </div>
+    </div>
+
+    <!-- 网格 7 列（auto-fill 自适应；与窄版同令牌同节奏、同应用集；余高区内滚动） -->
+    <div class="grid-wrap">
+      <div class="grid">
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#00BE06;--l:#14C31A">奇</div></div><div class="tlabel">爱奇艺</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic ink" style="--c:#F5A623;--l:#F6AD35">不</div></div><div class="tlabel">不背单词</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#2932E1;--l:#3A42E3">百</div></div><div class="tlabel">百度</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0089FF;--l:#1492FF">钉</div></div><div class="tlabel">钉钉</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic dark" style="--c:#1C1C1E;--l:#2E2E30">抖</div></div><div class="tlabel">抖音</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0095FF;--l:#149DFF">e</div></div><div class="tlabel">饿了么</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#3370FF;--l:#437BFF">飞</div></div><div class="tlabel">飞书</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#118EE9;--l:#2497EB">高</div></div><div class="tlabel">高德地图</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#E93A32;--l:#EB4A42">京</div></div><div class="tlabel">京东</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#3DC34B;--l:#4DC359">酷</div></div><div class="tlabel">酷安</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic ink" style="--c:#F7B500;--l:#F8BB14">团</div></div><div class="tlabel">美团</div></div>
+        <div class="tile off"><div class="icwrap"><div class="app-ic" style="--c:#E02E24;--l:#E23F36">拼</div></div><div class="tlabel">拼多多</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#FF6B00;--l:#FF7714">腾</div></div><div class="tlabel">腾讯视频</div></div>
+        <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#12B7F5;--l:#25BDF6">T</div></div><div class="tlabel">TIM</div></div>
+      </div>
+    </div>
+
+    <!-- 运行卡：本档不呈 —— 480 高度下卡列 + 网格 + 运行卡不可兼得，取无会话态（§3.8 仅会话时出现）；
+         运行卡及其与 fade 的关系见窄窗 -->
+
+    <!-- 右键菜单（打开状态，与窄窗同一套类）：一级居右（432..600），「窗口栏」二级
+         向左展开 —— 右缘叠入一级左缘 4px（268..436，下缘 384 止于画框内），与下方
+         镜像卡菜单（440..608）横向让开 4px；一级/二级条目与窄窗完全一致 -->
+    <div class="menu" role="menu">
+      <div class="mi"><span class="g"></span>打开</div>
+      <div class="mi"><span class="g"></span>置顶到固定卡</div>
+      <div class="mdiv"></div>
+      <div class="mi sel"><span class="g"></span>自适应窗口</div>
+      <div class="mi"><span class="g"></span>固定比例<svg class="arr" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 2.5 3.5 3.5-3.5 3.5"/></svg></div>
+      <div class="mi"><span class="g"></span>窗口栏<svg class="arr" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 2.5 3.5 3.5-3.5 3.5"/></svg></div>
+      <div class="menu menu--bars">
+        <div class="mhead">上巴</div>
+        <div class="mi sel"><span class="g"></span>跟随默认</div>
+        <div class="mi"><span class="g"></span>沉浸</div>
+        <div class="mi"><span class="g"></span>系统</div>
+        <div class="mhead">下巴</div>
+        <div class="mi sel"><span class="g"></span>跟随默认</div>
+        <div class="mi"><span class="g"></span>沉浸</div>
+        <div class="mi"><span class="g"></span>系统</div>
+      </div>
+    </div>
+
+    <!-- 镜像卡右键菜单（打开状态，§3.5）：错位至卡中右部（440..608），不遮标题与投屏钮，
+         下缘止于网格上方；条目与窄窗同一套类 -->
+    <div class="menu menu--mirror" role="menu">
+      <div class="mi"><span class="g"></span>打开投屏</div>
+      <div class="mdiv"></div>
+      <div class="mi sel"><span class="g"></span>镜像时关闭设备屏幕</div>
+    </div>
+
+  </div>
+</section>
+</section>
+
+<!-- ================= 区块二：图标系统全览（方案稿注释，非产品 UI） ================= -->
+<section class="icons-sec" aria-label="图标系统">
+  <h2 class="sec-title">图标系统</h2>
+  <p class="sec-note">品牌色微渐变 squircle（60px · 圆角 14）+ 单字 + 顶部内亮边；未知应用由包名哈希取 12 色柔和色板（方案稿注释）</p>
+
+  <div class="ic-grid">
+    <div class="ic-cell"><div class="app-ic" style="--c:#07C160;--l:#1BC66D">微</div><div class="ic-name">微信</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#12B7F5;--l:#25BDF6">Q</div><div class="ic-name">QQ</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#12B7F5;--l:#25BDF6">T</div><div class="ic-name">TIM</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#FB7299;--l:#FB7DA1">哔</div><div class="ic-name">哔哩哔哩</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#3E7BFA;--l:#4D86FA">读</div><div class="ic-name">微信读书</div></div>
+    <div class="ic-cell"><div class="app-ic ink" style="--c:#F5A623;--l:#F6AD35">不</div><div class="ic-name">不背单词</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#D34B2F;--l:#D75940">W</div><div class="ic-name">WPS Office</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#FF6A00;--l:#FF7614">淘</div><div class="ic-name">淘宝</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#1677FF;--l:#2982FF">支</div><div class="ic-name">支付宝</div></div>
+    <div class="ic-cell"><div class="app-ic dark" style="--c:#1C1C1E;--l:#2E2E30">抖</div><div class="ic-name">抖音</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#C20C0C;--l:#C71F1F">云</div><div class="ic-name">网易云音乐</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#0084FF;--l:#148EFF">知</div><div class="ic-name">知乎</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#E6162D;--l:#E8293E">微</div><div class="ic-name">微博</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#E93A32;--l:#EB4A42">京</div><div class="ic-name">京东</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#E02E24;--l:#E23F36">拼</div><div class="ic-name">拼多多</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#FF2442;--l:#FF3651">红</div><div class="ic-name">小红书</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#118EE9;--l:#2497EB">高</div><div class="ic-name">高德地图</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#2932E1;--l:#3A42E3">百</div><div class="ic-name">百度</div></div>
+    <div class="ic-cell"><div class="app-ic ink" style="--c:#F7B500;--l:#F8BB14">团</div><div class="ic-name">美团</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#0095FF;--l:#149DFF">e</div><div class="ic-name">饿了么</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#FF6B00;--l:#FF7714">腾</div><div class="ic-name">腾讯视频</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#00BE06;--l:#14C31A">奇</div><div class="ic-name">爱奇艺</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#1EBEFF;--l:#30C3FF">优</div><div class="ic-name">优酷</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#3DC34B;--l:#4DC359">酷</div><div class="ic-name">酷安</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#4E6EF2;--l:#5C7AF3">夸</div><div class="ic-name">夸克</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#0089FF;--l:#1492FF">钉</div><div class="ic-name">钉钉</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#3370FF;--l:#437BFF">飞</div><div class="ic-name">飞书</div></div>
+  </div>
+
+  <div class="hr"></div>
+
+  <!-- fallback 示例：DESIGN.md 12 色板前 6 色，字为标签首字；名旁 · 01–06 为色板序号注 -->
+  <div class="fb-row">
+    <div class="ic-cell"><div class="app-ic" style="--c:#5F7292;--l:#6C7DA0">启</div><div class="ic-name">启动器 · 01</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#6F8468;--l:#7C9175">携</div><div class="ic-name">携旅 · 02</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#96725D;--l:#A17D68">阅</div><div class="ic-name">阅读器 · 03</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#7D6B94;--l:#8A78A1">影</div><div class="ic-name">影视 · 04</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#628C87;--l:#6F9994">游</div><div class="ic-name">游戏 · 05</div></div>
+    <div class="ic-cell"><div class="app-ic" style="--c:#946363;--l:#9F6E6E">记</div><div class="ic-name">记事本 · 06</div></div>
+  </div>
+</section>
+
+<!-- ================= 区块三：交互态特写（方案稿注释） ================= -->
+<div class="states" aria-label="交互态特写">
+  <div class="state">
+    <div class="tile"><div class="icwrap"><div class="app-ic" style="--c:#0084FF;--l:#148EFF">知</div></div><div class="tlabel">知乎</div></div>
+    <div class="state-note">普通（默认无角标）</div>
+  </div>
+  <div class="state">
+    <div class="tile is-hover"><div class="icwrap"><div class="app-ic" style="--c:#118EE9;--l:#2497EB">高</div><span class="badge dim">☆</span></div><div class="tlabel">高德地图</div></div>
+    <div class="state-note">hover：图标区洗色 + 未置顶 ☆</div>
+  </div>
+  <div class="state">
+    <div class="tile off"><div class="icwrap"><div class="app-ic" style="--c:#E02E24;--l:#E23F36">拼</div></div><div class="tlabel">拼多多</div></div>
+    <div class="state-note">未安装：40% 透明度、禁点</div>
+  </div>
+</div>
+
+</body>
+</html>

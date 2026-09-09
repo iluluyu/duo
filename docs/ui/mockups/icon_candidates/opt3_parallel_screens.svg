@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs>
+  <linearGradient id="bg3" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#188BFF"/>
+    <stop offset="1" stop-color="#0071EB"/>
+  </linearGradient>
+</defs>
+<rect width="256" height="256" rx="58" fill="url(#bg3)"/>
+<!-- Left: Android Phone Screen (Portrait 9:16) -->
+<rect x="52" y="66" width="64" height="124" rx="18" fill="#FFFFFF"/>
+<!-- Right: Windows Desktop Window (Landscape 16:10) -->
+<rect x="128" y="78" width="76" height="100" rx="18" fill="#FFFFFF"/>
+</svg>

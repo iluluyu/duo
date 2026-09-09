@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs>
+  <linearGradient id="bg_duo" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#4338CA"/>
+    <stop offset="1" stop-color="#0284C7"/>
+  </linearGradient>
+</defs>
+<rect width="256" height="256" rx="58" fill="url(#bg_duo)"/>
+
+<defs>
+  <mask id="cut_do_hybrid">
+    <rect width="256" height="256" fill="white"/>
+    <rect x="106" y="64" width="98" height="128" rx="36" fill="black"/>
+  </mask>
+</defs>
+<!-- D-Window: Frosted Glass with cutout -->
+<path d="M 74 72 
+         L 96 72 
+         A 42 42 0 0 1 138 114
+         L 138 142
+         A 42 42 0 0 1 96 184
+         L 74 184 
+         A 16 16 0 0 1 58 168
+         L 58 88 
+         A 16 16 0 0 1 74 72 Z" 
+      fill="#FFFFFF" fill-opacity="0.52" stroke="#FFFFFF" stroke-opacity="0.95" stroke-width="6" stroke-linejoin="round"
+      mask="url(#cut_do_hybrid)"/>
+<!-- O-Window: Solid White -->
+<rect x="114" y="72" width="82" height="112" rx="28" fill="#FFFFFF"/>
+
+</svg>
