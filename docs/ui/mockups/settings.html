@@ -1,0 +1,327 @@
+<!doctype html>
+<!-- 布局映射提示：本稿 flex/grid 对应 QML anchors/GridView/Column，勿按 CSS 属性名直译 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · Duo 方案稿</title>
+<style>
+  /* 令牌唯一来源：docs/ui/DESIGN.md §2（与 duo/ui/qml/Style.qml 同步） */
+  :root {
+    --bg: #F5F5F7;
+    --ink: #1D1D1F;
+    --ink2: #86868B;
+    --accent: #007AFF;
+    --accent-hover: #2E90FF;
+    --running: #34C759;
+    --card-fill: rgba(255, 255, 255, 0.72);
+    --card-border: rgba(255, 255, 255, 0.65);
+    --flyout: rgba(255, 255, 255, 0.60);
+    --hover-wash: rgba(0, 0, 0, 0.04);
+    --hairline: rgba(0, 0, 0, 0.12);
+    --dur: 140ms;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: #E8E8ED; /* 视衬底色，衬托画框玻璃 */
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 画框 = 应用窗口 420×660：云母底 + 极淡品牌色斑 */
+  .frame {
+    position: relative; /* 锚定顶栏胶囊 / 模拟标题栏（绝对定位） */
+    flex: none;
+    width: 420px;
+    height: 660px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    background:
+      radial-gradient(340px 280px at 6% 2%, rgba(0, 122, 255, 0.06), transparent 62%),
+      radial-gradient(300px 260px at 98% 92%, rgba(0, 122, 255, 0.05), transparent 60%),
+      var(--bg);
+  }
+  /* ---- 顶栏通栏胶囊（与 panel.html 同语言，DESIGN.md §3.2）：整行覆盖画布、
+         左右各让出页面留白 20（不贴窗口边）；分段左对齐、固有宽度（约 72×28，
+         左起 2 = 条内边距），不再各占一半；通栏其余区域安静无内容。
+         设置段选中、两页常驻；无标题行/返回按钮（胶囊即导航） ---- */
+  .topcap {
+    position: absolute; top: 16px; left: 20px; right: 20px; z-index: 5;
+    display: flex; gap: 4px; padding: 2px; height: 32px; border-radius: 16px;
+    background: var(--flyout);
+    border: 1px solid var(--card-border);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+  .topcap button {
+    flex: 1;                                        /* 均分：两段各占通栏一半，文字居中（与 panel.html 一致） */
+    display: flex; align-items: center; justify-content: center;
+    height: 28px; border: none; border-radius: 14px;
+    background: transparent; color: var(--ink2);
+    font: inherit; font-size: 13px; cursor: pointer;
+    transition: background-color var(--dur), color var(--dur);
+  }
+  .topcap button:not(.on):hover { background: var(--hover-wash); }
+  .topcap button.on {
+    background: var(--card-fill); color: var(--ink); font-weight: 600;
+    cursor: default;
+  }
+  /* 模拟系统装饰：32px 标题栏区（Windows 风格 ─ □ ✕ 浅灰），非产品 UI */
+  .titlebar {
+    position: absolute; top: 0; left: 0; right: 0; height: 32px; z-index: 4;
+    background: rgba(0, 0, 0, 0.02);
+    display: flex; align-items: center; justify-content: flex-end; gap: 20px;
+    padding: 0 12px; font-size: 11px; line-height: 1; color: var(--ink2); user-select: none;
+  }
+  /* ---- 内容列：玻璃卡自上而下；自胶囊底（48）+12 起，左右留白 20 与主面板一致。
+         增「窗口栏（默认）」组后超一屏 → 区内滚动（滚动条隐藏，与主面板网格同纪律），
+         底部操作行常驻画框底 ---- */
+  .body { flex: 1; min-height: 0; padding: 60px 20px 12px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; scrollbar-width: none; }
+  .body::-webkit-scrollbar { display: none; }
+  .card {
+    border-radius: 16px;
+    padding: 12px;
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; letter-spacing: 1px; line-height: 18px; color: var(--ink); }
+  .card-note { font-size: 11px; color: var(--ink2); line-height: 14px; } /* 组说明：11px 次色（与 panel 菜单小节头同纪律） */
+  .pair { position: relative; display: flex; flex-direction: column; gap: 6px; }
+  .pair-label {
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--ink2);
+  }
+  /* 探测结果瞬时胶囊（与主页 Toast 同语言）：点「检测」后在按钮上方右侧波起，
+     2.5s 后淡出；静态稿以 0.55 透明度定格在淡出途中，不留常驻文字 */
+  .probe-toast {
+    position: absolute;
+    right: 0;
+    bottom: 38px; /* 悬于「检测」按钮上方 6px */
+    height: 26px;
+    padding: 0 12px;
+    border-radius: 14px;
+    background: #1D1D1FE6; /* 深底 #1D1D1F @90%（QML 记法 #E61D1D1F，AARRGGBB；CSS 为 RRGGBBAA），与主页 Toast rgba(29,29,31,.9) 同语言 */
+    color: #FFFFFF;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    opacity: 0.55;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .field-row { display: flex; gap: 8px; }
+  .input {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: #FFFFFF;
+    padding: 0 12px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .input::placeholder { color: var(--ink2); }
+  .btn {
+    flex: none;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: #FFFFFF;
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color var(--dur), border-color var(--dur), color var(--dur);
+  }
+  .btn:hover { background: var(--hover-wash); }
+  /* FPS / 码率：一行两列 */
+  .group { display: flex; gap: 12px; }
+  .group .pair { flex: 1; }
+  .num {
+    height: 32px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: #FFFFFF;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  /* 分段单选：选中 = 蓝字 + 淡蓝底 + 蓝描边 */
+  .seg { display: flex; gap: 8px; }
+  .seg button {
+    flex: 1;
+    height: 32px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: pointer;
+    transition: background-color var(--dur), border-color var(--dur), color var(--dur);
+  }
+  .seg button:hover { background: var(--hover-wash); }
+  .seg button.on {
+    color: var(--accent);
+    font-weight: 600;
+    background: rgba(0, 122, 255, 0.14);
+    border-color: rgba(0, 122, 255, 0.45);
+  }
+  /* 开关行：左标签 + 右胶囊开关 */
+  .switch-row { height: 32px; display: flex; align-items: center; justify-content: space-between; }
+  .switch-row > span { font-size: 13px; color: var(--ink); }
+  .switch {
+    position: relative;
+    flex: none;
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.16);
+    transition: background-color var(--dur);
+  }
+  .switch.on { background: var(--accent); }
+  .knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 10px; background: #FFFFFF; }
+  .switch.on .knob { left: 18px; }
+  /* ---- 底部操作：右对齐 ---- */
+  .foot { flex: none; height: 32px; margin: 0 20px 12px; display: flex; justify-content: flex-end; }
+  .foot .btn { width: 76px; }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #FFFFFF;
+    font-weight: 600;
+  }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+</style>
+</head>
+<body>
+<main class="frame">
+  <!-- 模拟系统装饰：Windows 风格标题栏（─ □ ✕ 浅灰），非产品 UI -->
+  <div class="titlebar" aria-hidden="true"><span>─</span><span>□</span><span>✕</span></div>
+
+  <!-- 顶栏通栏胶囊（与主面板同语言、两页常驻）：设置 = 当前段，首页 = 非当前 -->
+  <nav class="topcap">
+    <button type="button">首页</button>
+    <button type="button" class="on">设置</button>
+  </nav>
+
+  <section class="body">
+    <!-- 引擎：路径 ×2 + FPS/码率（无 DPI：flex 会话自动取设备密度） -->
+    <div class="card">
+      <h2>引擎</h2>
+      <div class="pair">
+        <div class="pair-label"><span>scrcpy 路径</span></div>
+        <div class="field-row">
+          <input class="input" value="C:\Tools\scrcpy\scrcpy.exe">
+          <button class="btn">浏览</button>
+          <button class="btn">检测</button>
+        </div>
+        <!-- 探测结果瞬时胶囊：scrcpy 行示意此态；adb 行 = 无任何状态标签的常态。
+             探测为瞬时提示：2.5s 后淡出，不留常驻文字（§3.9） -->
+        <span class="probe-toast">✓ 3.1.3</span>
+      </div>
+      <div class="pair">
+        <div class="pair-label"><span>adb 路径</span></div>
+        <div class="field-row">
+          <input class="input" value="C:\Tools\platform-tools\adb.exe">
+          <button class="btn">浏览</button>
+          <button class="btn">检测</button>
+        </div>
+      </div>
+      <div class="group">
+        <div class="pair">
+          <div class="pair-label"><span>FPS</span></div>
+          <div class="num">60</div>
+        </div>
+        <div class="pair">
+          <div class="pair-label"><span>码率 Mbps</span></div>
+          <div class="num">30</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 投屏质量：编码 / 音频 / 息屏 -->
+    <div class="card">
+      <h2>投屏质量</h2>
+      <div class="seg">
+        <button class="on">自动(推荐)</button>
+        <button>H.264</button>
+        <button>H.265</button>
+        <button>AV1</button>
+      </div>
+      <div class="pair">
+        <div class="pair-label"><span>音频</span></div>
+        <div class="seg">
+          <button class="on">仅最新会话</button>
+          <button>全部会话</button>
+          <button>静音</button>
+        </div>
+      </div>
+      <div class="switch-row">
+        <span>镜像时关闭设备屏幕</span>
+        <span class="switch"><span class="knob"></span></span>
+      </div>
+    </div>
+
+    <!-- 窗口栏（默认）：上巴/下巴各自的全局默认形态（沉浸/系统，bars.html ① 沉浸为现状）；
+         应用未单独设置时生效，右键应用「窗口栏 ▸」可单独覆盖（panel.html） -->
+    <div class="card">
+      <h2>窗口栏（默认）</h2>
+      <p class="card-note">应用未单独设置时生效；右键应用可单独覆盖</p>
+      <div class="pair">
+        <div class="pair-label"><span>上巴</span></div>
+        <div class="seg">
+          <button class="on">沉浸</button>
+          <button>系统</button>
+        </div>
+      </div>
+      <div class="pair">
+        <div class="pair-label"><span>下巴</span></div>
+        <div class="seg">
+          <button class="on">沉浸</button>
+          <button>系统</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 外观：仅液态玻璃（圆角控件已撤，settings.json 手改仍生效） -->
+    <div class="card">
+      <h2>外观</h2>
+      <div class="switch-row">
+        <span>液态玻璃</span>
+        <span class="switch on"><span class="knob"></span></span>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <button class="btn primary">保存</button>
+  </footer>
+</main>
+</body>
+</html>

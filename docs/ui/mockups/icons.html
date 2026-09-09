@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duo 应用图标设计评审与挑选 (V3 极致克制黑白灰版)</title>
+<style>
+  :root {
+    --ink: #1D1D1F;
+    --ink2: #86868B;
+    --accent: #007AFF;
+    --bg: #F5F5F7;
+    --card-fill: rgba(255, 255, 255, 0.72);
+    --card-border: rgba(255, 255, 255, 0.65);
+    --hairline: rgba(0, 0, 0, 0.08);
+    --dur: 140ms;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(460px 340px at 12% 5%, rgba(67, 56, 202, 0.05), transparent 60%),
+      radial-gradient(400px 320px at 88% 95%, rgba(2, 132, 199, 0.05), transparent 58%),
+      var(--bg);
+    color: var(--ink);
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px 24px 80px;
+  }
+  .container {
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+  .top-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .top-nav a {
+    color: var(--ink2);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color var(--dur);
+  }
+  .top-nav a:hover { color: var(--accent); }
+  .badge-rec {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(0, 122, 255, 0.10);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+  header { margin-bottom: 28px; }
+  h1 {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--ink2);
+    line-height: 1.6;
+  }
+
+  /* Palette Switcher Bar */
+  .palette-bar {
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 16px 20px;
+    margin-bottom: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+  .palette-label {
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .palette-options {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .palette-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    border: 1px solid rgba(0,0,0,0.10);
+    background: #FFFFFF;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink);
+    cursor: pointer;
+    transition: all var(--dur);
+  }
+  .palette-btn:hover { border-color: var(--accent); }
+  .palette-btn.active {
+    border-color: var(--accent);
+    background: rgba(0, 122, 255, 0.08);
+    color: var(--accent);
+  }
+  .color-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+  }
+
+  /* Section Title */
+  .section-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .section-desc {
+    font-size: 13px;
+    color: var(--ink2);
+    font-weight: 400;
+  }
+
+  /* Candidate Grid - 5 Refined Options */
+  .candidate-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+  .candidate-card {
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 20px;
+    cursor: pointer;
+    transition: border-color var(--dur), transform var(--dur), background var(--dur);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    position: relative;
+  }
+  .candidate-card:hover {
+    border-color: rgba(0, 122, 255, 0.35);
+    background: rgba(255, 255, 255, 0.88);
+  }
+  .candidate-card.selected {
+    border-color: var(--accent);
+    background: #FFFFFF;
+    box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.20);
+  }
+  .candidate-img-wrap {
+    width: 110px;
+    height: 110px;
+    margin: 8px 0 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .candidate-img-wrap svg {
+    width: 96px;
+    height: 96px;
+    transition: transform var(--dur);
+  }
+  .candidate-card:hover .candidate-img-wrap svg {
+    transform: scale(1.04);
+  }
+  .candidate-name {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .candidate-desc {
+    font-size: 12px;
+    color: var(--ink2);
+    line-height: 1.4;
+    margin-bottom: 14px;
+    flex: 1;
+  }
+  .candidate-actions {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+  }
+  .btn-select {
+    flex: 1;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.08);
+    background: rgba(255,255,255,0.7);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink);
+    cursor: pointer;
+    transition: all var(--dur);
+  }
+  .candidate-card.selected .btn-select {
+    background: var(--accent);
+    color: #FFFFFF;
+    border-color: var(--accent);
+  }
+  .btn-link {
+    height: 32px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.08);
+    background: rgba(255,255,255,0.7);
+    color: var(--ink2);
+    text-decoration: none;
+    font-size: 12px;
+    transition: all var(--dur);
+  }
+  .btn-link:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Preview Panel */
+  .preview-panel {
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 40px;
+  }
+  .preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .current-selection-pill {
+    font-size: 13px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* Environments */
+  .env-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+  }
+  .env-box {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+  .env-box-title {
+    font-size: 12px;
+    color: var(--ink2);
+    padding: 10px 14px;
+    background: rgba(0,0,0,0.02);
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    font-weight: 500;
+  }
+  .taskbar-mockup {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 0 16px;
+  }
+  .taskbar-light {
+    background: rgba(243, 243, 243, 0.92);
+  }
+  .taskbar-dark {
+    background: #1C1C1E;
+  }
+  .tb-slot {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: background var(--dur);
+  }
+  .taskbar-light .tb-slot:hover { background: rgba(0,0,0,0.06); }
+  .taskbar-dark .tb-slot:hover { background: rgba(255,255,255,0.10); }
+  .tb-slot.active::after {
+    content: "";
+    position: absolute;
+    bottom: 2px;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  .tb-slot svg {
+    width: 24px;
+    height: 24px;
+  }
+  .tb-dummy {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    opacity: 0.35;
+  }
+  .taskbar-light .tb-dummy { background: #000000; }
+  .taskbar-dark .tb-dummy { background: #FFFFFF; }
+
+  /* Desktop Mockup */
+  .desktop-mockup {
+    height: 130px;
+    background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 36px;
+  }
+  .desktop-icon-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .desktop-icon-item svg {
+    filter: drop-shadow(0 3px 8px rgba(0,0,0,0.4));
+  }
+  .desktop-icon-item span {
+    font-size: 11px;
+    color: #FFFFFF;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    font-weight: 500;
+  }
+
+  /* Scale Ladder */
+  .scale-ladder {
+    background: rgba(0,0,0,0.02);
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-around;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .scale-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .scale-step-label {
+    font-size: 11px;
+    color: var(--ink2);
+    font-family: Consolas, monospace;
+  }
+
+  /* Squint / Far-view Test Box */
+  .squint-box {
+    background: rgba(0,0,0,0.02);
+    border-radius: 12px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .squint-info h5 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .squint-info p {
+    font-size: 12px;
+    color: var(--ink2);
+  }
+  .squint-previews {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .squint-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .squint-item svg {
+    filter: blur(0.8px);
+  }
+  .squint-item span {
+    font-size: 10px;
+    color: var(--ink2);
+  }
+
+  /* CLI Switcher Card */
+  .cli-card {
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .cli-info h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .cli-info p {
+    font-size: 12px;
+    color: var(--ink2);
+  }
+  .cli-code {
+    background: #1D1D1F;
+    color: #34C759;
+    font-family: Consolas, "Fira Code", monospace;
+    font-size: 13px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    user-select: all;
+  }
+
+  @media (max-width: 860px) {
+    .candidate-grid { grid-template-columns: 1fr; }
+    .env-grid { grid-template-columns: 1fr; }
+    .palette-bar { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="top-nav">
+    <a href="index.html">‹ Duo UI 方案稿首页</a>
+    <span class="badge-rec">★ 方案 A 极客纯墨黑已正式部署至 assets/duo.ico</span>
+  </div>
+
+  <header>
+    <h1>Duo 应用图标设计终审与定稿 (方案 A · 极客纯墨黑与高透双生视窗)</h1>
+    <p class="subtitle">
+      已优化定稿：<strong>方案 A · 极客纯墨黑（Pure Jet Black）正式生效</strong>。
+      OLED 级纯墨黑底板 + 16% 白色高光微边 + 左侧 D 磨砂玻璃定向折射（52%→12% 高透） + 右侧 O 纯白高光实体。在任务栏与桌面上对比度极致拉满，内敛、凌厉、极客感纯粹。
+    </p>
+  </header>
+
+  <!-- Color Palette Switcher Bar -->
+  <div class="palette-bar">
+    <div class="palette-label">
+      <span>基调与质感切换：</span>
+    </div>
+    <div class="palette-options" id="paletteOptions">
+      <button class="palette-btn active" onclick="setPalette('pure_black', '#161618', '#08080A', 'dark_mono', this)">
+        <span class="color-dot" style="background: #0D0D0F; border: 1px solid rgba(255,255,255,0.25);"></span>
+        极客纯墨黑 (当前生效 · 最终定稿)
+      </button>
+      <button class="palette-btn" onclick="setPalette('obsidian_charcoal', '#28282D', '#161619', 'dark_mono', this)">
+        <span class="color-dot" style="background: linear-gradient(135deg, #28282D, #161619); border: 1px solid rgba(255,255,255,0.25);"></span>
+        深曜石灰黑 (沉稳版)
+      </button>
+      <button class="palette-btn" onclick="setPalette('ceramic_white', '#E2E4E9', '#CBD0D8', 'light_mono', this)">
+        <span class="color-dot" style="background: linear-gradient(135deg, #E2E4E9, #CBD0D8); border: 1px solid rgba(0,0,0,0.15);"></span>
+        白曜钛金浅色 (高透浅色版)
+      </button>
+      <button class="palette-btn" onclick="setPalette('titanium_gray', '#38383E', '#202024', 'dark_mono', this)">
+        <span class="color-dot" style="background: linear-gradient(135deg, #38383E, #202024); border: 1px solid rgba(255,255,255,0.25);"></span>
+        钛金冷灰 (科技工业感)
+      </button>
+      <button class="palette-btn" onclick="setPalette('duo_transition', '#4338CA', '#0284C7', 'color', this)">
+        <span class="color-dot" style="background: linear-gradient(135deg, #4338CA, #0284C7);"></span>
+        双色流转 (参考对比)
+      </button>
+      <button class="palette-btn" onclick="setPalette('deep_ultramarine', '#1E40AF', '#1D4ED8', 'color', this)">
+        <span class="color-dot" style="background: linear-gradient(135deg, #1E40AF, #1D4ED8);"></span>
+        深邃群青 (参考对比)
+      </button>
+    </div>
+  </div>
+
+  <!-- Candidates Grid: 4 Equal-Height Options + 2 Alternatives -->
+  <div class="section-title">
+    <span>严格等高核心构图方案 (D 与 O 高度严格 112px 对齐)</span>
+    <span class="section-desc">点击任意卡片，下方任务栏、桌面与多尺寸阶梯将实时联动渲染</span>
+  </div>
+
+  <div class="candidate-grid" id="candidateGrid">
+
+    <!-- Candidate 1: Glass Back (Recommended) -->
+    <div class="candidate-card selected" data-id="glass_back" data-name="方案 A: 严格等高 · 极客纯墨黑 (当前生效定稿)" onclick="selectCandidate('glass_back')">
+      <div class="badge-rec" style="position:absolute; top:12px; right:12px;">首选推荐 ★</div>
+      <div class="candidate-img-wrap" id="preview_wrap_glass_back"></div>
+      <div class="candidate-name">方案 A: 玻璃在后 (极客纯墨黑)</div>
+      <div class="candidate-desc"><strong>当前生效定稿</strong>：极客纯墨黑底板 + 定向高透玻璃 D + 实体高光纯白 O，8px 同心负空间凹槽切透。极致反差，深邃纯粹。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">当前生效</button>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_pure_black.ico" download title="下载 极客纯墨黑 ICO">纯墨黑ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_back.ico" download title="下载 深曜石 ICO">深曜石ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_light.ico" download title="下载 浅色高透版 ICO">浅色ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_pure_black.svg" target="_blank" title="查看 SVG">SVG</a>
+      </div>
+    </div>
+
+    <!-- Candidate 2: Glass Front Cutout -->
+    <div class="candidate-card" data-id="glass_front" data-name="方案 B: 严格等高 · 玻璃在前 (咬合切槽 · 前景悬浮)" onclick="selectCandidate('glass_front')">
+      <div class="candidate-img-wrap" id="preview_wrap_glass_front"></div>
+      <div class="candidate-name">方案 B: 玻璃在前 (咬合切槽)</div>
+      <div class="candidate-desc"><strong>玻璃位于顶层前景</strong>：左 D 磨砂视窗浮在上层，向底层的右 O 纯白视窗切入 8px 负空间同心凹槽，玻璃视窗主导悬浮。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">选择此项</button>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_front_cutout.ico" download title="下载 ICO">下载 ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_front_cutout.svg" target="_blank" title="查看 SVG">SVG</a>
+      </div>
+    </div>
+
+    <!-- Candidate 3: Glass Front Translucent -->
+    <div class="candidate-card" data-id="glass_translucent" data-name="方案 C: 严格等高 · 玻璃在前 (亚克力真实透光)" onclick="selectCandidate('glass_translucent')">
+      <div class="candidate-img-wrap" id="preview_wrap_glass_translucent"></div>
+      <div class="candidate-name">方案 C: 玻璃在前 (自然透光)</div>
+      <div class="candidate-desc"><strong>正统毛玻璃层叠</strong>：右 O 纯白实体在底，左 D 磨砂玻璃直接覆盖浮在上方，20px 重合区呈现 Windows 11 Fluent 亚克力自然透光。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">选择此项</button>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_front_translucent.ico" download title="下载 ICO">下载 ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_glass_front_translucent.svg" target="_blank" title="查看 SVG">SVG</a>
+      </div>
+    </div>
+
+    <!-- Candidate 4: O Glass Front -->
+    <div class="candidate-card" data-id="o_glass" data-name="方案 D: 严格等高 · 右 O 玻璃在前 (镜像互换)" onclick="selectCandidate('o_glass')">
+      <div class="candidate-img-wrap" id="preview_wrap_o_glass"></div>
+      <div class="candidate-name">方案 D: 右 O 玻璃在前</div>
+      <div class="candidate-desc"><strong>角色镜像互换</strong>：左侧 D 为纯白实体在底层，右侧 O 为磨砂半透玻璃在顶层前景，左实右虚，另一种视觉节奏。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">选择此项</button>
+        <a class="btn-link" href="icon_candidates/do_equal_o_glass_front.ico" download title="下载 ICO">下载 ICO</a>
+        <a class="btn-link" href="icon_candidates/do_equal_o_glass_front.svg" target="_blank" title="查看 SVG">SVG</a>
+      </div>
+    </div>
+
+    <!-- Candidate 5: Equal Glass Square Cards -->
+    <div class="candidate-card" data-id="opt1" data-name="01. 等大双卡 · 对角磨砂双视窗" onclick="selectCandidate('opt1')">
+      <div class="candidate-img-wrap" id="preview_wrap_opt1"></div>
+      <div class="candidate-name">01. 等大双卡 · 对角磨砂</div>
+      <div class="candidate-desc">电脑与手机做成<strong>完全等大卡片</strong>(84×108)，对角对称微叠。后卡半透明磨砂烟灰 + 前卡纯白实体。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">选择此项</button>
+        <a class="btn-link" href="icon_candidates/new_opt1_equal_glass_mono.ico" download title="下载 ICO">下载 ICO</a>
+      </div>
+    </div>
+
+    <!-- Candidate 6: Parallel Equal Screens -->
+    <div class="candidate-card" data-id="opt5" data-name="05. 等大双屏 · 平行并列视窗" onclick="selectCandidate('opt5')">
+      <div class="candidate-img-wrap" id="preview_wrap_opt5"></div>
+      <div class="candidate-name">05. 等大双屏 · 平行并列</div>
+      <div class="candidate-desc">宁静并列双屏(68×116)，左虚右实，消除传统方案 3 的单薄感与不对称落差。</div>
+      <div class="candidate-actions">
+        <button class="btn-select">选择此项</button>
+        <a class="btn-link" href="icon_candidates/new_opt5_parallel_equal_mono.ico" download title="下载 ICO">下载 ICO</a>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Side-by-Side Matrix Overview Card -->
+  <div style="background: var(--card-fill); border: 1px solid var(--card-border); border-radius: 16px; padding: 20px; margin-bottom: 40px; text-align: center;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+      <div style="font-size: 15px; font-weight: 600;">方案 A 最终定稿：深浅双模与高透光泽多尺寸全景矩阵</div>
+      <a href="icon_candidates/comparison_final_translucent.png" target="_blank" style="font-size: 12px; color: var(--accent); text-decoration: none;">查看超清原图 ↗</a>
+    </div>
+    <img src="icon_candidates/comparison_final_translucent.png" alt="方案 A 深浅双模与极致通透白色全景对比" style="max-width: 100%; height: auto; border-radius: 10px; border: 1px solid rgba(0,0,0,0.12); box-shadow: 0 4px 16px rgba(0,0,0,0.06);">
+  </div>
+
+  <!-- Real-world Preview Panel -->
+  <div class="preview-panel">
+    <div class="preview-header">
+      <div class="current-selection-pill">
+        当前模拟方案：<strong id="currentNameLabel">方案 A: 严格等高 · 玻璃在后 (咬合切槽 · 推荐默认)</strong>
+      </div>
+      <span class="section-desc">实时渲染 Windows 11 真实系统环境</span>
+    </div>
+
+    <div class="env-grid">
+      <!-- Taskbar Light -->
+      <div class="env-box">
+        <div class="env-box-title">Windows 11 浅色任务栏 (Light Taskbar)</div>
+        <div class="taskbar-mockup taskbar-light">
+          <div class="tb-dummy"></div>
+          <div class="tb-dummy"></div>
+          <div class="tb-slot active" title="Duo 运行态" id="tb_light_slot"></div>
+          <div class="tb-dummy"></div>
+          <div class="tb-dummy"></div>
+        </div>
+      </div>
+
+      <!-- Taskbar Dark -->
+      <div class="env-box">
+        <div class="env-box-title">Windows 11 深色任务栏 (Dark Taskbar)</div>
+        <div class="taskbar-mockup taskbar-dark">
+          <div class="tb-dummy"></div>
+          <div class="tb-dummy"></div>
+          <div class="tb-slot active" title="Duo 运行态" id="tb_dark_slot"></div>
+          <div class="tb-dummy"></div>
+          <div class="tb-dummy"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Desktop Mockup -->
+    <div class="env-box" style="margin-bottom: 24px;">
+      <div class="env-box-title">Windows 桌面图标环境 (Desktop Wallpaper Context)</div>
+      <div class="desktop-mockup">
+        <div class="desktop-icon-item">
+          <div id="desktop_48_wrap"></div>
+          <span>Duo</span>
+        </div>
+        <div class="desktop-icon-item">
+          <div id="desktop_64_wrap"></div>
+          <span>Duo (大图标)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scale Ladder -->
+    <div class="section-title" style="margin-bottom: 12px;">
+      <span>多尺寸缩放阶梯 (Scale Ladder)</span>
+      <span class="section-desc">从 256px 超大图标到 16px 标题栏点对点渲染</span>
+    </div>
+
+    <div class="scale-ladder">
+      <div class="scale-step"><div id="scale_256"></div><span class="scale-step-label">256px</span></div>
+      <div class="scale-step"><div id="scale_128"></div><span class="scale-step-label">128px</span></div>
+      <div class="scale-step"><div id="scale_64"></div><span class="scale-step-label">64px</span></div>
+      <div class="scale-step"><div id="scale_48"></div><span class="scale-step-label">48px</span></div>
+      <div class="scale-step"><div id="scale_32"></div><span class="scale-step-label">32px</span></div>
+      <div class="scale-step"><div id="scale_24"></div><span class="scale-step-label">24px</span></div>
+      <div class="scale-step"><div id="scale_16"></div><span class="scale-step-label">16px</span></div>
+    </div>
+
+    <!-- Squint / Distance Verification -->
+    <div class="squint-box">
+      <div class="squint-info">
+        <h5>远距离 / 轮廓测试 (Silhouette & Distance Check)</h5>
+        <p>叠加 0.8px 高斯模糊以模拟在屏幕 2 米开外或余光瞥视时的视觉重心。高透磨砂光泽在远视下保持极具层次的渐变纵深，杜绝任何发灰发糊感。</p>
+      </div>
+      <div class="squint-previews">
+        <div class="squint-item">
+          <div id="squint_64"></div>
+          <span>远视 64px</span>
+        </div>
+        <div class="squint-item">
+          <div id="squint_32"></div>
+          <span>远视 32px</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CLI Switcher Card -->
+  <div class="cli-card">
+    <div class="cli-info">
+      <h4>终端快速切换命令</h4>
+      <p>执行对应代号即可一键替换 assets/duo.ico：</p>
+    </div>
+    <div class="cli-code" id="cliCodeText">python scripts/switch_icon.py pure_black</div>
+  </div>
+
+</div>
+
+<script>
+let currentPalette = { name: 'pure_black', top: '#161618', bot: '#08080A', mode: 'dark_mono' };
+let currentOpt = 'glass_back';
+
+function getGlyph(opt, mode) {
+  const isLight = (mode === 'light_mono');
+  const dCut = 'defs_cut_' + Math.random().toString(36).substr(2, 6);
+  const gGradId = 'glass_g_' + Math.random().toString(36).substr(2, 6);
+
+  let glassGradDefs = '';
+  let glassStroke = '';
+  let solidStroke = '';
+
+  if (isLight) {
+    // Highly translucent pure white glass gradient on light titanium base
+    glassGradDefs = '<linearGradient id="' + gGradId + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.92"/>' +
+      '<stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.52"/>' +
+      '<stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.25"/>' +
+    '</linearGradient>';
+    glassStroke = 'stroke="#FFFFFF" stroke-opacity="1.0" stroke-width="4.5"';
+    solidStroke = 'stroke="#000000" stroke-opacity="0.10" stroke-width="1.5"';
+  } else {
+    // Optical-grade translucent smoked glass gradient on dark obsidian base
+    glassGradDefs = '<linearGradient id="' + gGradId + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.52"/>' +
+      '<stop offset="55%" stop-color="#FFFFFF" stop-opacity="0.26"/>' +
+      '<stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.12"/>' +
+    '</linearGradient>';
+    glassStroke = 'stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="4"';
+    solidStroke = '';
+  }
+
+  // Strict equal height D path (bounds: X=[60,138], Y=[72,184], stroke=4)
+  const dPath = 'M 76 74 L 96 74 A 40 40 0 0 1 136 114 L 136 142 A 40 40 0 0 1 96 182 L 76 182 A 14 14 0 0 1 62 168 L 62 88 A 14 14 0 0 1 76 74 Z';
+
+  if (opt === 'glass_back') {
+    return '<defs>' + glassGradDefs +
+           '<mask id="' + dCut + '"><rect width="256" height="256" fill="white"/><rect x="110" y="64" width="94" height="128" rx="36" fill="black"/></mask></defs>' +
+           '<path d="' + dPath + '" fill="url(#' + gGradId + ')" ' + glassStroke + ' stroke-linejoin="round" mask="url(#' + dCut + ')"/>' +
+           '<rect x="118" y="72" width="78" height="112" rx="28" fill="#FFFFFF" ' + solidStroke + '/>';
+  } else if (opt === 'glass_front') {
+    return '<defs>' + glassGradDefs +
+           '<mask id="' + dCut + '"><rect width="256" height="256" fill="white"/><path d="M 76 66 L 96 66 A 48 48 0 0 1 144 114 L 144 142 A 48 48 0 0 1 96 190 L 76 190 A 22 22 0 0 1 54 168 L 54 88 A 22 22 0 0 1 76 66 Z" fill="black"/></mask></defs>' +
+           '<rect x="118" y="72" width="78" height="112" rx="28" fill="#FFFFFF" ' + solidStroke + ' mask="url(#' + dCut + ')"/>' +
+           '<path d="' + dPath + '" fill="url(#' + gGradId + ')" ' + glassStroke + ' stroke-linejoin="round"/>';
+  } else if (opt === 'glass_translucent') {
+    return '<defs>' + glassGradDefs + '</defs>' +
+           '<rect x="118" y="72" width="78" height="112" rx="28" fill="#FFFFFF" ' + solidStroke + '/>' +
+           '<path d="' + dPath + '" fill="url(#' + gGradId + ')" ' + glassStroke + ' stroke-linejoin="round"/>';
+  } else if (opt === 'o_glass') {
+    return '<defs>' + glassGradDefs +
+           '<mask id="' + dCut + '"><rect width="256" height="256" fill="white"/><rect x="110" y="64" width="94" height="128" rx="36" fill="black"/></mask></defs>' +
+           '<path d="M 76 72 L 96 72 A 42 42 0 0 1 138 114 L 138 142 A 42 42 0 0 1 96 184 L 76 184 A 16 16 0 0 1 60 168 L 60 88 A 16 16 0 0 1 76 72 Z" fill="#FFFFFF" ' + solidStroke + ' mask="url(#' + dCut + ')"/>' +
+           '<rect x="120" y="74" width="74" height="108" rx="26" fill="url(#' + gGradId + ')" ' + glassStroke + '/>';
+  } else if (opt === 'opt1') {
+    return '<defs>' + glassGradDefs + '</defs>' +
+           '<rect x="58" y="60" width="84" height="108" rx="22" fill="url(#' + gGradId + ')" ' + glassStroke + '/><rect x="114" y="88" width="84" height="108" rx="22" fill="#FFFFFF" ' + solidStroke + '/>';
+  } else if (opt === 'opt5') {
+    return '<defs>' + glassGradDefs + '</defs>' +
+           '<rect x="52" y="70" width="68" height="116" rx="20" fill="url(#' + gGradId + ')" ' + glassStroke + '/><rect x="136" y="70" width="68" height="116" rx="20" fill="#FFFFFF" ' + solidStroke + '/>';
+  }
+  return '';
+}
+
+function renderSVG(opt, sz, palette) {
+  const gradId = 'g_' + Math.random().toString(36).substr(2, 9);
+  const glyph = getGlyph(opt, palette.mode);
+
+  let bgBorder = '';
+  if (palette.mode === 'dark_mono') {
+    bgBorder = 'stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="2"';
+  } else if (palette.mode === 'light_mono') {
+    bgBorder = 'stroke="#000000" stroke-opacity="0.10" stroke-width="2"';
+  }
+
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="' + sz + '" height="' + sz + '">' +
+  '<defs>' +
+    '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + palette.top + '"/>' +
+      '<stop offset="1" stop-color="' + palette.bot + '"/>' +
+    '</linearGradient>' +
+  '</defs>' +
+  '<rect x="1" y="1" width="254" height="254" rx="57" fill="url(#' + gradId + ')" ' + bgBorder + '/>' +
+  glyph +
+'</svg>';
+}
+
+const ALL_OPTS = ['glass_back', 'glass_front', 'glass_translucent', 'o_glass', 'opt1', 'opt5'];
+
+function updateCards() {
+  ALL_OPTS.forEach(opt => {
+    const wrap = document.getElementById('preview_wrap_' + opt);
+    if (wrap) {
+      wrap.innerHTML = renderSVG(opt, 96, currentPalette);
+    }
+  });
+}
+
+function updatePreview() {
+  const p = currentPalette;
+  const opt = currentOpt;
+
+  document.getElementById('tb_light_slot').innerHTML = renderSVG(opt, 24, p);
+  document.getElementById('tb_dark_slot').innerHTML = renderSVG(opt, 24, p);
+
+  document.getElementById('desktop_48_wrap').innerHTML = renderSVG(opt, 48, p);
+  document.getElementById('desktop_64_wrap').innerHTML = renderSVG(opt, 64, p);
+
+  document.getElementById('scale_256').innerHTML = renderSVG(opt, 96, p);
+  document.getElementById('scale_128').innerHTML = renderSVG(opt, 64, p);
+  document.getElementById('scale_64').innerHTML = renderSVG(opt, 48, p);
+  document.getElementById('scale_48').innerHTML = renderSVG(opt, 36, p);
+  document.getElementById('scale_32').innerHTML = renderSVG(opt, 32, p);
+  document.getElementById('scale_24').innerHTML = renderSVG(opt, 24, p);
+  document.getElementById('scale_16').innerHTML = renderSVG(opt, 16, p);
+
+  document.getElementById('squint_64').innerHTML = renderSVG(opt, 54, p);
+  document.getElementById('squint_32').innerHTML = renderSVG(opt, 32, p);
+}
+
+function selectCandidate(opt) {
+  currentOpt = opt;
+  const cards = document.querySelectorAll('.candidate-card');
+  cards.forEach(c => {
+    if (c.getAttribute('data-id') === opt) {
+      c.classList.add('selected');
+      c.querySelector('.btn-select').textContent = '当前选中';
+      document.getElementById('currentNameLabel').textContent = c.getAttribute('data-name');
+    } else {
+      c.classList.remove('selected');
+      c.querySelector('.btn-select').textContent = '选择此项';
+    }
+  });
+  document.getElementById('cliCodeText').textContent = 'python scripts/switch_icon.py ' + opt;
+  updatePreview();
+}
+
+function setPalette(name, top, bot, mode, btn) {
+  currentPalette = { name, top, bot, mode };
+  const btns = document.querySelectorAll('.palette-btn');
+  btns.forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  updateCards();
+  updatePreview();
+}
+
+updateCards();
+updatePreview();
+</script>
+</body>
+</html>

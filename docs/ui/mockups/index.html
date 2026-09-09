@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duo UI 方案稿</title>
+<style>
+  /* 令牌唯一来源：docs/ui/DESIGN.md §2 */
+  :root {
+    --ink: #1D1D1F;
+    --ink2: #86868B;
+    --card-fill: rgba(255, 255, 255, 0.72);
+    --card-border: rgba(255, 255, 255, 0.65);
+    --dur: 140ms;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(340px 280px at 8% 4%, rgba(0, 122, 255, 0.06), transparent 62%),
+      radial-gradient(300px 260px at 94% 96%, rgba(0, 122, 255, 0.05), transparent 60%),
+      #E8E8ED;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 22px; font-weight: 600; color: var(--ink); }
+  .cards { display: flex; gap: 12px; margin-top: 20px; }
+  a.card {
+    position: relative;
+    width: 200px;
+    height: 112px;
+    border-radius: 16px;
+    background: var(--card-fill);
+    border: 1px solid var(--card-border);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-decoration: none;
+  }
+  a.card strong { font-size: 15px; font-weight: 600; color: var(--ink); }
+  a.card span { font-size: 12px; color: var(--ink2); }
+  /* hover 洗色（hoverWash），140ms 透明度 */
+  a.card::after {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    border-radius: 15px;
+    background: rgba(0, 0, 0, 0.04);
+    opacity: 0;
+    transition: opacity var(--dur);
+  }
+  a.card:hover::after { opacity: 1; }
+  .note { margin-top: 16px; font-size: 12px; color: var(--ink2); }
+</style>
+</head>
+<body>
+  <h1>Duo UI 方案稿</h1>
+  <nav class="cards">
+    <a class="card" href="panel.html"><strong>主面板</strong><span>panel.html</span></a>
+    <a class="card" href="settings.html"><strong>设置页</strong><span>settings.html</span></a>
+    <a class="card" href="icons.html"><strong>应用图标</strong><span>icons.html</span></a>
+  </nav>
+  <p class="note">静态预览稿；实现按 docs/ui/DESIGN.md 落到 QML</p>
+</body>
+</html>

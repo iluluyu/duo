@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<!-- docs/ui/mockups/bars.html — 串流窗口「上巴/下巴」模式 · 第六版(静态、零 JS、零外部依赖;v6.1 按钮统一规格化)。
+     v6 = agy Opus 定稿重做「系统」形态(用户反馈 v5.1 看不出亚克力——桌面太纯,blur 磨平):
+       · 桌面光源(让亚克力被看见的关键):四帧统一亮色桌面
+         radial(ellipse 70% 60% at 30% 25%, rgba(255,255,255,.35), transparent 70%)
+         + radial(ellipse 40% 35% at 75% 80%, rgba(180,160,140,.12), transparent 60%)
+         + 底 #E8E4DF——主光斑左上 + 右下暖扰动,下巴横跨两个色温带,blur 后呈
+         左亮右暗过渡 = 亚克力"活着"的证据;帧① 沉浸语言不动,仅随四帧换桌面。
+       · 帧④ 暗桌面(展示药丸自适应):底 #1A1A1E,主光斑换冷调 rgba(90,90,120,.25),
+         暖扰动照旧。
+       · 亚克力下巴(帧③④):高 32px(非 28);backdrop-filter blur(20px) saturate(1.15)
+         (暗色 24px / 1.10);底色 rgba(248,248,248,.72)(暗色 rgba(32,32,36,.68));
+         顶部 hairline rgba(0,0,0,.08)(暗色 rgba(255,255,255,.06));内亮边
+         inset 0 1px 0 rgba(255,255,255,.45)(暗色 .08)。药丸 36×4 居中于 32px 栏
+         (距底 14px,不再贴底):亮环境 rgba(29,29,31,.40) / 暗环境 rgba(255,255,255,.61)。
+       · 云母标题栏(帧②④):32px;blur(60px) saturate(.85);底色 rgba(243,243,243,.90)
+         (暗色 rgba(32,32,32,.90));无 hairline(窗口外框负责);─□✕ 原生按钮不变。
+       · 窗口三明治:外轮廓 8px + overflow:hidden——栏不设圆角,裁切自动同心;
+         栏与内容交界处直角(Win11 原生语义);窗口本体投影
+         0 2px 8px rgba(0,0,0,.15) + 0 8px 32px rgba(0,0,0,.10)(OS 级投影,
+         窗口浮于桌面,非面板阴影;帧① 沉浸态保持零投影)。
+       · 材质分水岭:上巴云母 α0.90 不透·壁纸色调 / 下巴亚克力 α0.72 透·实时内容,
+         0.20 alpha 差是两种材质的分水岭;药丸双色自适应(亮→深 α0.40 / 暗→白 α0.61)。
+       · 合成前提:.win 底色改透明——上下巴必须直接采样桌面光源(v5.1 窗口铺
+         #F5F5F7,blur 只磨自身底色 = "看不出亚克力"的根因)。
+     v5 定稿保留(帧① 沉浸语言,几何取自 chrome_overlay.cs 实测):
+       · 返回控件 = iOS Home Indicator 语言药丸条(玻璃圆盘/环/中心点废弃):
+         静态 36×4 白 α95/255 = rgba(255,255,255,.37);hover α155 = .61;按下收窄
+         28px α210;按住 350ms 线性膨胀到 48px(α175,HOME 倒计时,宽度变化即
+         暗示,无图形符号);触发后闪白 α250 / 120ms。药丸贴底 bottom 7px、高 4
+         → 中心距窗底 9px;44px 透明下巴只是热区(最底 6px 不可见缩放 sliver);
+         点按 = BACK · 长按膨胀 = HOME。
+       · 按钮统一(v6.1 规格化):─□✕ 无论胶囊(沉浸)或标题栏(系统)均
+       · 30px 方形热区 · 字形 10px · 间距 6px(标题栏弃 Win11 原生 46×32 宽钮,与胶囊同规)。
+       · 胶囊 = 钮 30 / 距 6 / 内距 5 / rim 半径 20,TopMargin = 10;玻璃
+         rgba(10,10,12,.70) + 1px 白 rim rgba(255,255,255,.27);字形常态 .78;
+         ✕ hover 实心 #E81123;原生标题栏钮 hover #E9E9E9。
+     四画框 2×2:① 沉浸(现状) ② 上巴·系统 ③ 下巴·系统 ④ 全系统(三明治·暗桌面)。
+     每框 360×640 桌面光源(①②③ 亮 / ④ 暗),窗口 300×560(≈9:16)圆角 8。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>串流窗口 · 上巴/下巴(三明治一体窗口)</title>
+<style>
+/* ============ 令牌(DESIGN.md)+ chrome_overlay.cs 实测 + v5 新参数 ============ */
+:root{
+  --bg:#F5F5F7;                     /* 页面画布 */
+  --ink:#1D1D1F;                    /* 主文字 */
+  --ink2:#86868B;                   /* 次文字 */
+  --hair:rgba(0,0,0,.12);           /* 发丝线 */
+  /* —— v6 agy Opus 定稿:桌面光源 + 云母/亚克力分家(0.20 alpha 分水岭) —— */
+  --desk-lite:                      /* 亮桌面光源:主光斑左上 + 右下暖扰动,让下巴横跨两个色温带 */
+    radial-gradient(ellipse 70% 60% at 30% 25%, rgba(255,255,255,.35), transparent 70%),
+    radial-gradient(ellipse 40% 35% at 75% 80%, rgba(180,160,140,.12), transparent 60%),
+    #E8E4DF;
+  --desk-dark:                      /* 帧④ 暗桌面:底 #1A1A1E,主光斑换冷调,暖扰动照旧 */
+    radial-gradient(ellipse 70% 60% at 30% 25%, rgba(90,90,120,.25), transparent 70%),
+    radial-gradient(ellipse 40% 35% at 75% 80%, rgba(180,160,140,.12), transparent 60%),
+    #1A1A1E;
+  --mica:rgba(243,243,243,.90);     /* 上巴云母:α0.90 不透·壁纸色调(暗色变体见 .stage--dark) */
+  --mica-fx:blur(60px) saturate(.85); /* 云母:重 blur 磨平细节,只留壁纸色调 */
+  --acrylic:rgba(248,248,248,.72);  /* 下巴亚克力:α0.72 透·实时内容(暗色 rgba(32,32,36,.68)) */
+  --acrylic-fx:blur(20px) saturate(1.15); /* 亚克力凝结(暗色 24px / 1.10) */
+  --acrylic-hair:rgba(0,0,0,.08);   /* 亚克力顶部 hairline(暗色 rgba(255,255,255,.06)) */
+  --acrylic-lum:rgba(255,255,255,.45); /* 亚克力内亮边 inset 0 1px 0(暗色 .08) */
+  --pill-lite:rgba(29,29,31,.40);   /* 系统药丸·亮环境:深色 α0.40 */
+  --pill-dark:rgba(255,255,255,.61);/* 系统药丸·暗环境:白 α0.61 */
+  --win-shadow:0 2px 8px rgba(0,0,0,.15), 0 8px 32px rgba(0,0,0,.10); /* OS 级窗口投影(仅系统形态) */
+  --tb-hot:#E9E9E9;                 /* 原生标题栏钮 hover */
+  /* —— chrome_overlay.cs 实测,不进 DESIGN.md 令牌 —— */
+  --glass-cap:rgba(10,10,12,.70);   /* 胶囊玻璃底 FromArgb(180,10,10,12) */
+  --rim-cap:rgba(255,255,255,.27);  /* 胶囊 1px 白 rim FromArgb(70,255,255,255) */
+  --pill-rest:rgba(255,255,255,.37);/* 沉浸药丸常态 FromArgb(95,255,255,255);hover α155/.61 等中间态见 .pill 注释 */
+  --g78:rgba(255,255,255,.78);      /* 胶囊字形常态不透明度 */
+  --close-hot:#E81123;              /* ✕ hover 实心 FromArgb(255,232,17,35) */
+  --hover-cap:rgba(255,255,255,.11);/* 胶囊圆钮 hover 底 FromArgb(28,255,255,255) */
+  --app:#101014;                    /* App 深色底(内容占位) */
+  --pink:#FB7299;                   /* 哔哩哔哩粉(App 内容占位用) */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);
+  font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:13px;color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;align-items:center;
+  padding:48px 20px 72px;
+}
+
+/* ============ 页头:标题 + 12px 说明行(含两项定稿) ============ */
+.page-head{display:flex;flex-direction:column;align-items:center;gap:5px;max-width:780px;text-align:center}
+.page-head h1{font-size:15px;font-weight:600}
+.page-head p{font-size:12px;line-height:1.7;color:var(--ink2)}
+.page-head p b{color:var(--ink);font-weight:600}
+.page-head p code{font-family:ui-monospace,Consolas,monospace;font-size:11px;background:rgba(0,0,0,.05);padding:1px 5px;border-radius:4px}
+.page-head .spec-note{font-size:11px;color:var(--ink2);letter-spacing:.02em} /* v6.1 比例标注行 */
+
+/* ============ 2×2 画框矩阵 ============ */
+.board{margin-top:34px;display:grid;grid-template-columns:repeat(2,auto);gap:30px 26px}
+@media (max-width:820px){.board{grid-template-columns:minmax(300px,auto)}}
+.cell{display:flex;flex-direction:column;align-items:center;gap:9px}
+.mode-cap{font-size:11px;line-height:1.5;color:var(--ink2);text-align:center}
+.mode-cap b{font-weight:600;margin-right:6px}
+
+/* ============ 画框(桌面场景):360×640 桌面光源(让亚克力被看见的关键) ============
+   亮桌面(①②③)= 主光斑左上(白 .35)+ 右下暖扰动(180,160,140 .12)叠 #E8E4DF:
+   下巴横跨两个色温带,blur 后呈左亮右暗过渡 = 亚克力"活着"的证据
+   (v5.1 线性渐变太纯、blur 磨平,是"看不出亚克力"的根因)
+   四帧窗口均 300×560 垂直居中(所有元素都在窗内,无窗外悬浮) */
+.stage{
+  width:360px;height:640px;flex:none;position:relative;
+  border-radius:12px;overflow:hidden;
+  background:var(--desk-lite);         /* 亮桌面光源(帧① 仅换桌面,沉浸语言不动) */
+  border:1px solid var(--hair);
+}
+/* 帧④ 暗桌面:底 #1A1A1E + 冷调光斑 rgba(90,90,120,.25),暖扰动照旧——展示药丸自适应;
+   画框描边提亮仅示意可读性(非定稿参数) */
+.stage--dark{
+  background:var(--desk-dark);
+  border-color:rgba(255,255,255,.14);
+}
+
+/* ============ 串流窗口:300×560、圆角 8 三明治(外轮廓唯一圆角) ============
+   窗口 = flex 纵向容器:上巴(标题栏)+ 内容 + 下巴(底栏)三层,同一个圆角矩形;
+   overflow:hidden 共裁一个圆角 → 栏不设圆角,裁切自动同心;栏与内容交界处直角
+   (Win11 原生语义)。v6 关键:窗口本体底色透明——上下巴 backdrop-filter 才能
+   直接采样桌面光源(v5.1 铺 #F5F5F7,blur 只磨自身底色 = 看不出亚克力) */
+.win{
+  position:absolute;left:30px;top:40px;
+  width:300px;height:560px;flex:none;
+  border-radius:8px;overflow:hidden;
+  display:flex;flex-direction:column;
+  background:transparent;              /* 三层各自有底;窗口不铺色 */
+  border:1px solid rgba(0,0,0,.10);    /* 仅画帧内描边示意,真机无边框 */
+}
+/* 系统形态(②③④):OS 级窗口投影(窗口浮于桌面,非面板阴影);帧① 沉浸态零投影不动 */
+.win--sys{box-shadow:var(--win-shadow)}
+.stage--dark .win{border-color:rgba(255,255,255,.10)} /* 暗底上窗口轮廓可读(示意) */
+
+/* ---- 原生标题栏(上巴·系统):32px 云母 = α0.90 不透·壁纸色调 ----
+   rgba(243,243,243,.90) + blur(60px) saturate(.85):重 blur 磨平一切细节,
+   只留桌面壁纸的色调方向(与下巴亚克力的 0.20 alpha 差 = 两种材质的分水岭);
+   无 hairline / 亮边——边缘定义交给窗口外框;与内容交界处直角 */
+.titlebar{
+  height:32px;flex:none;display:flex;align-items:center;
+  background:var(--mica);
+  -webkit-backdrop-filter:var(--mica-fx);
+  backdrop-filter:var(--mica-fx);
+}
+/* 暗色云母(帧④ 暗桌面):底 rgba(32,32,32,.90),fx 不变;字与钮转亮 */
+.stage--dark .titlebar{background:rgba(32,32,32,.90)}
+.stage--dark .titlebar .t-name{color:rgba(255,255,255,.92)}
+.stage--dark .tb-btn svg{stroke:rgba(255,255,255,.9)}
+.stage--dark .tb-btn.is-hot{background:rgba(255,255,255,.12)}
+.titlebar .t-name{padding-left:12px;font-size:12px;color:var(--ink);white-space:nowrap;overflow:hidden}
+/* ─□✕ 按钮统一规格(v6.1):30px 方形热区 · 字形 10px · 间距 6px,与胶囊 .cap-btn 同规;
+   弃 Win11 原生 46×32 宽钮 → 32px 栏内垂直居中(上下各 1px) */
+.tb-btns{margin-left:auto;display:flex;gap:6px;align-items:center;height:100%}
+.tb-btn{width:30px;height:30px;display:grid;place-items:center}
+.tb-btn.is-hot{background:var(--tb-hot)}      /* 原生 hover 示意 */
+.tb-btn svg{stroke:rgba(29,29,31,.9);stroke-width:1;fill:none}
+
+/* ---- 原生底栏(下巴·系统):32px 亚克力 = α0.72 透·实时内容 ----
+   rgba(248,248,248,.72) + blur(20px) saturate(1.15):比云母透 0.20 alpha,
+   桌面光斑经 blur 凝结成左亮右暗过渡(亚克力"活着"的证据);
+   顶部 hairline rgba(0,0,0,.08) + 内亮边 inset 0 1px 0 rgba(255,255,255,.45) */
+.bottombar{
+  height:32px;flex:none;
+  display:flex;align-items:center;justify-content:center; /* 药丸居中于 32px 栏 = 距底 14px,不再贴底 */
+  background:var(--acrylic);
+  -webkit-backdrop-filter:var(--acrylic-fx);
+  backdrop-filter:var(--acrylic-fx);
+  border-top:1px solid var(--acrylic-hair);    /* 与内容交界的 hairline */
+  box-shadow:inset 0 1px 0 var(--acrylic-lum); /* 亚克力上缘内亮边(受光) */
+}
+/* 暗色亚克力(帧④ 暗桌面):底 rgba(32,32,36,.68)、blur(24px) saturate(1.10)、
+   hairline 白 .06、内亮边白 .08 */
+.stage--dark .bottombar{
+  background:rgba(32,32,36,.68);
+  -webkit-backdrop-filter:blur(24px) saturate(1.10);
+  backdrop-filter:blur(24px) saturate(1.10);
+  border-top-color:rgba(255,255,255,.06);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08);
+}
+
+/* ---- 系统药丸(决定 1 系统底栏变体):36×4,双色自适应,无玻璃底 ----
+   居中于 32px 栏(距底 14px,不再贴底):亮环境 = 深色 rgba(29,29,31,.40);
+   暗环境 = 白 rgba(255,255,255,.61);hover 提亮变体省略 */
+.pill-sys{
+  width:36px;height:4px;flex:none;border-radius:2px;
+  background:var(--pill-lite);       /* 亮环境:深色 α0.40 */
+}
+.stage--dark .pill-sys{background:var(--pill-dark)} /* 暗环境:白 α0.61 */
+
+/* ---- App 内容占位(9:16 深色):状态区 + 封面块 + 列表 + 底部 tab 条 ---- */
+.app{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--app)}
+.status{height:26px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 12px}
+.status .tm{font-size:10px;color:rgba(255,255,255,.9);font-weight:600}
+.status .sic{display:flex;gap:5px;align-items:center}
+.cover{height:150px;flex:none;position:relative;background:linear-gradient(128deg,#3B2530 0%,#241A2B 46%,#141419 100%)}
+.cover .play{position:absolute;left:12px;bottom:12px;display:flex;align-items:center;gap:7px}
+.cover .play svg{stroke:rgba(255,255,255,.85);fill:none;stroke-width:1.2}
+.cover .play i{font-style:normal;font-size:9px;color:rgba(255,255,255,.75)}
+.cover .dur{position:absolute;right:10px;bottom:10px;font-size:9px;color:rgba(255,255,255,.85);background:rgba(0,0,0,.45);border-radius:3px;padding:1px 5px}
+.vid-info{flex:none;padding:10px 12px 8px;display:flex;flex-direction:column;gap:7px}
+.vid-info .l1{height:11px;width:88%;border-radius:3px;background:rgba(255,255,255,.26)}
+.vid-info .l2{height:11px;width:47%;border-radius:3px;background:rgba(255,255,255,.16)}
+.vid-info .meta{display:flex;align-items:center;gap:6px;font-size:9px;color:rgba(255,255,255,.45)}
+.vid-info .meta .ava{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--pink),#8C4460)}
+.rows{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:10px;padding:2px 12px 8px}
+.row{display:flex;gap:10px}
+.row .thumb{width:96px;height:60px;flex:none;border-radius:5px;background:linear-gradient(135deg,#2A222C,#17171C)}
+.row .txt{flex:1;display:flex;flex-direction:column;gap:6px;padding-top:2px}
+.row .t1{height:10px;border-radius:3px;background:rgba(255,255,255,.24)}
+.row .t1.w2{width:72%}
+.row .t1.w1{width:88%}
+.row .m{height:8px;width:52%;border-radius:3px;background:rgba(255,255,255,.13)}
+.tabbar{height:48px;flex:none;display:flex;border-top:1px solid rgba(255,255,255,.07);background:#0C0C0F}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+.tab svg{stroke:#8E8E96;stroke-width:1.2;fill:none}
+.tab i{font-style:normal;font-size:8px;color:#8E8E96}
+.tab.on svg{stroke:var(--pink)}
+.tab.on i{color:var(--pink)}
+.tab--plus svg{stroke:rgba(255,255,255,.55)}
+
+/* ============ 顶带胶囊(TopWindow 实测几何):钮 30 / 距 6 / 字形 10 / 内距 5,rim 半径 20 ============
+   光标进入顶带时浮出窗口右上角(TopMargin = 10);顶带本体无可见 UI、整条可拖拽 */
+.capsule{
+  position:absolute;top:10px;right:10px;z-index:6;
+  display:flex;gap:6px;padding:5px;border-radius:20px;
+  background:var(--glass-cap);
+  box-shadow:inset 0 0 0 1px var(--rim-cap);   /* 1px 白 rim,无 halo */
+}
+.cap-btn{width:30px;height:30px;border-radius:50%;display:grid;place-items:center}
+.cap-btn svg{stroke:var(--g78);fill:none}       /* 字形常态 .78 */
+.cap-btn.is-hot{background:var(--hover-cap)}
+.cap-btn.is-hot svg{stroke:#fff}                /* hover 字形 1.0 */
+.cap-btn--close.is-hot{background:var(--close-hot)}  /* ✕ hover #E81123 */
+
+/* ============ 沉浸返回药丸(决定 1):iOS Home Indicator 语言 ============
+   ghost 带 44px 全透明(仅热区,最底 6px 缩放 sliver)。药丸贴底:bottom 7px、
+   高 4 → 中心距窗底 9px(用户拍板;原带内居中废弃,与 44px 热区无关)。
+   静态 36×4 白 α95/255=.37;hover α155=.61;按下收窄 28px α210;按住 350ms 线性
+   膨胀到 48px α210→175(HOME 倒计时);触发后闪白 α250/120ms。宽度变化即暗示,
+   无图形符号;无玻璃盘、无环、无中心点。点 = BACK,长按膨胀 = HOME */
+.chin{position:absolute;left:0;right:0;bottom:0;height:44px;z-index:5}      /* 44px 整条透明热区 */
+.pill{position:absolute;left:50%;bottom:7px;transform:translateX(-50%);     /* 贴底:中心距底 9px = 7 + 4/2 */
+  width:36px;height:4px;border-radius:2px;background:var(--pill-rest)}
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <h1>串流窗口 · 上巴/下巴(三明治一体窗口)</h1>
+  <p>agy Opus 定稿(v6,针对"看不出亚克力"反馈重做系统形态):<b>桌面光源是让亚克力被看见的关键</b>——四帧统一亮桌面
+    <code>#E8E4DF</code> + 主光斑左上 <code>rgba(255,255,255,.35)</code> + 右下暖扰动 <code>rgba(180,160,140,.12)</code>,
+    下巴横跨两个色温带,blur 后呈<b>左亮右暗过渡 = 亚克力"活着"的证据</b>(帧① 沉浸语言不动,仅随四帧换桌面;帧④ 换暗桌面
+    <code>#1A1A1E</code> + 冷调光斑 <code>rgba(90,90,120,.25)</code> 展示药丸自适应)。<b>系统形态 = 三明治一体窗口</b>:外轮廓圆角
+    8px + overflow:hidden(栏不设圆角,裁切自动同心),栏与内容交界处直角(Win11 原生语义),窗口本体投影
+    <code>0 2px 8px rgba(0,0,0,.15), 0 8px 32px rgba(0,0,0,.10)</code>(OS 级投影,窗口浮于桌面;沉浸态零投影不变)。
+    <b>材质分家(α 分水岭)</b>:<b>上巴云母</b>(帧②④)<code>rgba(243,243,243,.90) + blur(60px) saturate(.85)</code>
+    ——α0.90 不透·壁纸色调,无 hairline(窗口外框负责);<b>下巴亚克力</b>(帧③④)<code>rgba(248,248,248,.72) +
+    blur(20px) saturate(1.15)</code>,高 32px,顶部 hairline <code>rgba(0,0,0,.08)</code> + 内亮边
+    <code>inset 0 1px 0 rgba(255,255,255,.45)</code>——α0.72 透·实时内容;<b>0.20 alpha 差是两种材质的分水岭</b>。
+    <b>药丸双色自适应</b>(亮→深 <code>α0.40</code> / 暗→白 <code>α0.61</code>),36×4 居中于 32px 栏(距底 14px,不再贴底)。
+    <b>① 返回控件 = iOS Home Indicator 语言药丸条</b>(沉浸态保留):静态 36×4 白 <code>rgba(255,255,255,.37)</code>,
+    hover <code>.61</code>,按下收窄 28px、按住 350ms 膨胀到 48px(HOME 倒计时)后闪白 120ms;44px 透明下巴只是热区;
+    <b>点按 = 返回 · 长按膨胀 = HOME</b>。其余几何取自 <code>chrome_overlay.cs</code>:胶囊(钮 30 / 距 6 / 内距 5,
+    玻璃 rgba(10,10,12,.70) + 1px 白 rim)、标题栏 32px;<b>─□✕ 按钮全形态统一 30px 方形热区 · 字形 10 · 间距 6</b>(标题栏弃 Win11 原生 46×32 宽钮,与胶囊同规)。四框 = ① 现状 ② 仅上巴 ③ 仅下巴 ④ 全系统(暗桌面)。</p>
+  <p class="spec-note">窗口 300×560 · 外圆角 8 · 栏 32 · 药丸 36×4 r2 · 按钮 30/6</p>
+</header>
+
+<main class="board">
+
+  <!-- ============ ① 沉浸(现状):无边框纯内容窗 + 胶囊 + 窗内药丸条 ============ -->
+  <section class="cell">
+    <div class="stage">
+      <div class="win">
+        <div class="app">
+          <div class="status"><span class="tm">9:41</span>
+            <span class="sic">
+              <svg width="14" height="10" viewBox="0 0 14 10"><g fill="rgba(255,255,255,.85)"><rect x="0" y="6" width="2" height="4" rx="0.5"/><rect x="4" y="4" width="2" height="6" rx="0.5"/><rect x="8" y="2" width="2" height="8" rx="0.5"/><rect x="12" y="0" width="2" height="10" rx="0.5"/></g></svg>
+              <svg width="13" height="10" viewBox="0 0 13 10"><path d="M1 3.4 A7.4 7.4 0 0 1 12 3.4 M3 5.8 A4.6 4.6 0 0 1 10 5.8 M5.2 8.1 A1.8 1.8 0 0 1 7.8 8.1" stroke="rgba(255,255,255,.85)" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>
+              <svg width="18" height="10" viewBox="0 0 18 10"><rect x="0.5" y="1.5" width="13" height="7" rx="1.6" stroke="rgba(255,255,255,.6)" stroke-width="1" fill="none"/><rect x="2" y="3" width="9" height="4" rx="0.8" fill="rgba(255,255,255,.85)"/><path d="M15.5 3.5 v3" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+          <div class="cover">
+            <span class="play">
+              <svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2.5" width="12" height="9" rx="2"/><path d="M6 5.2 L9.2 7 L6 8.8 Z" fill="rgba(255,255,255,.85)" stroke="none"/></svg>
+              <i>12:04</i>
+            </span>
+            <span class="dur">弹幕 1.2 万</span>
+          </div>
+          <div class="vid-info">
+            <div class="l1"></div><div class="l2"></div>
+            <div class="meta"><span class="ava"></span>某 UP 主 · 3.4 万播放</div>
+          </div>
+          <div class="rows">
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w2"></div><div class="t1 w1"></div><div class="m"></div></div></div>
+          </div>
+          <div class="tabbar">
+            <div class="tab on"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 6 L7 1.8 L12 6 M3.4 5.2 V12 H10.6 V5.2"/></svg><i>首页</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2 H12 L10.6 7 H3.4 Z M3.4 7 C3 9.5 5.8 10.5 7 12 C8.2 10.5 11 9.5 10.6 7"/></svg><i>动态</i></div>
+            <div class="tab tab--plus"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.6"/><path d="M7 4.4 V9.6 M4.4 7 H9.6"/></svg><i></i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2.6 H12 V9.4 H7.6 L4.8 11.8 V9.4 H2 Z"/></svg><i>消息</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="4.6" r="2.6"/><path d="M2.2 12 C2.8 9.2 4.8 8.2 7 8.2 C9.2 8.2 11.2 9.2 11.8 12"/></svg><i>我的</i></div>
+          </div>
+        </div>
+        <!-- 顶带胶囊:悬停态示意(✕ 呈 #E81123 hover) -->
+        <div class="capsule">
+          <span class="cap-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2.5 6 H9.5" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+          <span class="cap-btn"><svg width="10" height="10" viewBox="0 0 12 12"><rect x="2.6" y="2.6" width="6.8" height="6.8" rx="0.6" stroke-width="1.2"/></svg></span>
+          <span class="cap-btn cap-btn--close is-hot"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M3.2 3.2 L8.8 8.8 M8.8 3.2 L3.2 8.8" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+        </div>
+        <!-- 底带:44px ghost 热区 + 贴底 4px 药丸条(决定 1;bottom 7px → 中心距底 9px) -->
+        <div class="chin"><span class="pill"></span></div>
+      </div>
+    </div>
+    <p class="mode-cap"><b>① 沉浸(现状)</b>无边框纯内容窗 · 顶带悬停现形胶囊 · 底带药丸贴底(中心距底 9px;点=返回·长按膨胀=HOME)</p>
+  </section>
+
+  <!-- ============ ② 上巴·系统:云母标题栏拼入 + 无下巴,返回药丸保留沉浸语言 ============ -->
+  <section class="cell">
+    <div class="stage">
+      <div class="win win--sys">
+        <!-- 三明治上层:Windows 原生标题栏 32px,云母 α0.90 不透·壁纸色调(─ 示 hover #E9E9E9;无 hairline,窗口外框负责) -->
+        <div class="titlebar">
+          <span class="t-name">哔哩哔哩 - Duo</span>
+          <span class="tb-btns">
+            <span class="tb-btn is-hot"><svg width="10" height="10" viewBox="0 0 11 11"><path d="M1.5 5.5 H9.5" stroke-linecap="round"/></svg></span>
+            <span class="tb-btn"><svg width="10" height="10" viewBox="0 0 11 11"><rect x="1.8" y="1.8" width="7.4" height="7.4" rx="0.4"/></svg></span>
+            <span class="tb-btn"><svg width="10" height="10" viewBox="0 0 11 11"><path d="M2.2 2.2 L8.8 8.8 M8.8 2.2 L2.2 8.8" stroke-linecap="round"/></svg></span>
+          </span>
+        </div>
+        <!-- 三明治中层:内容整体内缩(自标题栏下起),无下巴 → 内容直沉底 -->
+        <div class="app">
+          <div class="status"><span class="tm">9:41</span>
+            <span class="sic">
+              <svg width="14" height="10" viewBox="0 0 14 10"><g fill="rgba(255,255,255,.85)"><rect x="0" y="6" width="2" height="4" rx="0.5"/><rect x="4" y="4" width="2" height="6" rx="0.5"/><rect x="8" y="2" width="2" height="8" rx="0.5"/><rect x="12" y="0" width="2" height="10" rx="0.5"/></g></svg>
+              <svg width="13" height="10" viewBox="0 0 13 10"><path d="M1 3.4 A7.4 7.4 0 0 1 12 3.4 M3 5.8 A4.6 4.6 0 0 1 10 5.8 M5.2 8.1 A1.8 1.8 0 0 1 7.8 8.1" stroke="rgba(255,255,255,.85)" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>
+              <svg width="18" height="10" viewBox="0 0 18 10"><rect x="0.5" y="1.5" width="13" height="7" rx="1.6" stroke="rgba(255,255,255,.6)" stroke-width="1" fill="none"/><rect x="2" y="3" width="9" height="4" rx="0.8" fill="rgba(255,255,255,.85)"/><path d="M15.5 3.5 v3" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+          <div class="cover">
+            <span class="play">
+              <svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2.5" width="12" height="9" rx="2"/><path d="M6 5.2 L9.2 7 L6 8.8 Z" fill="rgba(255,255,255,.85)" stroke="none"/></svg>
+              <i>12:04</i>
+            </span>
+            <span class="dur">弹幕 1.2 万</span>
+          </div>
+          <div class="vid-info">
+            <div class="l1"></div><div class="l2"></div>
+            <div class="meta"><span class="ava"></span>某 UP 主 · 3.4 万播放</div>
+          </div>
+          <div class="rows">
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w2"></div><div class="t1 w1"></div><div class="m"></div></div></div>
+          </div>
+          <div class="tabbar">
+            <div class="tab on"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 6 L7 1.8 L12 6 M3.4 5.2 V12 H10.6 V5.2"/></svg><i>首页</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2 H12 L10.6 7 H3.4 Z M3.4 7 C3 9.5 5.8 10.5 7 12 C8.2 10.5 11 9.5 10.6 7"/></svg><i>动态</i></div>
+            <div class="tab tab--plus"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.6"/><path d="M7 4.4 V9.6 M4.4 7 H9.6"/></svg><i></i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2.6 H12 V9.4 H7.6 L4.8 11.8 V9.4 H2 Z"/></svg><i>消息</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="4.6" r="2.6"/><path d="M2.2 12 C2.8 9.2 4.8 8.2 7 8.2 C9.2 8.2 11.2 9.2 11.8 12"/></svg><i>我的</i></div>
+          </div>
+        </div>
+        <!-- 胶囊消失:控钮职责移交标题栏;返回药丸仍窗内贴底(沉浸语言,中心距底 9px) -->
+        <div class="chin"><span class="pill"></span></div>
+      </div>
+    </div>
+    <p class="mode-cap"><b>② 上巴·系统</b>云母 α0.90 不透·壁纸色调(blur60) · 无下巴、内容直沉底 · 药丸条保留</p>
+  </section>
+
+  <!-- ============ ③ 下巴·系统:顶带维持胶囊 + 32px 亚克力下巴拼入(亮桌面·深药丸) ============ -->
+  <section class="cell">
+    <div class="stage">
+      <div class="win win--sys">
+        <div class="app">
+          <div class="status"><span class="tm">9:41</span>
+            <span class="sic">
+              <svg width="14" height="10" viewBox="0 0 14 10"><g fill="rgba(255,255,255,.85)"><rect x="0" y="6" width="2" height="4" rx="0.5"/><rect x="4" y="4" width="2" height="6" rx="0.5"/><rect x="8" y="2" width="2" height="8" rx="0.5"/><rect x="12" y="0" width="2" height="10" rx="0.5"/></g></svg>
+              <svg width="13" height="10" viewBox="0 0 13 10"><path d="M1 3.4 A7.4 7.4 0 0 1 12 3.4 M3 5.8 A4.6 4.6 0 0 1 10 5.8 M5.2 8.1 A1.8 1.8 0 0 1 7.8 8.1" stroke="rgba(255,255,255,.85)" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>
+              <svg width="18" height="10" viewBox="0 0 18 10"><rect x="0.5" y="1.5" width="13" height="7" rx="1.6" stroke="rgba(255,255,255,.6)" stroke-width="1" fill="none"/><rect x="2" y="3" width="9" height="4" rx="0.8" fill="rgba(255,255,255,.85)"/><path d="M15.5 3.5 v3" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+          <div class="cover">
+            <span class="play">
+              <svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2.5" width="12" height="9" rx="2"/><path d="M6 5.2 L9.2 7 L6 8.8 Z" fill="rgba(255,255,255,.85)" stroke="none"/></svg>
+              <i>12:04</i>
+            </span>
+            <span class="dur">弹幕 1.2 万</span>
+          </div>
+          <div class="vid-info">
+            <div class="l1"></div><div class="l2"></div>
+            <div class="meta"><span class="ava"></span>某 UP 主 · 3.4 万播放</div>
+          </div>
+          <div class="rows">
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w2"></div><div class="t1 w1"></div><div class="m"></div></div></div>
+          </div>
+          <div class="tabbar">
+            <div class="tab on"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 6 L7 1.8 L12 6 M3.4 5.2 V12 H10.6 V5.2"/></svg><i>首页</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2 H12 L10.6 7 H3.4 Z M3.4 7 C3 9.5 5.8 10.5 7 12 C8.2 10.5 11 9.5 10.6 7"/></svg><i>动态</i></div>
+            <div class="tab tab--plus"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.6"/><path d="M7 4.4 V9.6 M4.4 7 H9.6"/></svg><i></i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2.6 H12 V9.4 H7.6 L4.8 11.8 V9.4 H2 Z"/></svg><i>消息</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="4.6" r="2.6"/><path d="M2.2 12 C2.8 9.2 4.8 8.2 7 8.2 C9.2 8.2 11.2 9.2 11.8 12"/></svg><i>我的</i></div>
+          </div>
+        </div>
+        <!-- 顶带维持胶囊(常态:字形 .78,无 hover) -->
+        <div class="capsule">
+          <span class="cap-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2.5 6 H9.5" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+          <span class="cap-btn"><svg width="10" height="10" viewBox="0 0 12 12"><rect x="2.6" y="2.6" width="6.8" height="6.8" rx="0.6" stroke-width="1.2"/></svg></span>
+          <span class="cap-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M3.2 3.2 L8.8 8.8 M8.8 3.2 L3.2 8.8" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+        </div>
+        <!-- 三明治下层:32px 亚克力下巴 rgba(248,248,248,.72) + blur(20px) saturate(1.15),hairline .08 + 内亮边 .45;亮桌面 → 深色药丸 rgba(29,29,31,.40)(居中 = 距底 14px,不再贴底) -->
+        <div class="bottombar"><span class="pill-sys"></span></div>
+      </div>
+    </div>
+    <p class="mode-cap"><b>③ 下巴·系统</b>顶带维持胶囊 · 亚克力下巴 32px(α0.72 透·blur20,光斑左亮右暖) · 亮桌面→深药丸 α0.40</p>
+  </section>
+
+  <!-- ============ ④ 全系统(三明治·暗桌面):标题栏 + 内容 + 底栏 = 同一圆角窗三层 ============ -->
+  <section class="cell">
+    <div class="stage stage--dark">
+      <div class="win win--sys">
+        <div class="titlebar">
+          <span class="t-name">哔哩哔哩 - Duo</span>
+          <span class="tb-btns">
+            <span class="tb-btn"><svg width="10" height="10" viewBox="0 0 11 11"><path d="M1.5 5.5 H9.5" stroke-linecap="round"/></svg></span>
+            <span class="tb-btn"><svg width="10" height="10" viewBox="0 0 11 11"><rect x="1.8" y="1.8" width="7.4" height="7.4" rx="0.4"/></svg></span>
+            <span class="tb-btn"><svg width="10" height="10" viewBox="0 0 11 11"><path d="M2.2 2.2 L8.8 8.8 M8.8 2.2 L2.2 8.8" stroke-linecap="round"/></svg></span>
+          </span>
+        </div>
+        <div class="app">
+          <div class="status"><span class="tm">9:41</span>
+            <span class="sic">
+              <svg width="14" height="10" viewBox="0 0 14 10"><g fill="rgba(255,255,255,.85)"><rect x="0" y="6" width="2" height="4" rx="0.5"/><rect x="4" y="4" width="2" height="6" rx="0.5"/><rect x="8" y="2" width="2" height="8" rx="0.5"/><rect x="12" y="0" width="2" height="10" rx="0.5"/></g></svg>
+              <svg width="13" height="10" viewBox="0 0 13 10"><path d="M1 3.4 A7.4 7.4 0 0 1 12 3.4 M3 5.8 A4.6 4.6 0 0 1 10 5.8 M5.2 8.1 A1.8 1.8 0 0 1 7.8 8.1" stroke="rgba(255,255,255,.85)" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>
+              <svg width="18" height="10" viewBox="0 0 18 10"><rect x="0.5" y="1.5" width="13" height="7" rx="1.6" stroke="rgba(255,255,255,.6)" stroke-width="1" fill="none"/><rect x="2" y="3" width="9" height="4" rx="0.8" fill="rgba(255,255,255,.85)"/><path d="M15.5 3.5 v3" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+          <div class="cover">
+            <span class="play">
+              <svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2.5" width="12" height="9" rx="2"/><path d="M6 5.2 L9.2 7 L6 8.8 Z" fill="rgba(255,255,255,.85)" stroke="none"/></svg>
+              <i>12:04</i>
+            </span>
+            <span class="dur">弹幕 1.2 万</span>
+          </div>
+          <div class="vid-info">
+            <div class="l1"></div><div class="l2"></div>
+            <div class="meta"><span class="ava"></span>某 UP 主 · 3.4 万播放</div>
+          </div>
+          <div class="rows">
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w1"></div><div class="t1 w2"></div><div class="m"></div></div></div>
+            <div class="row"><div class="thumb"></div><div class="txt"><div class="t1 w2"></div><div class="t1 w1"></div><div class="m"></div></div></div>
+          </div>
+          <div class="tabbar">
+            <div class="tab on"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 6 L7 1.8 L12 6 M3.4 5.2 V12 H10.6 V5.2"/></svg><i>首页</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2 H12 L10.6 7 H3.4 Z M3.4 7 C3 9.5 5.8 10.5 7 12 C8.2 10.5 11 9.5 10.6 7"/></svg><i>动态</i></div>
+            <div class="tab tab--plus"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.6"/><path d="M7 4.4 V9.6 M4.4 7 H9.6"/></svg><i></i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2 2.6 H12 V9.4 H7.6 L4.8 11.8 V9.4 H2 Z"/></svg><i>消息</i></div>
+            <div class="tab"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="4.6" r="2.6"/><path d="M2.2 12 C2.8 9.2 4.8 8.2 7 8.2 C9.2 8.2 11.2 9.2 11.8 12"/></svg><i>我的</i></div>
+          </div>
+        </div>
+        <!-- 三明治下层:暗色亚克力 rgba(32,32,36,.68) + blur(24px) saturate(1.10),hairline 白 .06 + 内亮边白 .08;暗桌面 → 白药丸 rgba(255,255,255,.61) -->
+        <div class="bottombar"><span class="pill-sys"></span></div>
+      </div>
+    </div>
+    <p class="mode-cap"><b>④ 全系统(三明治·暗桌面)</b>云母 α0.90 暗 / 亚克力 α0.68·blur24 · 白药丸 α0.61 · 0.20 alpha 差 = 材质分水岭</p>
+  </section>
+
+</main>
+
+</body>
+</html>

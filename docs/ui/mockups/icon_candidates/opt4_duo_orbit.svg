@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs>
+  <linearGradient id="bg4" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#188BFF"/>
+    <stop offset="1" stop-color="#0071EB"/>
+  </linearGradient>
+</defs>
+<rect width="256" height="256" rx="58" fill="url(#bg4)"/>
+<!-- PC Host Orbit -->
+<circle cx="110" cy="142" r="50" fill="none" stroke="#FFFFFF" stroke-width="18"/>
+<!-- Phone Companion Orbit -->
+<circle cx="160" cy="92" r="32" fill="none" stroke="#FFFFFF" stroke-width="15"/>
+</svg>

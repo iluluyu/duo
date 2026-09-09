@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs>
+  <linearGradient id="bg_mono_gft" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#28282D"/>
+    <stop offset="1" stop-color="#161619"/>
+  </linearGradient>
+</defs>
+<rect x="1" y="1" width="254" height="254" rx="57" fill="url(#bg_mono_gft)" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="2"/>
+<!-- O-Window: Solid Pure White in Back -->
+<rect x="118" y="72" width="78" height="112" rx="28" fill="#FFFFFF"/>
+<!-- D-Window: Frosted Glass floating directly in Front of O (True Acrylic Overlap) -->
+<path d="M 76 74 L 96 74 A 40 40 0 0 1 136 114 L 136 142 A 40 40 0 0 1 96 182 L 76 182 A 14 14 0 0 1 62 168 L 62 88 A 14 14 0 0 1 76 74 Z" 
+      fill="#FFFFFF" fill-opacity="0.28" stroke="#FFFFFF" stroke-opacity="0.90" stroke-width="4" stroke-linejoin="round"/>
+</svg>
