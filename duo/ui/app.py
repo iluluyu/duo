@@ -33,8 +33,8 @@ from PyQt6.QtCore import QObject, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtQml import QQmlApplicationEngine
 
+from duo.core.engine import is_wsl, probe_binary
 from duo.core.engine import probe as probe_on_path
-from duo.core.engine import probe_binary
 from duo.core.settings import (
         Settings,
         load_settings,
@@ -100,6 +100,8 @@ class SettingsApi(QObject):
                         "audio_policy": settings.audio_policy,
                         "video_codec": settings.video_codec,
                         "turn_screen_off": settings.turn_screen_off,
+                        "top_bar_mode": settings.top_bar_mode,
+                        "bottom_bar_mode": settings.bottom_bar_mode,
                 }
 
         @pyqtSlot(result="QVariantList")
@@ -128,6 +130,8 @@ class SettingsApi(QObject):
                         audio_policy=_text(values.get("audio_policy", "latest")),
                         video_codec=_text(values.get("video_codec", "auto")),
                         turn_screen_off=_flag(values.get("turn_screen_off", False)),
+                        top_bar_mode=_text(values.get("top_bar_mode", "immersive")),
+                        bottom_bar_mode=_text(values.get("bottom_bar_mode", "immersive")),
                 )
                 problems = validate(settings)
                 if problems:
@@ -168,6 +172,10 @@ def run_app() -> int:
         assert context is not None   # the engine always has a root context
         context.setContextProperty("ctrl", controller)
         context.setContextProperty("settingsApi", api)
+        # 亚克力模糊采样闸门：WSL 的 Mesa/Vulkan 栈会让着色器输出异常，
+        # 在圆角卡上露出直角快照块（“未连接设备”卡曾复现）。Windows 真机
+        # （ANGLE/OpenGL）不受影响；Style.glassBlur 据此降级为纯半透明卡。
+        context.setContextProperty("shadersUsable", not is_wsl())
         engine.load(QUrl.fromLocalFile(str(QML_MAIN)))
         if not engine.rootObjects():
                 print("error: Main.qml 加载失败", file=sys.stderr)

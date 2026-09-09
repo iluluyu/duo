@@ -17,6 +17,37 @@ import sys
 _PANEL_LOCK_STOLEN = 85   # exit code: another panel already owns the lock
 
 
+def _install_crash_capture():
+    """Log unhandled exceptions and hard crashes to logs/panel-errors.log.
+
+    PyQt aborts the process after an exception escapes a slot (qFatal),
+    and a windowed PyInstaller exe has no stderr to print the traceback
+    to - without this capture a real-machine crash (2026-09-08:
+    fixed-ratio launch killed Duo.exe) leaves no evidence at all. The
+    hook writes the traceback BEFORE the abort, and faulthandler catches
+    native faults the same way.
+    """
+    import datetime
+    import faulthandler
+    import traceback
+
+    from duo.core.paths import data_dir
+
+    log = data_dir() / "logs" / "panel-errors.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    def _hook(exc_type, value, tb):
+        try:
+            with log.open("a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.datetime.now()} unhandled ---\n")
+                traceback.print_exception(exc_type, value, tb, file=f)
+        finally:
+            sys.__excepthook__(exc_type, value, tb)
+
+    sys.excepthook = _hook
+    faulthandler.enable(log.open("a", encoding="utf-8"), all_threads=True)
+
+
 def _acquire_panel_lock():
     """Take the panel single-instance lock; None if another panel runs.
 
@@ -44,6 +75,7 @@ def _main() -> int:
         print("duo panel already running - not starting a second instance",
               file=sys.stderr)
         return _PANEL_LOCK_STOLEN
+    _install_crash_capture()
     from duo.ui.app import run_app
     code = run_app()
     lock.unlock()

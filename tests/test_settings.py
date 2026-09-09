@@ -182,3 +182,92 @@ def test_stale_flex_resolution_key_is_ignored(tmp_path, monkeypatch):
         assert problems == []
         assert loaded.fps == 90
         assert not hasattr(loaded, "flex_resolution")
+
+
+# ------------------------------------------- 窗口栏模式（上巴/下巴）
+
+
+def test_bar_mode_fields_roundtrip(tmp_path, monkeypatch):
+        """top_bar_mode / bottom_bar_mode 落盘重读不丢（含 none）。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        save_settings(Settings(top_bar_mode="native", bottom_bar_mode="none"))
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.top_bar_mode == "native"
+        assert loaded.bottom_bar_mode == "none"
+
+
+def test_bar_mode_fields_defaults():
+        """新默认（2026-09-09）：上巴 immersive（无边框 + overlay 悬浮控件），
+        下巴 none（scrcpy 右键已是返回，下巴对多数用户冗余）。"""
+        fresh = Settings()
+        assert fresh.top_bar_mode == "immersive"
+        assert fresh.bottom_bar_mode == "none"
+
+
+def test_bar_mode_enum_accepts_none_roundtrip(tmp_path, monkeypatch):
+        """VALID_BAR_MODES 三枚举（immersive|native|none）全量放行：none
+        进入枚举后，设置文件往返自动持久化（无需专门分支）。"""
+        assert settings_mod.VALID_BAR_MODES == ("immersive", "native", "none")
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        for top, bottom in (("none", "none"), ("none", "immersive"),
+                            ("immersive", "none")):
+                save_settings(Settings(top_bar_mode=top, bottom_bar_mode=bottom))
+                loaded, problems = load_settings()
+                assert problems == []
+                assert (loaded.top_bar_mode, loaded.bottom_bar_mode) == (top, bottom)
+
+
+def test_bar_mode_invalid_falls_back_with_problem(tmp_path, monkeypatch):
+        """非法值逐字段回退各自默认（上巴 immersive / 下巴 none），各报一条
+        问题（同 audio_policy 模式）。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(
+                json.dumps({"top_bar_mode": "floating", "bottom_bar_mode": 3}),
+                encoding="utf-8",
+        )
+        loaded, problems = load_settings()
+        assert loaded.top_bar_mode == "immersive"
+        assert loaded.bottom_bar_mode == "none"
+        assert len(problems) == 2
+        assert any("top_bar_mode" in p for p in problems)
+        assert any("bottom_bar_mode" in p for p in problems)
+
+
+def test_bar_mode_save_rejects_invalid(tmp_path, monkeypatch):
+        """save 前校验拒绝非法枚举，不落盘。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        with pytest.raises(ValueError):
+                save_settings(Settings(top_bar_mode="floating"))
+        with pytest.raises(ValueError):
+                save_settings(Settings(bottom_bar_mode="titanium"))
+        assert not (tmp_path / "s.json").exists()
+
+
+def test_old_savefile_without_bar_modes_loads_defaults(tmp_path, monkeypatch):
+        """from_dict 兼容旧存档：字段缺失 → 各自默认（上巴 immersive / 下巴
+        none），且不产生问题。老档已存的显式值不迁移、原样保留（另测）。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        legacy = {
+                "version": 1, "fps": 90, "audio_policy": "all",
+                "video_codec": "h264", "turn_screen_off": True,
+                "window_aspect": "free",   # 残留历史键无害忽略
+        }
+        (tmp_path / "s.json").write_text(json.dumps(legacy), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.top_bar_mode == "immersive"
+        assert loaded.bottom_bar_mode == "none"
+
+
+def test_saved_explicit_bar_modes_not_migrated(tmp_path, monkeypatch):
+        """改默认不迁移老用户：settings.json 里已存的显式值原样保留
+        （2026-09-09 决策——下巴老默认 immersive 的用户不被静默改掉）。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(
+                json.dumps({"top_bar_mode": "native", "bottom_bar_mode": "immersive"}),
+                encoding="utf-8")
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.top_bar_mode == "native"
+        assert loaded.bottom_bar_mode == "immersive"

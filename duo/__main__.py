@@ -11,7 +11,7 @@ from pathlib import Path
 from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info, device_density
 from duo.core.audio_lock import AudioLock
-from duo.core.chrome import ChromeError, ChromeOverlay
+from duo.core.chrome import ChromeError, ChromeOverlay, borderless_for
 from duo.core.codec import (
         encoders_cache_path,
         load_cached_encoders,
@@ -104,6 +104,11 @@ def _resolve_screen_off(no_screen_off_flag: bool, turn_screen_off: bool) -> bool
         return False if no_screen_off_flag else turn_screen_off
 
 
+def _resolve_bar_mode(flag: str | None, setting: str) -> str:
+        """--chrome-top/--chrome-bottom: explicit flag beats the saved setting."""
+        return setting if flag is None else flag
+
+
 def _resolve_video(
         scrcpy_path: str,
         serial: str,
@@ -136,6 +141,24 @@ def _resolve_video(
                 bitrate_mbps=bitrate,
                 max_fps=fps,
         )
+
+
+def _resolve_app_title(adb: Adb, package: str) -> str:
+        """Window title from app metadata, degrading to the package name.
+
+        Metadata is OPTIONAL for launching: a huge APK (QQ/微信 >200MB)
+        trips the icon-extraction size guard, and any other metadata
+        failure must never abort the session itself - degrade to the
+        package name and launch anyway (the panel keeps its own catalog
+        labels/icons, so nothing user-facing is lost).
+        """
+        try:
+                info = app_info(adb, package)
+        except (AdbError, OSError) as exc:
+                print(f"app: metadata unavailable ({exc}) - launching anyway", flush=True)
+                return package
+        print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
+        return info.label
 
 
 def _run_mirror(args: argparse.Namespace) -> int:
@@ -243,9 +266,21 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         title = args.title
         if title is None and args.app:
-                info = app_info(adb, args.app)
-                title = info.label
-                print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
+                # Metadata is OPTIONAL for launching: a huge APK (QQ/微信
+                # >200MB) trips the icon-extraction size guard, and any other
+                # metadata failure must never abort the session itself.
+                # Degrade to the package name as title and launch anyway
+                # (the panel already has catalog labels/icons of its own).
+                try:
+                        info = app_info(adb, args.app)
+                        title = info.label
+                        print(
+                                f"app: {info.label} ({info.package} {info.version_name or ''})",
+                                flush=True,
+                        )
+                except (AdbError, OSError) as exc:
+                        title = args.app
+                        print(f"app: metadata unavailable ({exc}) - launching anyway", flush=True)
 
         # audio_policy (docs/mirroring-quality.md §2): off mutes all, all
         # skips the lock, latest arbitrates (newest session wins; the panel
@@ -268,13 +303,20 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # Settings gate (default false) first, explicit CLI override second.
                 screen_off=_resolve_screen_off(args.no_screen_off,
                                                settings.turn_screen_off),
+                vd_keep_content=args.no_vd_destroy_content,
                 audio=audio,
                 window_title=title,
                 window_x=engine_window.get("window_x"),
                 window_y=engine_window.get("window_y"),
                 window_width=engine_window.get("window_width"),
                 window_height=engine_window.get("window_height"),
-                borderless=args.chrome,
+                # 上巴 native = 真系统标题栏：必须让 scrcpy 建自己的带框
+                # 窗口（SDL 无边框窗会自己接管 WM_NCCALCSIZE，后加的
+                # WS_CAPTION 永远没有标题带——2026-09-09 真机根因）。
+                # 沉浸/无 上巴仍然无边框 + overlay 胶囊。
+                borderless=args.chrome and borderless_for(
+                        _resolve_bar_mode(
+                                args.chrome_top, settings.top_bar_mode)),
         )
         command = engine_args.to_argv(binary=scrcpy_path)
 
@@ -327,6 +369,10 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         video_height=vd_h,
                         session_log=log_path,
                         corner_radius_dip=corner,
+                        top_bar_mode=_resolve_bar_mode(
+                                args.chrome_top, settings.top_bar_mode),
+                        bottom_bar_mode=_resolve_bar_mode(
+                                args.chrome_bottom, settings.bottom_bar_mode),
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
@@ -409,6 +455,13 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         mirror.add_argument("--no-audio", action="store_true", help="disable audio forwarding")
         mirror.add_argument(
+                "--no-vd-destroy-content",
+                action="store_true",
+                help="keep the virtual display content after the session ends "
+                     "(the app stays there instead of falling back to the "
+                     "device's main screen)",
+        )
+        mirror.add_argument(
                 "--video-codec",
                 choices=["auto", "h264", "h265", "av1"],
                 default=None,
@@ -421,6 +474,23 @@ def _build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="borderless window with hover-revealed edge controls "
                 "(min/max/close, back/home overlay)",
+        )
+        mirror.add_argument(
+                "--chrome-top",
+                choices=["immersive", "native", "none"],
+                default=None,
+                help="window TOP bar mode for --chrome: immersive (overlay, "
+                "default), native (system title bar) or none (no bar); "
+                "follows the settings top_bar_mode when omitted",
+        )
+        mirror.add_argument(
+                "--chrome-bottom",
+                choices=["immersive", "native", "none"],
+                default=None,
+                help="window BOTTOM bar (chin) mode for --chrome: immersive "
+                "(overlay), native or none (no bar - the default, since "
+                "scrcpy right-click already sends BACK); follows the "
+                "settings bottom_bar_mode when omitted",
         )
         mirror.add_argument(
                 "--corner-radius",

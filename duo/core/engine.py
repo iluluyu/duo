@@ -297,6 +297,13 @@ class EngineArgs:
         app_package: str | None = None
         screen_off: bool = True
         stay_awake: bool = True
+        # Keep the virtual display's content alive after the session ends
+        # (scrcpy --no-vd-destroy-content): the app task stays parked on the
+        # virtual display instead of falling back to the device's main
+        # screen, so a later session picks up where it left off. Only
+        # meaningful for a display WE create - to_argv never emits it for
+        # physical-screen mirroring.
+        vd_keep_content: bool = False
         keyboard: str = "uhid"
         audio: bool = True
         audio_codec: str = "flac"          # lossless; bandwidth is cheap on USB
@@ -317,6 +324,8 @@ class EngineArgs:
                 # loop, found live 2026-09-05). The pin happens through the
                 # ADB environment variable instead - see adb_pin_env().
                 argv += self.display.to_flags()
+                if self.vd_keep_content and self.display.mode != "mirror":
+                        argv.append("--no-vd-destroy-content")
                 if self.app_package:
                         # '+' force-stops before starting: without it an app with
                         # a live task elsewhere is "delivered" there and never

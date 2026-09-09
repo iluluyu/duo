@@ -19,10 +19,22 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from duo.core.engine import is_wsl
 from duo.core.paths import apks_dir, icons_dir, tools_dir
 from duo.core.winproc import creation_flags
+
+if TYPE_CHECKING:
+        import PIL.Image
+
+#: Icon cache filename suffix. ".r3" bumps the icon cache generation: the
+#: adaptive composite changed both its geometry (432/288 canvas instead of
+#: 512/341) and its content layout (foreground alpha-bbox detection with
+#: optical centring), so PNGs cached by the older composition must not be
+#: served. APK and metadata caches are unaffected and keep their plain
+#: names; abandoned ".r2" files are simply orphaned.
+_ICON_CACHE_SUFFIX = ".r3.png"
 
 #: Pinned aapt2 build from Google Maven (same artifact AGP uses).
 AAPT2_VERSION = "9.4.0-15978811"
@@ -181,6 +193,118 @@ def parse_badging(badging_output: str) -> dict[str, str]:
 
 
 # ----------------------------------------------------------------------------
+# Label sorting (pinyin initials)
+# ----------------------------------------------------------------------------
+
+#: GB2312 level-1 hanzi (0xB0A1..0xD7F9, 3755 chars) are laid out in pinyin
+#: order, so each initial owns one contiguous run - the run's last code
+#: point is enough to classify a character. Boundaries generated against
+#: pypinyin over all level-1 chars (build-time tool only, not a dependency):
+#: total run-edge imprecision is 21/3755 chars, all polyphones where GB2312's
+#: chosen reading differs from pypinyin's (both defensible; harmless here).
+_PINYIN_RUN_ENDS: tuple[tuple[int, str], ...] = (
+        (0xB0C4, "a"),
+        (0xB2C0, "b"),
+        (0xB4EE, "c"),
+        (0xB6E9, "d"),
+        (0xB7A1, "e"),
+        (0xB8C0, "f"),
+        (0xB9FD, "g"),
+        (0xBBF6, "h"),
+        (0xBFA5, "j"),
+        (0xC0AB, "k"),
+        (0xC2E7, "l"),
+        (0xC4C2, "m"),
+        (0xC5B6, "n"),
+        (0xC5BD, "o"),
+        (0xC6D9, "p"),
+        (0xC8BA, "q"),
+        (0xC8F5, "r"),
+        (0xCBFA, "s"),
+        (0xCDD9, "t"),
+        (0xCEF3, "w"),
+        (0xD1B9, "x"),
+        (0xD4D0, "y"),
+        (0xD7F9, "z"),
+)
+
+#: Hanzi that appear in real Chinese app/game names but sit OUTSIDE the
+#: pinyin-sorted level-1 range (GB2312 level-2 / GBK-only chars have no run
+#: order), so the table above cannot classify them. Curated from a sweep of
+#: popular Android store names - extend as labels surface (raw-char fallback
+#: merely parks an app at the end of its letter group).
+_PINYIN_EXTRA: dict[str, str] = {
+        "吧": "b",
+        "哔": "b",
+        "魑": "c", "琛": "c",
+        "哒": "d", "咚": "d", "嗲": "d",
+        "斐": "f",
+        "嗨": "h", "浣": "h", "獾": "h", "珩": "h", "晗": "h",
+        "咔": "k", "氪": "k", "铠": "k",
+        "浏": "l", "翎": "l", "岚": "l", "嘞": "l", "魉": "l", "啰": "l",
+        "咪": "m", "喵": "m", "魅": "m", "旻": "m",
+        "妞": "n", "嗯": "n",
+        "噗": "p", "貔": "p",
+        "穹": "q", "蜻": "q",
+        "嗖": "s",
+        "蜓": "t", "钛": "t",
+        "魍": "w",
+        "枭": "x", "貅": "x", "玺": "x", "晞": "x",
+        "曜": "y", "嬴": "y", "樾": "y", "昱": "y", "玥": "y",
+        "崽": "z",
+}
+
+
+def pinyin_initial(ch: str) -> str:
+        """Pinyin initial (lowercase letter) of one hanzi character.
+
+        Level-1 hanzi classify through the GB2312 run table, the curated
+        dict covers common app-name hanzi outside it, and everything else
+        (latin, digits, kana, unlisted hanzi) passes through lowercased -
+        callers get one comparable key space either way.
+
+        >>> pinyin_initial("微")
+        'w'
+        >>> pinyin_initial("哔")
+        'b'
+        >>> pinyin_initial("W")
+        'w'
+        """
+        if len(ch) != 1:
+                return ch.lower()
+        extra = _PINYIN_EXTRA.get(ch)
+        if extra is not None:
+                return extra
+        try:
+                encoded = ch.encode("gb2312")
+        except UnicodeEncodeError:
+                return ch.lower()
+        if len(encoded) != 2:
+                return ch.lower()
+        code = encoded[0] << 8 | encoded[1]
+        if not 0xB0A1 <= code <= 0xD7F9:
+                return ch.lower()   # level-2 hanzi / zone-1 symbols: no run order
+        for end, initial in _PINYIN_RUN_ENDS:
+                if code <= end:
+                        return initial
+        return ch.lower()   # defensive: the last run end covers 0xD7F9
+
+
+def label_sort_key(label: str) -> str:
+        """Comparable form of an app label for first-letter grid ordering.
+
+        Every hanzi maps to its pinyin initial, everything else passes
+        through lowercased: "不背单词" -> "bbdc", "哔哩哔哩" -> "blbl",
+        "WPS Office" -> "wps office". Chinese and latin names then order
+        together by first letter, the way launcher grids do.
+
+        >>> sorted(["微信", "哔哩哔哩", "不背单词"], key=label_sort_key)
+        ['不背单词', '哔哩哔哩', '微信']
+        """
+        return "".join(pinyin_initial(ch) for ch in label).lower()
+
+
+# ----------------------------------------------------------------------------
 # AppInfo assembly
 # ----------------------------------------------------------------------------
 
@@ -289,6 +413,117 @@ def parse_adaptive_refs(xmltree_dump: str) -> dict[str, str]:
         return refs
 
 
+def apply_rounded_mask(
+        image: PIL.Image.Image, radius_ratio: float = 0.23
+) -> PIL.Image.Image:
+        """Return ``image`` with a rounded-rectangle alpha mask applied.
+
+        Every extracted icon gets one uniform base shape - a rounded square
+        with corner radius ``min(w, h) * radius_ratio`` (DESIGN.md §3.1: 23%,
+        matching the preset/fallback templates). The image is neither
+        resized nor cropped; opaque square sources (legacy rasters, the
+        adaptive white-canvas composite) simply lose their corners. The
+        mask is drawn at 4x resolution and scaled back down with LANCZOS so
+        the arcs stay smooth at launcher sizes instead of stair-stepping.
+        """
+        from PIL import Image, ImageDraw
+
+        base = image if image.mode == "RGBA" else image.convert("RGBA")
+        w, h = base.size
+        radius = round(min(w, h) * radius_ratio)
+        scale = 4  # supersampling factor for the antialiased arc edges
+        mask = Image.new("L", (w * scale, h * scale), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, w * scale - 1, h * scale - 1), radius=radius * scale, fill=255
+        )
+        base.putalpha(mask.resize((w, h), Image.Resampling.LANCZOS))
+        return base
+
+
+#: Adaptive-icon geometry, in canvas pixels. A 432px canvas maps the 108dp
+#: layer model at 4px per unit, so the 72dp visible centre (288px) and the
+#: 66dp safe-zone diameter (264px) both land on exact integers. The retired
+#: 512px canvas made the visible crop 341.33px, and that fractional resample
+#: accumulated aliasing whenever the cached PNG was scaled again for the
+#: grid (RESEARCH-ICONS.md §5 / P2-5).
+_ADAPTIVE_CANVAS = 432
+_ADAPTIVE_VISIBLE = _ADAPTIVE_CANVAS * 72 // 108  # 288: launcher-visible crop
+_ADAPTIVE_SAFE = _ADAPTIVE_CANVAS * 66 // 108  # 264: guaranteed-uncropped zone
+
+#: A foreground whose content reaches within this fraction of every edge of
+#: its layer is full-bleed artwork designed to be cropped by the mask
+#: (RESEARCH-ICONS.md §5) - it keeps the legacy full-canvas stretch.
+_ADAPTIVE_FULL_BLEED = 0.98
+
+
+def _alpha_bbox(
+        image: PIL.Image.Image, threshold: int = 8
+) -> tuple[int, int, int, int] | None:
+        """Bounding box of pixels whose alpha exceeds ``threshold``.
+
+        A raw ``getbbox`` counts every non-zero alpha as ink, so an
+        invisible fringe of alpha 1..8 pixels (lossy re-exports, padded
+        rasters, antialiasing spill across a whole layer) would report a
+        full-canvas box and defeat content detection. Ignoring alphas at
+        or below ``threshold`` measures visible ink only. Returns ``None``
+        when nothing crosses the threshold (a fully transparent layer).
+        """
+        alpha = image.getchannel("A")
+        return alpha.point(lambda value: 255 if value > threshold else 0).getbbox()
+
+
+def _paste_foreground(base: PIL.Image.Image, fg: PIL.Image.Image) -> None:
+        """Paste an adaptive-icon foreground layer onto the canvas, content first.
+
+        Foregrounds are authored on the full 108-unit layer with the logo
+        floating somewhere inside the 66-unit safe zone and transparent
+        padding around it. Stretching the layer across the whole canvas
+        (the old behaviour) reproduces that padding verbatim, which looks
+        wrong whenever the padding is lopsided or the logo spills past the
+        safe zone - the "circle logo clipped by the squircle" complaint
+        (RESEARCH-ICONS.md P0-2 / P2-5). Instead:
+
+        * crop the layer to its alpha bounding box (:func:`_alpha_bbox`);
+        * keep the authored scale - the layer's larger dimension maps onto
+          the canvas, so content keeps the on-canvas size its designer drew
+          and small logos never balloon to fill the safe zone (no upscaling
+          beyond 1x);
+        * shrink, aspect preserved, only when the content would spill past
+          the 66-unit safe zone;
+        * centre the result on the canvas so the 72-unit visible crop always
+          shows the logo optically centred.
+
+        Two shapes take the degenerate exits instead: a fully transparent
+        layer is skipped (the background shows through), and a layer whose
+        content already spans ~the whole canvas is full-bleed artwork whose
+        design relies on being cropped by the mask - recentring or
+        shrinking it would change icons that already render correctly.
+        """
+        from PIL import Image
+
+        bbox = _alpha_bbox(fg)
+        if bbox is None:
+                return
+        bleed_x = fg.width * (1.0 - _ADAPTIVE_FULL_BLEED)
+        bleed_y = fg.height * (1.0 - _ADAPTIVE_FULL_BLEED)
+        if (
+                bbox[0] <= bleed_x
+                and bbox[1] <= bleed_y
+                and bbox[2] >= fg.width - bleed_x
+                and bbox[3] >= fg.height - bleed_y
+        ):
+                layer = fg.resize((base.width, base.height))
+                base.paste(layer, (0, 0), layer)
+                return
+        content = fg.crop(bbox)
+        scale = base.width / max(fg.size)
+        if max(content.size) * scale > _ADAPTIVE_SAFE:
+                scale = _ADAPTIVE_SAFE / max(content.size)
+        size = (max(1, round(content.width * scale)), max(1, round(content.height * scale)))
+        layer = content.resize(size, Image.Resampling.LANCZOS)
+        base.paste(layer, ((base.width - size[0]) // 2, (base.height - size[1]) // 2), layer)
+
+
 def extract_icon(
         apk_path: Path,
         icon_ref: str,
@@ -300,7 +535,10 @@ def extract_icon(
         Strategy: a raster icon ref is read directly. An adaptive icon (.xml)
         first falls back to the same resource's legacy raster variant (most
         apps still ship one); when that is missing, the adaptive layers are
-        resolved and composited (canvas 108 -> visible centre 72 model).
+        resolved and composited (108-unit canvas model, foreground content
+        optically centred). Both output paths finish through
+        :func:`apply_rounded_mask` so every cached icon shares the
+        launcher's rounded-square base shape.
         """
         import io
 
@@ -363,7 +601,7 @@ def extract_icon(
                 return None
         try:
                 with Image.open(io.BytesIO(data)) as image:
-                        image.save(out_png, format="PNG")
+                        apply_rounded_mask(image).save(out_png, format="PNG")
         except OSError:
                 return None
         return out_png
@@ -390,15 +628,28 @@ def _aapt2_output(aapt2: Path, argv: list[str]) -> str | None:
 def _compose_adaptive(
         fg_data: bytes | None, bg_data: bytes | None, bg_color: str | None
 ) -> bytes | None:
-        """Composite adaptive layers: 108-unit canvas, visible centre 72."""
+        """Composite adaptive layers: 108-unit canvas, visible centre 72.
+
+        The canvas is 432px (4px per 108-unit cell) so the 72-unit visible
+        centre is an exact 288px integer crop - the retired 512/341 pair
+        forced a 341.33 fractional scale that accumulated aliasing whenever
+        the cached PNG was resized again for display (RESEARCH-ICONS.md
+        P2-5). The background layer still stretches full-canvas (it is
+        backdrop by design); the foreground goes through
+        :func:`_paste_foreground`, which keys on its actual content, so
+        layers with lopsided transparent padding no longer render
+        off-centre. The flattened crop then goes through
+        :func:`apply_rounded_mask` - without it the white-square canvas
+        would show up in the grid as a hard-cornered square next to the
+        rounded presets.
+        """
         import io
 
         try:
                 from PIL import Image
         except ImportError:
                 return None
-        canvas = 512
-        visible = canvas * 72 // 108
+        canvas = _ADAPTIVE_CANVAS
         base = Image.new("RGBA", (canvas, canvas), bg_color or "#FFFFFF")
         if bg_data:
                 try:
@@ -410,14 +661,15 @@ def _compose_adaptive(
         if fg_data:
                 try:
                         with Image.open(io.BytesIO(fg_data)) as fg_file:
-                                fg: Image.Image = fg_file.convert("RGBA").resize((canvas, canvas))
-                                base.paste(fg, (0, 0), fg)
+                                fg: Image.Image = fg_file.convert("RGBA")
+                        _paste_foreground(base, fg)
                 except OSError:
                         return None
-        box = ((canvas - visible) // 2,) * 2 + ((canvas + visible) // 2,) * 2
-        cropped = base.crop(box)
+        offset = (_ADAPTIVE_CANVAS - _ADAPTIVE_VISIBLE) // 2
+        box = (offset, offset, _ADAPTIVE_CANVAS - offset, _ADAPTIVE_CANVAS - offset)
+        rounded = apply_rounded_mask(base.crop(box))
         buffer = io.BytesIO()
-        cropped.save(buffer, format="PNG")
+        rounded.save(buffer, format="PNG")
         return buffer.getvalue()
 
 
@@ -474,7 +726,7 @@ def app_info(adb: Adb, package: str, cache_root: Path | None = None) -> AppInfo:
 
         label = fields.get("label") or package
         icon_ref = fields.get("icon") or ""
-        icon_out = icon_cache / f"{package}.png"
+        icon_out = icon_cache / f"{package}{_ICON_CACHE_SUFFIX}"
         icon_path = extract_icon(apk_path, icon_ref, icon_out, aapt2) if icon_ref else None
 
         return AppInfo(
