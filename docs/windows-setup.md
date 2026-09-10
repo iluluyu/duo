@@ -25,8 +25,10 @@ py -m venv .venv
 ## 打包（onefile 单文件，固定产物 `C:\Tools\Duo.exe`）
 
 ```powershell
-# Windows 侧（管理员）：C:\duo 为最新 main，一键构建 + 部署（spec 为唯一规格，
-# 内含 datas/hiddenimports；脚本负责 venv、pyinstaller、taskkill、部署）
+# Windows 侧（管理员）：先 robocopy 同步 WSL 工作区（脚本预检会比对
+# duo.spec/app.py/duo.ico 哈希，旧拷贝直接拒建），后一键构建 + 部署 +
+# 图标嵌入验证（spec 为唯一规格，内含 datas/hiddenimports）
+robocopy \\wsl.localhost\archlinux\home\luyu\duo C:\duo /E /XD .venv __pycache__ .git
 C:\duo\scripts\build_windows.ps1
 
 # 手动等价：cd C:\duo; pyinstaller duo.spec --noconfirm; 部署 dist\Duo.exe
@@ -39,7 +41,9 @@ C:\duo\scripts\build_windows.ps1
 - [ ] 点应用 → 会话窗口 + overlay 控件（首窗 csc 编译约 2s）
 - [ ] `Duo.exe --check` 退出码 0
 - [ ] 设置页读写 settings.json（`%USERPROFILE%\.local\share\duo`）
-- [ ] 图标 `assets/duo.ico`（占位，正式后同名替换重打）
+- [ ] 图标两条链路均取 `assets/duo.ico`：exe 资源（资源管理器）+ 运行时任务栏/
+  标题栏（spec datas 携带、app.py setWindowIcon）；换图标同名覆盖后重打，
+  或 `python scripts/switch_icon.py <候选名>`
 
 **打包版 adb 提示**：exe 继承的 PATH 与终端不同，scoop 的 adb 可能探测不到——
 设置页固定 adb/scrcpy 路径（`adb_path`/`scrcpy_path` 优先于 PATH）。
@@ -62,3 +66,5 @@ C:\duo\scripts\build_windows.ps1
 | 设备状态抖动 | ~6s 容错内正常；持续离线看 `adb devices` |
 | 窗口控件缺失 | 等 2s（csc 首编）；看 `%USERPROFILE%\.local\share\duo\logs` |
 | 图标显示为文字 | 首次拉 APK 解析，稍候 |
+| 重打后仍显示旧图标 | Windows 图标缓存：`ie4uinit.exe -show` 后重启 explorer；
+  任务栏钉住项需取消后重新钉 |

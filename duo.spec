@@ -25,9 +25,13 @@ REPO = SPECPATH
 #   Style singleton). Missing these = "error: Main.qml 加载失败" on launch.
 # - duo/resources/chrome_overlay.cs: chrome.py compiles it with csc.exe on
 #   the first --chrome window (result cached by source sha256).
+# - assets/duo.ico: runtime window icon. The EXE-level icon= below only
+#   embeds the exe resource (Explorer view); the taskbar/title-bar icon
+#   comes from Qt at runtime, so the file must also ship and app.py sets it.
 datas = [
     (os.path.join(REPO, "duo/ui/qml"), "duo/ui/qml"),
     (os.path.join(REPO, "duo/resources/chrome_overlay.cs"), "duo/resources"),
+    (os.path.join(REPO, "assets/duo.ico"), "assets"),
 ]
 
 # QML 面板所需的隐藏导入：
@@ -71,6 +75,7 @@ exe = EXE(
     upx=False,
     console=False,  # windowed panel; with arguments gui_entry routes to the
                     # CLI, so the panel can spawn "Duo.exe mirror ..." sessions
-    icon=os.path.join(REPO, "assets/duo.ico"),  # 占位图标（蓝底圆环）；正式
-    # 图标到位后只需替换 assets/duo.ico 同名文件并重打，无需改 spec。
+    icon=os.path.join(REPO, "assets/duo.ico"),  # exe 资源图标；换图标同名覆盖
+    # assets/duo.ico（或 scripts/switch_icon.py）后重打即可——exe 资源与
+    # 运行时窗口两条链路都会跟着更新。
 )

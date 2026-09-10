@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QObject, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 
 from duo.core.engine import is_wsl, probe_binary
@@ -54,6 +54,17 @@ VIDEO_CODECS = ("auto", "h264", "h265", "av1")
 #: Frozen builds must include the directory (PyInstaller
 #: ``--add-data duo/ui/qml``); __file__-relative lookup fails otherwise.
 QML_MAIN = Path(__file__).with_name("qml") / "Main.qml"
+
+
+def _bundled_icon() -> Path | None:
+        """assets/duo.ico where the bundle ships it (frozen) or the repo tree."""
+        base = getattr(sys, "_MEIPASS", None)
+        if base is not None:
+                frozen = Path(base) / "assets" / "duo.ico"
+                if frozen.is_file():
+                        return frozen
+        dev = Path(__file__).resolve().parents[2] / "assets" / "duo.ico"
+        return dev if dev.is_file() else None
 
 
 def _number(value: object) -> Any:
@@ -158,6 +169,11 @@ def run_app() -> int:
         # QML 里的 px 值保持 DIP 语义、按每屏 DPR 渲染（混合 DPI 双屏下
         # 100% 缩放屏的舒适档位在 Main.qml 的 uiScale 处理）。
         app = QGuiApplication(sys.argv)
+        # spec 的 icon= 只埋 exe 资源；任务栏/标题栏图标必须 Qt 侧设置
+        # （冻结包里从 datas 的 assets/duo.ico 取，早于任何窗口创建）。
+        icon = _bundled_icon()
+        if icon is not None:
+                app.setWindowIcon(QIcon(str(icon)))
         # Same resolution as the CLI: settings override > PATH probe > the
         # literal "adb.exe" fallback, so panel and spawned sessions share adb.
         settings, problems = load_settings()
