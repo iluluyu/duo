@@ -84,6 +84,25 @@ def borderless_for(top_mode: str) -> bool:
         return top_mode != "native"
 
 
+def top_pin_path(package: str) -> Path:
+        """Per-app capsule-pin flag file (overlay writes, launch reads).
+
+        内容约定：``"1"`` 固定 / ``"0"`` 或缺文件 = 不固定。Android 包名
+        本身文件名安全，替换仅防御。整机镜像无包名，不落盘（固定随会话
+        生灭）。
+        """
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in package)
+        return data_dir() / "overlay-pin" / f"{safe}.flag"
+
+
+def read_top_pin(package: str) -> bool:
+        """Whether the capsule starts pinned for this app (default off)."""
+        try:
+                return top_pin_path(package).read_text(encoding="utf-8").strip() == "1"
+        except OSError:
+                return False
+
+
 def build_is_fresh(exe: Path, stamp_file: Path, stamp: str) -> bool:
         """Whether the cached exe matches the given source stamp.
 
@@ -123,6 +142,8 @@ def overlay_command(
         corner_radius_dip: int = 0,
         top_bar_mode: str = "immersive",
         bottom_bar_mode: str = "immersive",
+        pin_top: bool = False,
+        pin_file: str | None = None,
 ) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
@@ -150,6 +171,13 @@ def overlay_command(
         it, resize affordances remain; both default to the immersive
         chrome. This function only forwards the strings; the enum contract
         is enforced upstream.
+
+        ``pin_top``/``pin_file`` (2026-09-09 按应用固定): the capsule's
+        right-click pin persists per APP - the overlay starts pinned when
+        the flag says so and rewrites ``pin_file`` (a Windows path) on
+        every toggle, so the next launch of the same app resumes pinned.
+        Device mirroring (no package) passes no file: its pin lives and
+        dies with the session.
         """
         argv = [
                 exe,
@@ -167,11 +195,15 @@ def overlay_command(
                 top_bar_mode,
                 "--chrome-bottom",
                 bottom_bar_mode,
+                "--pin-top",
+                "1" if pin_top else "0",
         ]
         if video_width and video_height:
                 argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
         if session_log:
                 argv += ["--session-log", session_log]
+        if pin_file:
+                argv += ["--pin-file", pin_file]
         if corner_radius_dip > 0:
                 argv += ["--corner-radius", str(corner_radius_dip)]
         return argv
@@ -273,6 +305,8 @@ class ChromeOverlay:
                 corner_radius_dip: int = 0,
                 top_bar_mode: str = "immersive",
                 bottom_bar_mode: str = "immersive",
+                pin_top: bool = False,
+                pin_file: Path | None = None,
         ) -> None:
                 self._title = title
                 self._serial = serial
@@ -281,6 +315,7 @@ class ChromeOverlay:
                 log_arg = None
                 if session_log is not None:
                         log_arg = wsl_to_windows_path(str(session_log))
+                pin_arg = wsl_to_windows_path(str(pin_file)) if pin_file else None
                 self.command: list[str] = overlay_command(
                         str(self._exe),
                         title,
@@ -294,6 +329,8 @@ class ChromeOverlay:
                         corner_radius_dip=corner_radius_dip,
                         top_bar_mode=top_bar_mode,
                         bottom_bar_mode=bottom_bar_mode,
+                        pin_top=pin_top,
+                        pin_file=pin_arg,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 
@@ -315,6 +352,7 @@ class ChromeOverlay:
                         f"source={source_stamp()[:12]} "
                         f"top={self.command[self.command.index('--chrome-top') + 1]} "
                         f"bottom={self.command[self.command.index('--chrome-bottom') + 1]} "
+                        f"pin={self.command[self.command.index('--pin-top') + 1]} "
                         f"argv={self.command}\n"
                 ).encode("utf-8", errors="replace")
                 # The child inherits the descriptor; the parent-side handle can

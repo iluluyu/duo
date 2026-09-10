@@ -120,17 +120,25 @@ def test_native_sandwich_flags_and_parsing():
 def test_native_sandwich_paint_markers():
         """C1 native CHIN spec values stay (screen-sampled acrylic, adaptive
         pill, 32px bar) while the TOP went real-system in C2 (see the
-        caption test below); immersive branches keep their markers."""
+        caption test below); immersive branches keep their markers.
+        2026-09-09 玻璃换装（用户对齐面板右键菜单）：tint 82% 白
+        （#D0FFFFFF，glass-recipe.md menuTintHi 档）、饱和 ×1.15、
+        1/8 上下采样模糊、沿巴轮廓整圈 14% 黑 hairline（#24000000）；
+        旧 rgba(248,248,248,184) 洗色与内 45% 白亮边退役（见
+        docs/window-experience.md §11）。"""
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # Native acrylic chin: rgba(248,248,248,184) tint over the screen
-        # backdrop, saturation x1.15 (ColorMatrix), blur via 1/8 downscale,
-        # top hairline 0.08 + inner light edge 0.45, 32px tall.
-        assert "FromArgb(184, 248, 248, 248)" in text
-        assert "FromArgb(20, 0, 0, 0)" in text
-        assert "FromArgb(115, 255, 255, 255)" in text
+        # Menu-glass chin: 82% white tint over the screen backdrop,
+        # saturation x1.15 (ColorMatrix), blur via 1/8 downscale,
+        # full-outline 14% black hairline along the bar body, 32px tall.
+        assert "FromArgb(208, 255, 255, 255)" in text
+        assert "FromArgb(36, 0, 0, 0)" in text
+        assert "g.DrawPath(hair, body)" in text
         assert "1.15f" in text and "ColorMatrix" in text
         assert "CopyFromScreen" in text
         assert "LogicalHeightNative = 32" in text
+        # The retired agy-v6 recipe must not return.
+        assert "FromArgb(184, 248, 248, 248)" not in text
+        assert "FromArgb(115, 255, 255, 255)" not in text
         # Adaptive pill: dark rgba(29,29,31,102) / white rgba(255,255,255,
         # 155), luminance cut 0.52 on the tinted bar, seated 14px above the
         # bar bottom (centered in the 32px band).
@@ -143,7 +151,7 @@ def test_native_sandwich_paint_markers():
         assert "SyncFourthButton" in text and "SetNativeSample" in text
         assert "_owner.BeginMoveAt" in text     # immersive caption-band move engine
         # Immersive branches stay: ghost hot zones, hover capsule (now on
-        # the sampled dark-acrylic base plate - see the trio test below),
+        # the sampled menu-glass base plate - see the trio test below),
         # proximity reveal bands, mBack pill language.
         assert "GhostBackdrop = true" in text
         assert "DrawCapsuleAcrylic" in text
@@ -272,8 +280,9 @@ def test_corner_round_matrix_and_chin_corner_ears():
         # itself is ear-independent bookkeeping (BarHeight).
         assert "Size = new Size(Width, _ear + h)" in text
         assert "BarHeight" in text
-        # Hairlines ride the seam (bar top edge), not the ear-topped window.
-        assert "g.FillRectangle(hair, 0, _ear, Width, 1)" in text
+        # Hairline follows the bar body outline (translated past the ear
+        # strip), not the window top.
+        assert "g.DrawPath(hair, body)" in text
         # Geometry anchors use the BAR height, never the ear-inflated
         # window Height (taskbar guard, side bands); the below-video glue
         # shifts up by exactly the ear: client.Bottom - _chin.Ear.
@@ -285,32 +294,36 @@ def test_corner_round_matrix_and_chin_corner_ears():
 
 def test_immersive_capsule_acrylic_full_band_and_hold_move():
         """用户反馈三件套 (immersive path only - the native C2 caption is
-        untouched):
+        untouched) + 2026-09-09 玻璃换装：
 
-        1. the hover capsule gets REAL sampled acrylic: video content
-           behind the pill, 1/8 down/up blur, saturation x1.15, dark tint
-           rgba(28,28,30,~0.55) + 1px top inner light edge 0.10, painted
-           into the capsule GraphicsPath base plate (no more dry glass);
+        1. the hover capsule gets REAL sampled menu-glass: video content
+           behind the pill, 1/8 down/up blur, saturation x1.15, 82% white
+           tint (#D0FFFFFF) with a 14% black hairline rim (glass-recipe.md
+           elevated tier - the panel right-click menu material); glyphs
+           ink #1D1D1F; pre-sample dry base = 88% white;
         2. the caption move band spans the FULL top band (the old
            central-half split is gone) - press+drag anywhere moves;
         3. press-and-hold 250ms on the band (non-button area) enters
            move-follow via the EXISTING move engine (BeginMoveAt).
         """
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # 1) capsule acrylic base plate: sampled backdrop -> 1/8 blur ->
-        #    saturation -> dark tint, clipped to the capsule GraphicsPath.
+        # 1) capsule menu-glass base plate: sampled backdrop -> 1/8 blur ->
+        #    saturation -> 82% white tint, clipped to the capsule path.
         assert "DrawCapsuleAcrylic" in text
-        assert "FromArgb(140, 28, 28, 30)" in text      # rgba(28,28,30,~0.55)
-        assert "FromArgb(26, 255, 255, 255)" in text    # top 1px edge 0.10
-        assert "SetClip" in text                        # pill-shaped clip
+        assert "FromArgb(208, 255, 255, 255)" in text      # 82% white tint
+        assert "FromArgb(222, 255, 255, 255)" in text      # pre-sample dry base
+        assert "SetClip" in text                          # pill-shaped clip
         assert "sat = 1.15f" in text and "ColorMatrix" in text
+        # ink glyphs on the light glass (rest 0.78 / hover 1.0)
+        assert "Color.FromArgb((int)(255 * opacity), 0x1D, 0x1D, 0x1F)" in text
         # sampled on reveal + ~300ms cadence refresh, never per frame.
         assert "SampleTop" in text
         assert "CapsuleSampleMs = 300" in text
-        assert "SampleTop(true)" in text                # reveal-time capture
-        # the dry smoked glass base is retired.
+        assert "SampleTop(true)" in text                  # reveal-time capture
+        # the dark smoked material is retired.
         assert "FromArgb(180, 10, 10, 12)" not in text
-        assert "FromArgb(180, 28, 28, 30)" in text      # pre-sample fallback
+        assert "FromArgb(140, 28, 28, 30)" not in text
+        assert "FromArgb(180, 28, 28, 30)" not in text
         # 2) full-band move: the central-half zoning judgment is gone, the
         #    band spans the whole width between the corner resize zones.
         assert "CENTRAL HALF" not in text
@@ -518,7 +531,10 @@ def test_none_bar_mode_gates_visibility_only():
         assert 'public bool TopNone { get { return "none".Equals(_topMode); } }' in text
         assert 'public bool BottomNone { get { return "none".Equals(_bottomMode); } }' in text
         assert "bool showTop = TopNative ? true" in text
-        assert ": (_cursorMoved && ComputeTopVisibility(client, wr, cursor)));" in text
+        assert (
+            ": (_cursorMoved && (_topPinned"
+            " || ComputeTopVisibility(client, wr, cursor))));" in text
+        )
         assert "bool showChin = BottomNative ? true" in text
         assert ": (_cursorMoved && ComputeChinVisibility(client, wr, cursor))" in text
         # Capsule sampling stops under a none top (no capsule to feed).
@@ -547,8 +563,127 @@ def test_startup_immersion_requires_first_mouse_move():
         assert "private bool _cursorMoved;" in text
         assert "private Point _cursorAnchor = new Point(int.MinValue, int.MinValue);" in text
         assert "+ Math.Abs(cursor.Y - _cursorAnchor.Y) >= S(2))" in text
-        assert "_cursorMoved && ComputeTopVisibility(client, wr, cursor)" in text
+        assert "_cursorMoved && (_topPinned || ComputeTopVisibility(client, wr, cursor))" in text
         assert "_cursorMoved && ComputeChinVisibility(client, wr, cursor)" in text
+
+
+def test_capsule_right_click_pin():
+        """2026-09-09 用户需求：右上角胶囊右键 = 固定，再右键 = 取消固定，
+        方便常用会话常驻三键；固定按 APP 持久化（overlay 写
+        overlay-pin/<pkg>.flag，下次启动同应用读回）。源码级合同（详见
+        docs/window-experience.md §11）：
+
+          - 固定只作用于 immersive 胶囊；native 顶（真系统标题栏恒在）
+            与 none 顶不适用；
+          - 固定时 showTop 恒真（engaged 期间常驻露出，不再依赖顶缘
+            近距）；disengage（视频窗被盖/失活/最小化）仍照旧隐藏；
+          - 采样心跳照跑（SampleTop ~300ms，胶囊可见即采样，零额外
+            成本）；
+          - 固定态视觉仅 hairline 36→70 加深（无新增动效），切换后
+            立即 Render 生效；
+          - 右键专属：触键路径左键专属（共享/下巴 MouseClick 守卫），
+            右键落在胶囊上绝不触发 ─/⤢/✕（用户真机反馈：无守卫时右键
+            与左键同效触发字形键，固定被掩盖）；
+          - 右键落在胶囊上不穿透到 scrcpy（不触发安卓返回）；
+          - native 顶第四键不接线固定（右键无操作，不静默写 pin 文件
+            污染下次 immersive 启动）；
+          - 持久化：argv --pin-top/--pin-file，ToggleTopPin 回写
+            "1"/"0"；镜像会话（无包名）不传文件，固定随会话生灭。
+        """
+        text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
+        # State + toggle live on the Controller; the capsule right-click
+        # fires it from its WireInput override (base.WireInput kept).
+        assert "private bool _topPinned;" in text
+        assert "public bool TopPinned" in text
+        assert "public void ToggleTopPin()" in text
+        assert '"top pin " + (_topPinned ? "on" : "off")' in text
+        assert (
+            "if (e.Button == MouseButtons.Right)\n"
+            "                {\n"
+            "                    Ctrl.ToggleTopPin();"
+        ) in text
+        assert "base.WireInput();" in text
+        # Right-click exclusivity: glyph firing is LEFT-only on every bar
+        # surface (WinForms MouseClick also fires for the right button -
+        # without the guard a right-click on the capsule was
+        # indistinguishable from a left click on ─/⤢/✕).
+        assert (
+            "if (e.Button != MouseButtons.Left) return;\n"
+            "                int hit = HitIndex(e.Location);"
+        ) in text
+        assert (
+            "if (e.Button != MouseButtons.Left) return;\n"
+            "                if (_firedHold)"
+        ) in text
+        # Native top: the 4th caption button never wires the pin toggle.
+        assert "if (_native) return;" in text
+        # Immediate visual: the toggle re-renders the hairline at once.
+        assert "Ctrl.ToggleTopPin();\n                    Render();" in text
+        # Tick integration: pin wins over the proximity reveal.
+        assert (
+            ": (_cursorMoved && (_topPinned"
+            " || ComputeTopVisibility(client, wr, cursor))));" in text
+        )
+        # Pinned visual: deeper capsule hairline, nothing else moves.
+        assert "int edge = Ctrl.TopPinned ? 70 : 36;" in text
+        # Per-app persistence: argv carries the initial state + the flag
+        # file path; every toggle rewrites it (write failure never kills
+        # the toggle - session pin still works).
+        assert 'argv[i] == "--pin-top"' in text
+        assert 'argv[i] == "--pin-file"' in text
+        assert '[--pin-top 0|1] [--pin-file <path>]' in text
+        assert '_topPinned = pinTop;' in text
+        assert 'File.WriteAllText(_pinFile, _topPinned ? "1" : "0");' in text
+        assert '"pin file write failed: "' in text
+
+
+def test_top_pin_persists_per_app(tmp_path, monkeypatch):
+        """按应用固定的 Python 侧闭环：top_pin_path/read_top_pin 落在数据
+        目录 overlay-pin/ 下（包名作文件名，异常字符防御性替换）；
+        overlay_command/ChromeOverlay 把初值与回写路径送进 argv；
+        __main__ 在有 --app 时接线（镜像会话不传）。"""
+        monkeypatch.setattr(chrome, "data_dir", lambda: tmp_path)
+        # Flag file semantics: absent/"0" = off, "1" = on.
+        assert chrome.read_top_pin("cn.foo.Bar") is False
+        pin = chrome.top_pin_path("cn.foo.Bar")
+        assert pin.parent.name == "overlay-pin"
+        assert pin.name == "cn.foo.Bar.flag"
+        pin.parent.mkdir(parents=True)
+        pin.write_text("1", encoding="utf-8")
+        assert chrome.read_top_pin("cn.foo.Bar") is True
+        pin.write_text("0\n", encoding="utf-8")
+        assert chrome.read_top_pin("cn.foo.Bar") is False
+        # Defensive sanitizing keeps the flag inside its directory.
+        weird = chrome.top_pin_path("a/b\\c:d")
+        assert weird.parent == pin.parent
+        assert "/" not in weird.name and "\\" not in weird.name
+        # argv: defaults carry --pin-top 0 and no file; explicit values go
+        # through verbatim (the Windows path translation happens in
+        # ChromeOverlay, same as session_log).
+        argv = overlay_command("/x.exe", "t", "s", "a", False)
+        assert argv[argv.index("--pin-top") + 1] == "0"
+        assert "--pin-file" not in argv
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False, pin_top=True, pin_file=r"C:\p\x.flag")
+        assert argv[argv.index("--pin-top") + 1] == "1"
+        assert argv[argv.index("--pin-file") + 1] == r"C:\p\x.flag"
+        # ChromeOverlay passthrough (pin_file goes through wslpath only
+        # when it is an absolute POSIX path; a Windows-shaped path passes).
+        monkeypatch.setattr(chrome, "ensure_built", lambda: Path("/x/y.exe"))
+        overlay = chrome.ChromeOverlay(
+                title="t", serial="s", adb_path="adb",
+                pin_top=True, pin_file=Path(r"C:\flags\x.flag"))
+        assert overlay.command[overlay.command.index("--pin-top") + 1] == "1"
+        assert overlay.command[overlay.command.index("--pin-file") + 1] == r"C:\flags\x.flag"
+        # CLI wiring: --app sessions read the flag and ship the file path;
+        # the device mirror (no --app) stays session-only.
+        from duo import __main__ as cli
+
+        src = __import__("pathlib").Path(cli.__file__).read_text(encoding="utf-8")
+        assert "read_top_pin," in src and "top_pin_path," in src
+        assert "pin_top=read_top_pin(args.app) if args.app else False," in src
+        assert "pin_file = top_pin_path(args.app) if args.app else None" in src
+        assert "pin_file=pin_file," in src
 
 
 def test_bar_mode_combination_visibility_matrix():
@@ -602,9 +737,13 @@ def test_bar_mode_combination_visibility_matrix():
         assert "int capsuleBerth = TopNone ? 0 : S(TopMargin) + _top.Height;" in text
         # 3) The visibility gates themselves stay three-state correct
         #    (native = always-on while engaged, none = never, immersive =
-        #    proximity reveal) - the tick owns every transition.
+        #    proximity reveal OR right-click pin) - the tick owns every
+        #    transition.
         assert "bool showTop = TopNative ? true" in text
-        assert ": (_cursorMoved && ComputeTopVisibility(client, wr, cursor)));" in text
+        assert (
+            ": (_cursorMoved && (_topPinned"
+            " || ComputeTopVisibility(client, wr, cursor))));" in text
+        )
         assert "bool showChin = BottomNative ? true" in text
         assert ": (_cursorMoved && ComputeChinVisibility(client, wr, cursor))" in text
 
@@ -782,11 +921,11 @@ def test_borderless_for_native_top_is_decorated():
 
 
 def test_cli_borderless_follows_top_mode():
-        """__main__ 把 borderless_for 接到 --chrome 上（native 顶例外）。"""
+        """__main__ 把 borderless_for 接到 --chrome 上（native 顶例外）"""
         from duo import __main__ as cli
 
         src = __import__("pathlib").Path(cli.__file__).read_text(encoding="utf-8")
-        assert "from duo.core.chrome import ChromeError, ChromeOverlay, borderless_for" in src
+        assert "borderless_for," in src
         assert "borderless=args.chrome and borderless_for(" in src
 
 
