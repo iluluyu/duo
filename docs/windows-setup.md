@@ -63,8 +63,10 @@ C:\duo\scripts\build_windows.ps1
 |---|---|
 | 面板无设备 | 换线/口；重新授权调试 |
 | 找不到 adb（打包版） | 设置页固定 adb 路径 |
+| 日志见 `protocol fault` / `Could not start adb server`、设备应用全消失 | 第三方软件自带的**旧版 adb** 与 PATH 上的 adb 互杀 5037（实例：SuperDisplay 的 `MirrorService` 服务自带 adb 28，与 scoop adb 37 每 2s 轮询互杀对方 server）。定位：`Get-CimInstance Win32_Process -Filter "name='adb.exe'"` 看命令行与父进程。处理：`Stop-Service` + `Set-Service -StartupType Manual` 禁用对方服务，`taskkill /F /IM adb.exe` 清残留，面板自动恢复 |
 | 设备状态抖动 | ~6s 容错内正常；持续离线看 `adb devices` |
 | 窗口控件缺失 | 等 2s（csc 首编）；看 `%USERPROFILE%\.local\share\duo\logs` |
+| 面板关了但 Duo.exe/scrcpy 还在后台 | 旧版 bug（2026-09-10 起已修：面板退出整树终止 + Job Object 崩溃兕底，见 docs/window-experience.md §12）。重打包后不再出现；临时清理：`taskkill /T /F /IM Duo.exe`（注意会连面板一起杀） |
 | 图标显示为文字 | 首次拉 APK 解析，稍候 |
 | 重打后仍显示旧图标 | Windows 图标缓存：`ie4uinit.exe -show` 后重启 explorer；
   任务栏钉住项需取消后重新钉 |

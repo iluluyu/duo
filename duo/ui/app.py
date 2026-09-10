@@ -29,12 +29,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QLockFile, QObject, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 
 from duo.core.engine import is_wsl, probe_binary
 from duo.core.engine import probe as probe_on_path
+from duo.core.paths import data_dir
 from duo.core.settings import (
         Settings,
         load_settings,
@@ -42,6 +43,7 @@ from duo.core.settings import (
         save_settings,
         validate,
 )
+from duo.core.winproc import notify_already_running
 from duo.ui.controller import PanelController
 
 #:audio_policy values shown in the settings page, in display order.
@@ -54,6 +56,36 @@ VIDEO_CODECS = ("auto", "h264", "h265", "av1")
 #: Frozen builds must include the directory (PyInstaller
 #: ``--add-data duo/ui/qml``); __file__-relative lookup fails otherwise.
 QML_MAIN = Path(__file__).with_name("qml") / "Main.qml"
+
+#: Exit code when another panel already holds the single-instance lock.
+PANEL_LOCK_STOLEN = 85
+
+#: 第二实例提示语（原生 MessageBox，无需 Qt 窗口）。
+_ALREADY_RUNNING = "Duo 面板已在运行，本次启动已退出（单实例限制）。"
+
+
+def _panel_lock_path() -> Path:
+        """Where the panel's single-instance lock lives."""
+        return data_dir() / "panel.lock"
+
+
+def _acquire_panel_lock() -> QLockFile | None:
+        """Take the panel single-instance lock; None if another panel runs.
+
+        The lock lives in ``run_app`` so EVERY GUI entry enforces it - the
+        frozen no-arg exe, the ``duo --gui`` console script and
+        ``python -m duo --gui`` (the old lock covered only the frozen
+        entry, leaving source-tree panels free to fight a packaged one:
+        two panels = two session maps stealing apps between virtual
+        displays). QLockFile self-heals stale locks left by crashed panels
+        (dead pid detection), so no manual cleanup path exists. Session CLI
+        runs (``duo mirror ...``) never reach ``run_app`` and stay exempt:
+        they are the panel's children, not competing panels.
+        """
+        lock = QLockFile(str(_panel_lock_path()))
+        if lock.tryLock(0):
+                return lock
+        return None
 
 
 def _bundled_icon() -> Path | None:
@@ -163,7 +195,24 @@ class SettingsApi(QObject):
 
 
 def run_app() -> int:
-        """Create the QML panel, resolve adb once, run the Qt event loop."""
+        """Create the QML panel, resolve adb once, run the Qt event loop.
+
+        SINGLE-INSTANCE here (not in the frozen entry): see
+        :func:`_acquire_panel_lock`. A refused instance tells the user via
+        a native message box (windowed exes have no visible stderr) and
+        exits with :data:`PANEL_LOCK_STOLEN`.
+        """
+        lock = _acquire_panel_lock()
+        if lock is None:
+                notify_already_running(_ALREADY_RUNNING)
+                return PANEL_LOCK_STOLEN
+        try:
+                return _run_app_locked()
+        finally:
+                lock.unlock()
+
+
+def _run_app_locked() -> int:
         # High-DPI 契约：Qt6 默认开启 per-monitor High-DPI 缩放，这里刻意
         # 不设 QT_ENABLE_HIGHDPI_SCALING / QT_SCALE_FACTOR 等任何覆盖，让
         # QML 里的 px 值保持 DIP 语义、按每屏 DPR 渲染（混合 DPI 双屏下

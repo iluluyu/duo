@@ -54,7 +54,7 @@ from duo.core.settings import (
         resolve_adb_path,
         save_settings,
 )
-from duo.core.winproc import creation_flags
+from duo.core.winproc import ChildJob, creation_flags, terminate_tree
 
 # The curated app catalog lives in duo.core.catalog (entries are AppPreset
 # records with .label/.package; that module is being built in parallel).
@@ -620,6 +620,12 @@ class PanelController(QObject):
                 # 滑杆（setMediaVolume）才进入已知态。
                 self._media_volume = -1
                 self._sessions: dict[str, subprocess.Popen[bytes]] = {}
+                # 会话进程全部挂进 kill-on-close Job Object（Windows）：
+                # 面板无论怎么死（正常退出/崩溃/任务管理器结束），内核都
+                # 会把树里剩余进程一并拖走——面板即主进程，不遭孤儿子孙。
+                # 非 Windows 平台 ChildJob 是 no-op，退出清理靠 shutdown()
+                # 的显式树杀。
+                self._job = ChildJob()
                 # Keys spawned with audio requested (no --no-audio in argv);
                 # the audio_policy=latest restart consults this set.
                 self._audio_keys: set[str] = set()
@@ -1078,11 +1084,17 @@ class PanelController(QObject):
 
         @pyqtSlot(str)
         def stopSession(self, key: str) -> None:
-                """Terminate one session; the CLI's SIGTERM handler cleans up."""
+                """Terminate one session and its whole process tree.
+
+                Windows 上裸 ``terminate`` 是 TerminateProcess：会话 CLI 的
+                SIGTERM 清理器从不执行，scrcpy/overlay 会被孤儿化成残留
+                窗口——所以一律走树杀（docs/window-experience.md 进程生命
+                周期）。
+                """
                 proc = self._sessions.get(key)
                 if proc is None:
                         return
-                proc.terminate()
+                terminate_tree(proc)
                 self._set_status(f"已关闭 {session_label(key)}")
 
         @pyqtSlot()
@@ -1458,9 +1470,19 @@ class PanelController(QObject):
                 return len(self._sessions)
 
         def shutdown(self) -> None:
-                """Stop background polling and the reaper (panel closing)."""
+                """Tear the whole panel down: pollers first, then sessions.
+
+                面板即主进程：前台窗口退出时所有会话树（Duo.exe mirror +
+                scrcpy + overlay）一并终止，最后关闭 Job Object 兼作崩溃
+                兒底（2026-09-10 真机：面板关了一夜，残留双份 scrcpy 与
+                会话进程）。
+                """
                 self._reaper.stop()
                 self._monitor.stop()
+                for proc in list(self._sessions.values()):
+                        terminate_tree(proc)
+                self._sessions.clear()
+                self._job.close()
 
         # ------------------------------------------------- audio arbitration
 
@@ -1563,7 +1585,7 @@ class PanelController(QObject):
                                 continue
                         self._sessions.pop(key, None)
                         self._audio_keys.discard(key)
-                        proc.terminate()
+                        terminate_tree(proc)
                         # Bounded wait: the CLI's SIGTERM handler releases the
                         # audio lock; on timeout respawn anyway (the old one
                         # dies on its own without taking the lock again).
@@ -1610,13 +1632,15 @@ class PanelController(QObject):
 
         def _spawn(self, argv: list[str]) -> subprocess.Popen[bytes]:
                 """Launch one detached mirror session (tests inject a fake)."""
-                return subprocess.Popen(
+                proc = subprocess.Popen(
                         argv,
                         start_new_session=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         creationflags=creation_flags(),
                 )
+                self._job.add(proc)
+                return proc
 
         def _restart_monitor(self) -> None:
                 """Rebuild the poller for the current adb binary."""

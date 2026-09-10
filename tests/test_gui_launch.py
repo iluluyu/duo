@@ -133,22 +133,19 @@ def test_panel_single_instance_lock(tmp_path, monkeypatch):
         Background (2026-09-06 "全部失效" incident): every extra panel owns
         its own session map; launching an app from instance B force-stops
         it off instance A's virtual display, leaving A's window dead.
+        The lock lives in duo.ui.app (run_app) so every GUI entry - frozen
+        exe, console script, source tree - enforces the same rule.
         """
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         pytest.importorskip("PyQt6.QtCore")
-        import sys as _sys
+        import duo.ui.app as app_mod
 
-        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        import duo.core.paths as paths_mod
-        import gui_entry
-
-        monkeypatch.setattr(paths_mod, "data_dir", lambda: tmp_path)
-        lock = gui_entry._acquire_panel_lock()
+        monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
+        lock = app_mod._acquire_panel_lock()
         assert lock is not None
         try:
-                assert gui_entry._acquire_panel_lock() is None   # second panel loses
+                assert app_mod._acquire_panel_lock() is None   # second panel loses
         finally:
                 lock.unlock()
-        again = gui_entry._acquire_panel_lock()
-        assert again is not None                                 # released = reusable
+        again = app_mod._acquire_panel_lock()
+        assert again is not None                             # released = reusable
         again.unlock()

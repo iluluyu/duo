@@ -2372,3 +2372,34 @@ def test_mirror_card_media_volume_slider(qapp, no_adb, prefs_stub,
         controller.shutdown()
         engine.deleteLater()
         _pump(20)
+
+
+# --------------------------------------------------------------- panel lock
+
+def test_panel_lock_is_single_instance(tmp_path, monkeypatch):
+        """run_app's lock: a second acquisition fails until the first unlocks."""
+        import duo.ui.app as app_mod
+
+        monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
+        first = app_mod._acquire_panel_lock()
+        assert first is not None
+        assert app_mod._acquire_panel_lock() is None
+        first.unlock()
+        third = app_mod._acquire_panel_lock()
+        assert third is not None
+        third.unlock()
+
+
+def test_run_app_refuses_second_panel(tmp_path, monkeypatch):
+        """A refused panel exits 85 and says why - never a silent no-op."""
+        import duo.ui.app as app_mod
+
+        monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
+        messages: list[str] = []
+        monkeypatch.setattr(app_mod, "notify_already_running", messages.append)
+        holder = app_mod._acquire_panel_lock()
+        assert holder is not None
+
+        assert app_mod.run_app() == app_mod.PANEL_LOCK_STOLEN
+        assert messages and "已在运行" in messages[0]
+        holder.unlock()
