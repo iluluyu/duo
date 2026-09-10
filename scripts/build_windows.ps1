@@ -6,6 +6,21 @@ $ErrorActionPreference = 'Stop'
 $repo = if ($args[0]) { $args[0] } else { 'C:\duo' }
 Set-Location $repo
 
+# Stale-copy guard (the "rebuilt but still old icon" trap): C:\duo is a
+# robocopy of the WSL tree; if the icon-critical files drifted, refuse to
+# build and demand a fresh robocopy first. Skipped when the share is not
+# reachable (e.g. building from a checkout elsewhere).
+$wslRepo = '\\wsl.localhost\archlinux\home\luyu\duo'
+if (Test-Path $wslRepo -ErrorAction SilentlyContinue) {
+        foreach ($f in @('duo.spec', 'duo\ui\app.py', 'assets\duo.ico', 'gui_entry.py')) {
+                $here = Get-FileHash -Algorithm SHA256 (Join-Path $repo $f)
+                $there = Get-FileHash -Algorithm SHA256 (Join-Path $wslRepo $f)
+                if ($here.Hash -ne $there.Hash) {
+                        throw "stale copy: $f differs from $wslRepo - re-run robocopy first"
+                }
+        }
+}
+
 # Reuse the dev venv when present so repeat builds stay incremental;
 # the build extra (pyproject.toml) is what pulls in pyinstaller.
 if (-not (Test-Path '.venv\Scripts\python.exe')) {
@@ -25,6 +40,10 @@ if ($bits -ne '64') { throw "need 64-bit Windows Python for the win64 bundle (go
 .venv\Scripts\pyinstaller duo.spec --noconfirm
 if (-not (Test-Path 'dist\Duo.exe')) { throw "missing artifact: $repo\dist\Duo.exe" }
 
+# Hard evidence the exe embeds the current ico (all RT_ICON frames).
+.venv\Scripts\python scripts\verify_exe_icon.py dist\Duo.exe assets\duo.ico
+if ($LASTEXITCODE -ne 0) { throw "dist\Duo.exe does not embed assets\duo.ico" }
+
 # Deploy the fixed artifact. A running panel locks the file, so close it
 # first (stateless launcher - restartable any time). NOTE: no `2>$null`
 # here - under $ErrorActionPreference='Stop' PS 5.1 turns a native command's
@@ -40,3 +59,4 @@ Move-Item -Force dist\Duo.exe C:\Tools\Duo.exe
 
 Write-Output "deployed: C:\Tools\Duo.exe"
 Write-Output "smoke test: C:\Tools\Duo.exe --check; `$LASTEXITCODE (0 = tools found)"
+Write-Output 'if Explorer still shows the OLD icon: ie4uinit.exe -show + restart explorer (icon cache); pinned taskbar entries need unpin + repin'
