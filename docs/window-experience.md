@@ -139,3 +139,71 @@ FRAMECHANGED 闪帧）。沉浸/无 上巴维持无边框 + 胶囊。
 下巴 `(band, wr.Bottom]`；钳到 wr 而非 client：WS_THICKFRAME 幻影边也算
 窗内）。窗外不触发；窗内触发后触发带 ⊂ 下巴自身矩形，overBars 必然
 保住 engaged。
+
+## §11 上巴/下巴换装右键菜单同款毛玻璃 + 胶囊右键固定（2026-09-09）
+
+> 用户反馈：右上角胶囊（上巴）与下面突出的 native 下巴美观与面板右键
+> 菜单不一致，要求同款毛玻璃；另要求胶囊右键固定/取消固定。
+
+### 玻璃配方（对齐 docs/ui/glass-recipe.md 二级浮层档）
+
+沉浸胶囊（`TopWindow.DrawCapsuleAcrylic`）与 native 下巴
+（`ChinWindow.DrawAcrylic`）统一为：
+
+- 1:8 上下采样模糊（≈ QML MultiEffect blur 0.75×32 = 24px 档）；
+- ×1.15 饱和（QML saturation 0.15）；
+- tint 82% 白 `#D0FFFFFF`（menuTintHi 档）；
+- 14% 黑 hairline `#24000000`，1px：胶囊沿轮廓外描，下巴沿巴轮廓
+  （耳条平移后的 RoundedPath）整圈内描；
+- 浅玻璃 ⇒ 字形白→墨 `#1D1D1F`（rest 0.78 / hover 1.0）；胶囊无采样
+  帧回退 88% 白（flyoutFill 档）。
+
+退役的旧材质：胶囊暗烟色 `rgba(28,28,30,~0.55)` + 顶缘 1px 白亮边；
+native 下巴 `rgba(248,248,248,184)` + 顶缝 8% 黑 + 内 45% 白双线。
+下巴 pill 明暗自适应保留（82% 白下恒判暗，逻辑自愈）。沉浸下巴
+（iOS Home Indicator 白 pill）不在此次范围。
+
+### 顺带修复：mirror/fixed 会话关闭键无红 hover
+
+旧 `DrawHoverFill` 按 `Kind == 5` 判关闭键——只有 flex 四键布局的关闭键
+是 Kind 5；mirror/fixed 三键布局关闭键是 Kind 4，从未拿到 Win11 红
+`#E81123` hover。改为 `NavButton.Danger` 显式标记（构造时最后一个槽位），
+其余键的 hover 洗色同步换为 hoverWash 4% 黑（浅玻璃上白洗不可见）。
+
+### 胶囊右键固定（按 APP 持久化）
+
+`Controller._topPinned`（`ToggleTopPin`，胶囊任意处右键切换）：
+
+- 固定时 `showTop` 恒真（engaged 期间常驻露出；采样心跳照跑，
+  SampleTop ~300ms 零额外成本）；
+- 固定态视觉：胶囊 hairline 36→70 加深，其余不动（无新增动效）；
+- disengage（视频窗被盖/失活/最小化）仍照旧隐藏——固定语义是
+  "engaged 期间不再依赖顶缘近距"，不是 always-on-top；
+- native 顶（真系统标题栏恒在）与 none 顶不适用；右键落在胶囊上
+  不会穿透到 scrcpy（不触发安卓返回）。
+
+**按应用记忆**（用户拍板：固定按 app 生效）：argv 链
+`--pin-top 0|1`（初值）+ `--pin-file <win 路径>`；overlay 每次切换回写
+该文件（`"1"`/`"0"`，写失败仅记日志、会话内固定不受影响）；文件位于
+数据目录 `overlay-pin/<pkg>.flag`（duo.core.chrome.top_pin_path /
+read_top_pin，包名天然文件名安全，异常字符防御性替换）。CLI 在
+`--app` 存在时接线（__main__），整机镜像无包名不传文件——固定随
+会话生灭。
+
+日志：`top pin on` / `top pin off`；启动横幅带 `pin=`。
+
+### 顺带修复：右键曾与左键同效触发胶囊字形键（2026-09-09 真机反馈）
+
+用户真机：右键胶囊未固定，反而“像左键一样执行了确认动作”。根因：
+WinForms `MouseClick` 对右键同样触发，而共享 `WireInput` 的触键路径没有
+左键守卫——字形圆占胶囊宽度约八成，右键几乎必然命中 ─/⤢/✕ 并与左键
+同效触发（最小化/比例最大化/直接关窗）；固定切换实际也发生了，但
+hairline 加深太细微被掩盖，命中 ✕ 则直接关窗全不可见。修复：
+
+- 触键路径一律左键专属（共享 `OverlayWindow.WireInput` 与下巴
+  `ChinWindow.WireInput` 的 `MouseClick` 加 `Left` 守卫；下巴右键不再
+  发 BACK 键）；
+- 胶囊右键只做固定切换，切换后立即 `Render()`（hairline 即时生效，
+  不等下一个 ~300ms 采样 tick）；
+- native 顶第四键不接线固定语义：右键无操作，也不静默翻转并回写
+  pin 文件（那会污染同应用下次 immersive 启动的初值）。

@@ -12,8 +12,9 @@
 //                                   re-pressing; release ends it)
 //   cursor in the top edge band  -> top-right capsule: minimize /
 //                                   maximize (taskbar-safe, emulated) /
-//                                   close - over a SAMPLED dark-acrylic
-//                                   base plate (trio #1), not dry glass
+//                                   close - over SAMPLED light menu-glass
+//                                   (glass-recipe.md tier); right-click
+//                                   on it toggles pin (stays revealed)
 //   always-on (window visible)   -> chin: "<" back (adb keyevent);
 //                                   "O" hold: HOME on every display
 //                                   (virtual-desktop layer hint; vendors
@@ -42,8 +43,9 @@
 // Rendering is per-pixel-alpha layered windows (UpdateLayeredWindow) with
 // hand-made acrylic: the content behind each bar is sampled from the target
 // window itself (PrintWindow PW_RENDERFULLCONTENT), blurred by down/up
-// scaling, then dark-tinted. No OS composition API dependency - the
-// SetWindowCompositionAttribute route returns E_FAIL on Win11 24H2.
+// scaling, then white-tinted (menu glass, docs/window-experience.md §11).
+// No OS composition API dependency - the SetWindowCompositionAttribute
+// route returns E_FAIL on Win11 24H2.
 //
 // The window is repaired after discovery: WS_THICKFRAME is re-asserted so
 // native edge resize (and Win11 snap) keeps working, and DWMWCP_ROUND is
@@ -229,7 +231,8 @@ namespace DuoChrome
             string title = null, serial = null, adb = null;
             string mode = "flex", sessionLog = null;
             string topMode = "immersive", bottomMode = "immersive";
-            bool home = false;
+            string pinFile = null;
+            bool home = false, pinTop = false;
             int videoW = 0, videoH = 0, cornerDip = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
@@ -244,6 +247,8 @@ namespace DuoChrome
                 else if (argv[i] == "--corner-radius") int.TryParse(argv[i + 1], out cornerDip);
                 else if (argv[i] == "--chrome-top") topMode = argv[i + 1];
                 else if (argv[i] == "--chrome-bottom") bottomMode = argv[i + 1];
+                else if (argv[i] == "--pin-top") pinTop = argv[i + 1] == "1";
+                else if (argv[i] == "--pin-file") pinFile = argv[i + 1];
             }
             if (title == null || serial == null || adb == null)
             {
@@ -251,7 +256,8 @@ namespace DuoChrome
                     + "[--display-mode mirror|flex|fixed] [--video-w n] [--video-h n] "
                     + "[--session-log <path>] "
                     + "[--chrome-top immersive|native|none] "
-                    + "[--chrome-bottom immersive|native|none]");
+                    + "[--chrome-bottom immersive|native|none] "
+                    + "[--pin-top 0|1] [--pin-file <path>]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -269,10 +275,11 @@ namespace DuoChrome
             Log.Write("overlay start title=" + title + " serial=" + serial
                 + " mode=" + mode + " video=" + videoW + "x" + videoH
                 + " chrome=" + topMode + "/" + bottomMode
+                + " pin=" + (pinTop ? 1 : 0)
                 + (sessionLog == null ? "" : " log=" + sessionLog));
             using (Controller c = new Controller(
                 title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip,
-                topMode, bottomMode))
+                topMode, bottomMode, pinTop, pinFile))
             {
                 Application.Run();
             }
@@ -289,12 +296,13 @@ namespace DuoChrome
         public Rectangle Circle;
         public readonly Action Fire;
         public readonly int Kind;          // 0 = chevron, 1 = ring, 2..4 = win glyphs
+        public readonly bool Danger;       // close slot: red hover wash
         public bool Hover;
         public bool Pressed;
 
-        public NavButton(Rectangle circle, int kind, Action fire)
+        public NavButton(Rectangle circle, int kind, Action fire, bool danger)
         {
-            Circle = circle; Kind = kind; Fire = fire;
+            Circle = circle; Kind = kind; Fire = fire; Danger = danger;
         }
 
         public bool Hit(Point p)
@@ -409,14 +417,15 @@ namespace DuoChrome
         }
 
         /// <summary>Hand-made acrylic: blur the sampled content (downscale
-        /// then upscale), then lay a dark smoked tint over it. The native
-        /// chin overrides this with its light-acrylic recipe (agy v6); the
+        /// then upscale), then wash it with the 82% white menu-glass tint
+        /// (docs/window-experience.md §11). The native chin overrides this
+        /// only to add its outline hairline + seam margin mapping; the
         /// native top needs no override - C2 made it a real system caption
         /// with a DWM backdrop, drawn by the OS itself.</summary>
         protected virtual void DrawAcrylic(Graphics g)
         {
             // Hand-made acrylic: blur the sampled content (downscale then
-            // upscale), then lay a dark smoked tint over it.
+            // upscale), then wash it with the menu-glass tint.
             if (_behind != null && _behind.Width > 0 && _behind.Height > 0)
             {
                 int qw = Math.Max(1, Width / 12);
@@ -434,7 +443,7 @@ namespace DuoChrome
                     g.DrawImage(small, new Rectangle(0, 0, Width, Height));
                 }
             }
-            using (SolidBrush tint = new SolidBrush(Color.FromArgb(206, 0x21, 0x21, 0x27)))
+            using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
                 g.FillRectangle(tint, 0, 0, Width, Height);
         }
 
@@ -513,9 +522,12 @@ namespace DuoChrome
         protected void DrawHoverFill(Graphics g, NavButton b)
         {
             if (!b.Hover) return;
-            Color fill = b.Kind == 5
+            // 浅玻璃上的 hover = hoverWash 4% 黑；关闭键 = Win11 红
+            // （Danger 标记而非 Kind 编号：mirror/fixed 三键布局的关闭键
+            // Kind=4，旧判定只在 flex 四键布局命中）
+            Color fill = b.Danger
                 ? Color.FromArgb(255, 232, 17, 35)      // close hover: #E81123
-                : Color.FromArgb(28, 255, 255, 255);    // rgba(255,255,255,0.11)
+                : Color.FromArgb(10, 0, 0, 0);          // rgba(0,0,0,0.04)
             using (SolidBrush brush = new SolidBrush(fill))
                 g.FillEllipse(brush, b.Circle);
         }
@@ -546,8 +558,11 @@ namespace DuoChrome
                 foreach (NavButton b in Buttons) b.Hover = false;
                 Render();
             };
+            // WinForms MouseClick 对右键同样触发：触键左键专属，右键语义
+            // （胶囊固定）由子类 WireInput 叠加（docs/window-experience.md §11）。
             MouseClick += delegate(object s, MouseEventArgs e)
             {
+                if (e.Button != MouseButtons.Left) return;
                 int hit = HitIndex(e.Location);
                 if (hit >= 0) Buttons[hit].Fire();
             };
@@ -655,7 +670,7 @@ namespace DuoChrome
             // switching glyph read as a regression; reverted).
             Buttons.Add(new NavButton(
                 new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
-                1, delegate { Ctrl.AdbKey(4); }));
+                1, delegate { Ctrl.AdbKey(4); }, false));
             _hold = new Timer { Interval = HoldMs };
             _hold.Tick += delegate
             {
@@ -755,6 +770,7 @@ namespace DuoChrome
             };
             MouseClick += delegate(object s, MouseEventArgs e)
             {
+                if (e.Button != MouseButtons.Left) return;
                 if (_firedHold) { _firedHold = false; return; }   // long-press already acted
                 if (HitIndex(e.Location) >= 0) Buttons[0].Fire();
             };
@@ -895,7 +911,7 @@ namespace DuoChrome
 
         /// <summary>Store a native-mode screen sample and derive the pill
         /// color from it: average luminance over the bar's center 50%
-        /// region, tinted with the same rgba(248,248,248,184) wash the paint
+        /// region, tinted with the same rgba(255,255,255,208) wash the paint
         /// applies, compared against the 0.52 cut (agy v6: brighter bar -&gt;
         /// dark pill, darker bar -&gt; white pill). The capture carries an 8px
         /// margin around the bar; only the bar's own rows are measured.</summary>
@@ -928,7 +944,7 @@ namespace DuoChrome
                             sum += 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B;
                         }
                     double lum = sum / (32.0 * 4.0 * 255.0);
-                    double a = 184.0 / 255.0;
+                    double a = 208.0 / 255.0;
                     double tinted = a * (248.0 / 255.0) + (1.0 - a) * lum;
                     _nativeDark = tinted > 0.52;
                 }
@@ -937,12 +953,11 @@ namespace DuoChrome
             Render();
         }
 
-        /// <summary>agy v6 native acrylic material: the sampled screen
-        /// backdrop (Controller.SampleNativeChin captures the bar rect +
-        /// 8px) is blurred by down/up scaling to 1/8 (~20px), saturated
-        /// x1.15 via ColorMatrix, then washed with rgba(248,248,248,184);
-        /// top hairline rgba(0,0,0,0.08) + inner light edge
-        /// rgba(255,255,255,0.45), 1px each.</summary>
+        /// <summary>Native chin material = menu glass (recipe:
+        /// docs/window-experience.md §11): sampled screen backdrop
+        /// (Controller.SampleNativeChin, bar rect + 8px), 1/8 down/up
+        /// blur, x1.15 saturation, 82% white tint, full 14% black
+        /// outline hairline along the bar body.</summary>
         protected override void DrawAcrylic(Graphics g)
         {
             if (!_native)
@@ -986,15 +1001,18 @@ namespace DuoChrome
                     }
                 }
             }
-            using (SolidBrush tint = new SolidBrush(Color.FromArgb(184, 248, 248, 248)))
+            using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
                 g.FillRectangle(tint, 0, 0, Width, Height);
-            // Hairlines ride the BAR's top edge (= the seam), not the
-            // window's: with corner ears the window top is 8 DIP above
-            // the seam, inside the ear squares.
-            using (SolidBrush hair = new SolidBrush(Color.FromArgb(20, 0, 0, 0)))
-                g.FillRectangle(hair, 0, _ear, Width, 1);
-            using (SolidBrush lum = new SolidBrush(Color.FromArgb(115, 255, 255, 255)))
-                g.FillRectangle(lum, 0, _ear + 1, Width, 1);
+            // 整圈 hairline 沿巴轮廓（含耳条时轮廓从 _ear 起）；外半被
+            // ClipRegion 裁掉，视觉为 1px 内描边
+            using (GraphicsPath body = RoundedPath(
+                Width, Height - _ear, _radiusTop, _radiusBottom))
+            using (Matrix shift = new Matrix(1, 0, 0, 1, 0, _ear))
+            {
+                body.Transform(shift);
+                using (Pen hair = new Pen(Color.FromArgb(36, 0, 0, 0), 1f))
+                    g.DrawPath(hair, body);
+            }
         }
 
         /// <summary>agy v6 native chin pill. The acrylic surface comes from
@@ -1123,7 +1141,7 @@ namespace DuoChrome
                 _glyphs[0] = _maxBase.ToString();
                 Buttons.Add(new NavButton(
                     new Rectangle(0, 0, _capBtnW, _capBtnH), 2,
-                    delegate { owner.TopAction(1); }));   // emulated maximize
+                    delegate { owner.TopAction(1); }, false));   // emulated maximize
             }
             else
             {
@@ -1148,7 +1166,8 @@ namespace DuoChrome
                     int slot = i;
                     Buttons.Add(new NavButton(
                         new Rectangle(pad + i * (btn + gap), pad, btn, btn), 2 + i,
-                        delegate { owner.TopAction(ActionFor(fillButton, slot)); }));
+                        delegate { owner.TopAction(ActionFor(fillButton, slot)); },
+                        i == n - 1));
                 }
             }
             WireInput();
@@ -1157,6 +1176,24 @@ namespace DuoChrome
         private static bool NativeMode(string m)
         {
             return m != null && m.Equals("native");
+        }
+
+        /// <summary>右键胶囊任意处 = 固定/取消固定（docs/window-experience.md §11）。
+        /// 右键只切固定、绝不触键（触键左键专属，见共享 WireInput 守卫——
+        /// 字形圆占胶囊宽度约八成，无守卫时右键按左键同效触发 ─/⤢/✕）。
+        /// native 顶（真系统标题栏恒在）固定语义不适用：不接线，右键无操作。</summary>
+        protected override void WireInput()
+        {
+            base.WireInput();
+            if (_native) return;
+            MouseClick += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    Ctrl.ToggleTopPin();
+                    Render();   // hairline 立即反映固定态，不等下一个采样 tick
+                }
+            };
         }
 
         /// <summary>System caption-button metrics, physical px. The 4th
@@ -1245,17 +1282,14 @@ namespace DuoChrome
                 PaintFourthButton(g);
                 return;
             }
-            // Capsule base plate (user-feedback trio #1): the rounded pill
-            // GraphicsPath is filled with REAL sampled acrylic - the video
-            // content behind the capsule, blurred by 1/8 down/up scaling
-            // (~20px), saturated x1.15 and smoked with the Win11 dark-menu
-            // tint. The three glass dots (glyphs / hover / red close) paint
-            // on top, unchanged.
+            // 胶囊底板 = 右键菜单同款浅玻璃（配方与决策见
+            // docs/window-experience.md §11）；墨色字形叠在玻璃上。
             float rad = Height / 2f;
             using (GraphicsPath capsule = RoundedPath(Width, Height, (int)rad, (int)rad))
             {
                 DrawCapsuleAcrylic(g, capsule);
-                using (Pen rim = new Pen(Color.FromArgb(70, 255, 255, 255), 1f))
+                int edge = Ctrl.TopPinned ? 70 : 36;   // 固定态 hairline 加深
+                using (Pen rim = new Pen(Color.FromArgb(edge, 0, 0, 0), 1f))
                     g.DrawPath(rim, capsule);
             }
             Font font = GlyphFont(Dpi);
@@ -1263,25 +1297,22 @@ namespace DuoChrome
             {
                 DrawHoverFill(g, b);
                 float opacity = b.Hover ? 1.0f : 0.78f;
-                Color color = Color.FromArgb((int)(255 * opacity), 255, 255, 255);
+                Color color = Color.FromArgb((int)(255 * opacity), 0x1D, 0x1D, 0x1F);
                 TextRenderer.DrawText(g, _glyphs[b.Kind - 2], font, b.Circle, color,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
                     TextFormatFlags.NoPrefix);
             }
         }
 
-        /// <summary>User-feedback trio #1: real acrylic for the hover
-        /// capsule. The sampled video content behind the capsule (_behind,
-        /// fed by Controller.SampleTop on reveal + a ~300ms refresh) is
-        /// blurred by 1/8 down/up scaling (~20px), saturated x1.15 via
-        /// ColorMatrix, then smoked with the dark acrylic tint
-        /// rgba(28,28,30,~0.55) - the Win11 dark-menu material; a 1px
-        /// inner light edge rgba(255,255,255,0.10) sits along the top.
-        /// Everything is clipped to the capsule GraphicsPath (the base
-        /// plate keeps the pill shape; alpha stays 0 outside it, so the
-        /// ghost hit-testing language is untouched). Without a sample yet
-        /// (the single frame before the reveal-time capture lands) a dry
-        /// dark base of the same hue shows - never an empty capsule.</summary>
+        /// <summary>Menu-glass base plate for the hover capsule (recipe:
+        /// docs/window-experience.md §11) - the sampled video content
+        /// behind the capsule (_behind, fed by Controller.SampleTop on
+        /// reveal + a ~300ms refresh) is blurred by 1/8 down/up scaling,
+        /// saturated x1.15 via ColorMatrix, then washed 82% white; a dry
+        /// 88% white base covers the single frame before the reveal-time
+        /// capture lands. Everything is clipped to the capsule
+        /// GraphicsPath (alpha stays 0 outside it, so the ghost
+        /// hit-testing language is untouched).</summary>
         private void DrawCapsuleAcrylic(Graphics g, GraphicsPath capsule)
         {
             GraphicsState state = g.Save();
@@ -1312,16 +1343,14 @@ namespace DuoChrome
                             0, 0, qw, qh, GraphicsUnit.Pixel, ia);
                     }
                 }
-                using (SolidBrush tint = new SolidBrush(Color.FromArgb(140, 28, 28, 30)))
+                using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
                     g.FillRectangle(tint, 0, 0, Width, Height);
             }
             else
             {
-                using (SolidBrush dry = new SolidBrush(Color.FromArgb(180, 28, 28, 30)))
+                using (SolidBrush dry = new SolidBrush(Color.FromArgb(222, 255, 255, 255)))
                     g.FillRectangle(dry, 0, 0, Width, Height);
             }
-            using (SolidBrush edge = new SolidBrush(Color.FromArgb(26, 255, 255, 255)))
-                g.FillRectangle(edge, 0, 1, Width, 1);
             g.Restore(state);
         }
 
@@ -1975,6 +2004,8 @@ namespace DuoChrome
         // 真实位移（≥ S(2)）之后才允许 proximity 露出；首个采样只作锚点。
         private bool _cursorMoved;
         private Point _cursorAnchor = new Point(int.MinValue, int.MinValue);
+        private bool _topPinned;              // 右键胶囊固定（见 TopPinned）
+        private readonly string _pinFile;    // 按应用持久化文件（null = 会话内）
         private EdgeStrip[] _strips;
         // Side move bands (left + right edges), IMMERSIVE top mode only:
         // null under --chrome-top=native - the real system caption owns
@@ -2000,6 +2031,20 @@ namespace DuoChrome
         public bool TopNone { get { return "none".Equals(_topMode); } }
 
         public bool BottomNone { get { return "none".Equals(_bottomMode); } }
+
+        /// <summary>右键胶囊固定态（docs/window-experience.md §11）：固定时
+        /// immersive 胶囊在 engaged 期间常驻，不再依赖顶缘近距露出；
+        /// native 顶（系统标题栏恒在）与 none 顶不适用。</summary>
+        public bool TopPinned { get { return _topPinned; } }
+
+        public void ToggleTopPin()
+        {
+            _topPinned = !_topPinned;
+            Log.Write("top pin " + (_topPinned ? "on" : "off"));
+            if (_pinFile == null) return;   // 镜像会话无包名：不持久化
+            try { File.WriteAllText(_pinFile, _topPinned ? "1" : "0"); }
+            catch (Exception ex) { Log.Write("pin file write failed: " + ex.Message); }
+        }
 
         /// <summary>Normalize a bar-mode argv value to immersive|native|none (unknown -> immersive).</summary>
         private static string NormalizeBarMode(string mode)
@@ -2058,13 +2103,15 @@ namespace DuoChrome
 
         public Controller(string title, string serial, string adb, bool home,
             string displayMode, int videoW, int videoH, string sessionLog, int cornerDip,
-            string topMode, string bottomMode)
+            string topMode, string bottomMode, bool pinTop, string pinFile)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
             _displayMode = displayMode == null ? "flex" : displayMode;
             _topMode = NormalizeBarMode(topMode);
             _bottomMode = NormalizeBarMode(bottomMode);
+            _topPinned = pinTop;
+            _pinFile = pinFile;
             _dpi = ProbeDpi();
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
@@ -3113,7 +3160,7 @@ namespace DuoChrome
             // Native bars are always-on while engaged (agy v6 常驻可见);
             bool showTop = TopNative ? true
                 : (TopNone ? false
-                : (_cursorMoved && ComputeTopVisibility(client, wr, cursor)));
+                : (_cursorMoved && (_topPinned || ComputeTopVisibility(client, wr, cursor))));
             bool showChin = BottomNative ? true
                 : (BottomNone ? false
                 : (_cursorMoved && ComputeChinVisibility(client, wr, cursor))

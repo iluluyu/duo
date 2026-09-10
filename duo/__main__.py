@@ -11,7 +11,13 @@ from pathlib import Path
 from duo import __version__
 from duo.core.apps import Adb, AdbError, app_info, device_density
 from duo.core.audio_lock import AudioLock
-from duo.core.chrome import ChromeError, ChromeOverlay, borderless_for
+from duo.core.chrome import (
+    ChromeError,
+    ChromeOverlay,
+    borderless_for,
+    read_top_pin,
+    top_pin_path,
+)
 from duo.core.codec import (
         encoders_cache_path,
         load_cached_encoders,
@@ -359,6 +365,12 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 if display.mode == "fixed":
                         vd_w = display.width
                         vd_h = display.height
+                # 按应用固定（右键胶囊写入 overlay-pin/<pkg>.flag）：本次
+                # 启动读初值，overlay 右键切换时回写同一文件；整机镜像
+                # 无包名，固定随会话生灭。
+                pin_file = top_pin_path(args.app) if args.app else None
+                if pin_file is not None:
+                        pin_file.parent.mkdir(parents=True, exist_ok=True)
                 overlay = ChromeOverlay(
                         title=title,
                         serial=serial,
@@ -373,6 +385,8 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 args.chrome_top, settings.top_bar_mode),
                         bottom_bar_mode=_resolve_bar_mode(
                                 args.chrome_bottom, settings.bottom_bar_mode),
+                        pin_top=read_top_pin(args.app) if args.app else False,
+                        pin_file=pin_file,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
