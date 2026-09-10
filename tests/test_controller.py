@@ -88,10 +88,16 @@ class _StubPrefsFile:
 
 
 class _FakeProc:
-        """subprocess.Popen stand-in: never a real process."""
+        """subprocess.Popen stand-in: never a real process.
+
+        ``pid`` stays 0: the win32 tree-kill branch reads it (and its
+        taskkill then fails on pid 0, falling back to terminate - exactly
+        the wanted behaviour for a fake).
+        """
 
         def __init__(self, argv: list[str], exit_code: int | None = None) -> None:
                 self.argv = argv
+                self.pid = 0
                 self.terminated = False
                 self._exit_code = exit_code
 
@@ -942,6 +948,79 @@ def test_start_stop_reap_session(no_adb, prefs_stub, qapp, monkeypatch):
         # Stopping an unknown key is a quiet no-op.
         controller.stopSession("no.such.package")
         assert controller.reapSessions() == 0
+
+
+def test_stop_session_routes_through_tree_kill(no_adb, prefs_stub, qapp, monkeypatch):
+        """stopSession must tree-kill: a bare terminate orphans scrcpy."""
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        killed: list[_FakeProc] = []
+        monkeypatch.setattr(controller_mod, "terminate_tree", killed.append)
+
+        controller.startSession("tv.danmaku.bili")
+        controller.stopSession("tv.danmaku.bili")
+        assert killed == [procs[0]]
+
+
+class _FakeJob:
+        """ChildJob stand-in: records adds and the shutdown close."""
+
+        def __init__(self) -> None:
+                self.added: list[_FakeProc] = []
+                self.closed = False
+
+        def add(self, proc: _FakeProc) -> None:
+                self.added.append(proc)
+
+        def close(self) -> None:
+                self.closed = True
+
+
+def test_shutdown_tree_kills_all_sessions_and_closes_job(
+        no_adb, prefs_stub, qapp, monkeypatch
+):
+        """Panel close = every session tree dies and the job handle closes."""
+        controller = PanelController("/fake/adb.exe")
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        procs: list[_FakeProc] = []
+        _spawn_recorder(controller, procs)
+        job = _FakeJob()
+        controller._job = job   # type: ignore[assignment]
+        killed: list[_FakeProc] = []
+        monkeypatch.setattr(controller_mod, "terminate_tree", killed.append)
+
+        controller.startSession("tv.danmaku.bili")
+        controller.startMirror()
+        controller.shutdown()
+        assert killed == procs
+        assert controller.runningSessions == []
+        assert job.closed
+
+
+def test_spawn_registers_session_in_child_job(no_adb, prefs_stub, qapp, monkeypatch):
+        """Every real spawn lands in the kill-on-close job (crash safety)."""
+        controller = PanelController("/fake/adb.exe")
+        job = _FakeJob()
+        controller._job = job   # type: ignore[assignment]
+        _StubMonitor.instances[-1].set_states({"S1": "device"})
+        spawned: list[_FakeProc] = []
+
+        def fake_popen(argv, **kwargs):
+                proc = _FakeProc(argv)
+                spawned.append(proc)
+                return proc
+
+        monkeypatch.setattr(controller_mod.subprocess, "Popen", fake_popen)
+
+        # First start spawns bili; the second start respawns bili muted
+        # (audio arbitration, policy=latest) then spawns the new app -
+        # every real Popen must register.
+        controller.startSession("tv.danmaku.bili")
+        controller.startSession("cn.com.langeasy.LangEasyLexis")
+        assert len(spawned) == 3
+        assert job.added == spawned
 
 
 def test_engine_locked_tracks_sessions(no_adb, prefs_stub, qapp, monkeypatch):

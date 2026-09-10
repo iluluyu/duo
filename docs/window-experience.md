@@ -207,3 +207,31 @@ hairline 加深太细微被掩盖，命中 ✕ 则直接关窗全不可见。修
   不等下一个 ~300ms 采样 tick）；
 - native 顶第四键不接线固定语义：右键无操作，也不静默翻转并回写
   pin 文件（那会污染同应用下次 immersive 启动的初值）。
+
+## §12 进程生命周期与单实例（2026-09-10）
+
+面板是唯一主进程，其余全是它的进程树（会话 CLI `Duo.exe mirror` 是孩子，
+scrcpy 与 C# overlay 是孙子）；面板前台窗口一关，整棵树必须消失。
+
+**为什么需要显式设计**（2026-09-10 真机事故）：Windows 上 `Popen.terminate`
+是裸 TerminateProcess——会话 CLI 的 SIGTERM 清理器从不执行；且 `shutdown()`
+旧实现只停轮询器不碰会话。结果面板关了一夜，任务管理器里残留两组
+scrcpy.exe + 会话 Duo.exe，还握着 panel 日志句柄（次日 WinError 32 崩溃的
+诱因之一）。
+
+**契约**（实现：`duo/core/winproc.py`，面板侧接线：`PanelController`）：
+
+- 停单个会话（`stopSession`、音频静音重启）：`terminate_tree`——Windows 走
+  `taskkill /T /F`（scrcpy/overlay 随树而死；设备端 scrcpy server 感知
+  socket 断开自毁虚拟屏，`--turn-screen-off` 也由 server 侧恢复），POSIX
+  走优雅 `terminate`。
+- 面板退出（`shutdown`）：树杀全部存活会话后关闭 Job Object。
+- 崩溃兜底：每个会话进程挂进 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的
+  Job Object；面板无论怎么死（正常退出/崩溃/任务管理器强杀），内核关掉
+  job 句柄时把树里剩余进程一并拖走。adb server 不入 job（它是共享资源，
+  由面板自己的首个 adb 客户端在 job 外拉起）。
+- 单实例：QLockFile 锁在 `duo.ui.app.run_app`（所有 GUI 入口共用：冻结
+  exe 双击、`duo --gui`、`python -m duo --gui`）；第二实例弹原生
+  MessageBox 后以 85 退出。会话 CLI 不经过 `run_app`，不受锁约束——它们
+  是面板的孩子，不是竞争面板。多面板互抢虚拟显示的历史事故（2026-09-06
+  「全部失效」）见 gui_entry 旧注释存档。
