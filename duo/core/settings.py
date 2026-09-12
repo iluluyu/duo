@@ -29,6 +29,9 @@ FPS_RANGE = (1, 240)
 BITRATE_RANGE = (1, 200)
 DPI_RANGE = (120, 640)
 CORNER_RANGE = (0, 96)          # above 96 is test territory (160 verified live)
+# 渲染倍率（2026-09-11）：窗口分辨率 ÷ k = 安卓渲染分辨率（4K 窗口 2 倍
+# 即 1K 渲染）。范围 1.0–3.0，自由取值（预设 1/1.4/2，微调步进 0.1）；1.0 = 原生。
+RENDER_SCALE_RANGE = (1.0, 3.0)
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,15 @@ class Settings:
                                      # would judder 2:1); 120 for max UI
                                      # smoothness on strong PCs
         bitrate_mbps: int | None = 30
-        dpi: int | None = None
+        # 虚拟屏密度（2026-09-11 起默认 160 桌面密度，不再是设备密度探测）：
+        # 160 = mdpi 基准，1dp==1px，同屏 dp 数最大化（桌面观感）；null =
+        # 跟随设备（启动时 wm density 探测，元素物理尺寸=手机/平板）。
+        # 每应用可在右键菜单「显示密度 ▸」覆盖（gui_prefs density 节）。
+        dpi: int | None = 160
+        # 渲染倍率：flex 会话的虚拟屏按 窗口÷k 建屏（CLI 侧换算成固定
+        # 分辨率），减轻设备端渲染压力；1.0 = 原生跟随窗口。每应用可覆盖
+        # （gui_prefs scale 节）。整数处理见 duo.core.aspects.scaled_size。
+        render_scale: float = 1.0
         corner_mode: str = "system"    # system = DWM default rounding;
                                          # g2 = quartic region, long-term goal
                                          # (edge quality/clipping unresolved)
@@ -63,9 +74,10 @@ class Settings:
         turn_screen_off: bool = False
 
 # 历史（2026-09-06）：曾有 flex_resolution 基准分辨率档（1440p/1080p/native），
-# 用户决策撤除——档位选择造成困扰，flex 一律原始分辨率；性能由
-# codec=h264+fps=60 承担。旧 settings.json 里残留的 flex_resolution 键被
-# _sanitize 无害忽略（只读已知键）。
+# 用户决策撤除——档位选择造成困扰。2026-09-11 以 render_scale 倍率回归
+# （自由数值 1.0–3.0、按应用覆盖、flex→固定屏换算，见 docs/mirroring-
+# quality.md §5）：语义从「选档」改为「窗口÷倍率」，不再有档位困扰。
+# 旧 settings.json 里残留的 flex_resolution 键被 _sanitize 无害忽略。
 
 
 def settings_path() -> Path:
@@ -82,9 +94,24 @@ def _clamp_or_none(value: object, low: int, high: int, field: str,
                 problems.append(f"{field}: 期望整数，实际为 {value!r}")
                 return fallback
         if not low <= value <= high:
-                problems.append(f"{field}: {value} 超出范围 {low}–{high}")
+                problems.append(f"{field}: {value} 超出范围 {low:g}–{high:g}")
                 return fallback
         return value
+
+
+def _clamp_float_or_none(
+        value: object, low: float, high: float, field: str,
+        fallback: float, problems: list[str],
+) -> float:
+        """Coerce to a float in range; anything else falls back."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(f"{field}: 期望数值，实际为 {value!r}")
+                return fallback
+        number = float(value)
+        if not low <= number <= high:
+                problems.append(f"{field}: {number} 超出范围 {low:g}–{high:g}")
+                return fallback
+        return number
 
 
 def _sanitize(raw: dict, problems: list[str]) -> Settings:
@@ -114,7 +141,15 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
         bitrate = _clamp_or_none(raw.get("bitrate_mbps", defaults.bitrate_mbps),
                                  *BITRATE_RANGE, "bitrate_mbps",
                                  defaults.bitrate_mbps, problems)
-        dpi = _clamp_or_none(raw.get("dpi"), *DPI_RANGE, "dpi", None, problems)
+        dpi = _clamp_or_none(raw.get("dpi", defaults.dpi), *DPI_RANGE,
+                             "dpi", defaults.dpi, problems)
+        # 显式 null = 跟随设备（保存页开关写入的语义），缺键才是新默认 160。
+        if "dpi" in raw and raw["dpi"] is None:
+                dpi = None
+        render_scale = _clamp_float_or_none(
+                raw.get("render_scale", defaults.render_scale),
+                *RENDER_SCALE_RANGE, "render_scale", defaults.render_scale, problems,
+        )
         corner_size = _clamp_or_none(raw.get("corner_size_dip",
                                              defaults.corner_size_dip),
                                      *CORNER_RANGE, "corner_size_dip",
@@ -169,6 +204,7 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 fps=fps,
                 bitrate_mbps=bitrate,
                 dpi=dpi,
+                render_scale=render_scale,
                 corner_mode=corner_mode,
                 corner_size_dip=corner_size if corner_size is not None else 0,
                 glass_enabled=glass,
@@ -255,6 +291,7 @@ def resolve_tool(name: str, settings: Settings, found: str | None) -> str | None
 
 __all__ = [
         "CORNER_RANGE",
+        "RENDER_SCALE_RANGE",
         "Settings",
         "VALID_AUDIO_POLICIES",
         "VALID_BAR_MODES",

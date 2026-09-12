@@ -298,6 +298,7 @@ def test_settings_api_roundtrip(settings_file, qapp):
                 "fps": 120,
                 "bitrate_mbps": 8,
                 "dpi": 400,
+                "render_scale": 2.5,
                 "corner_mode": "g2",
                 "corner_size_dip": 64,
                 "glass_enabled": False,
@@ -1541,18 +1542,21 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
          白雾；live:false + open() 按菜单位置设 sourceRect（钳制在源内）
          + scheduleUpdate() 按需抓帧）；菜单浮层在 zoomLayer、不在
          canvasRoot 子树内 → 无自采样环。
-      ② MultiEffect 高斯模糊（gemini 终审档 blur 0.75/blurMax 32 = 等效
-         24px，彻底雾化背景文字）+ saturation 0.15 补偿染色漂白 +
-         **maskEnabled 圆角 alpha 蒙版**——蒙版把模糊输出硬裁成圆角，
-         根治直角 bug。**过采样 1:1 是铁律**（同日晚间真机回归：旧实现
-         128px 显示项装 160px 采样区 → 缩放 ≈0.8 且贴边钳制后继续变，
-         玻璃内容与真实背景错位漂移，即"背景会移动位置"；菜单边缘模糊
-         核心采到纹理界外像素 + maskSpreadAtMin 0.5 软坡 → 四角毛刺）：
-         快照层/sourceRect/模糊层/蒙版同尺寸（菜单 + 2×blurMargin 28），
-         蒙版白块与菜单同位，无 maskSpreadAtMin（硬裁）。
-      ③ 染色层：GL = menuTint 72% 画布色（#B8F5F5F7，无亮度跳变）+
-         menuBorder 25% 白亮边；软件后端/WSL（!glassBlur）下 ①②隐藏、
-         染色换不透明 menuFill + 深色 hairline 描边（可读优先）。
+      ② MultiEffect 高斯模糊 + 圆角 alpha 蒙版（毛玻璃化 2026-09-10：
+         blur 0.75/blurMax 32（二级 0.85）+ saturation 0.45（二级 0.50）
+         + brightness 0.02/0.04 + contrast 0.06/0.10 ——光学增益替代白 tint，
+         agy Opus 裁决定稿）+ **maskEnabled 圆角 alpha 蒙版**——蒙版把
+         模糊输出硬裁成圆角，根治直角 bug。**过采样 1:1 是铁律**（同日
+         晚间真机回归：旧实现 128px 显示项装 160px 采样区 → 缩放 ≈0.8
+         且贴边钳制后继续变，玻璃内容与真实背景错位漂移，即"背景会
+         移动位置"；菜单边缘模糊核心采到纹理界外像素 + maskSpreadAtMin
+         0.5 软坡 → 四角毛刺）：快照层/sourceRect/模糊层/蒙版同尺寸
+         （菜单 + 2×blurMargin 28），蒙版白块与菜单同位，无
+         maskSpreadAtMin（硬裁）。
+      ③ 描边层：tint 0% 毛玻璃化（无霜面染色，menuTint 透明）：GL =
+         menuBorder 12% 黑 hairline（二级 14%）；软件后端/WSL
+         （!glassBlur）下 ①②隐藏、底色换不透明 menuFill + 深色 hairline
+         描边（可读优先）。
     本测试在软件后端上运行（glassBlur=false 路径），源码级 + 运行时
     双锁定；卡片仍零采样（分层靠材质对比，另见 test_shadow_policy_*）。
         """
@@ -1580,8 +1584,10 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "maskThresholdMin: 0.5" in panel_src
         assert "blurEnabled: true" in panel_src
         assert "blurMax: 32" in panel_src
-        assert "blur: 0.75" in panel_src
-        assert "saturation: 0.15" in panel_src
+        assert "blur: plate.elevated ? Style.menuBlurHi : Style.menuBlur" in panel_src
+        assert "saturation: plate.elevated ? Style.menuSatHi : Style.menuSat" in panel_src
+        assert "brightness: plate.elevated ? Style.menuBrightHi : Style.menuBright" in panel_src
+        assert "contrast: plate.elevated ? Style.menuContrastHi : Style.menuContrast" in panel_src
         assert "maskSpreadAtMin: 0.4" in panel_src
         # autoPadding 必须关（真机 1.25× DPR 实测：默认会拉伸蒙版到扩大
         # 边界 → 裁切比菜单大一圈 = "两层玻璃"；见 glass-recipe.md §2-5）
@@ -1616,15 +1622,23 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "radius: Style.cardRadius" in panel_src
 
         # Style 令牌：软件回退色不透明 #F7F7F9（可读性锁定，审计 §3.7）+
-        # GL 霜面 72% 画布色 #B8F5F5F7（无亮度跳变）+ 亮边/回退描边令牌；
-        # glassBlur 门控接 app.py 注入的 shadersUsable（WSL/软件后端 false）
+        # 毛玻璃化（2026-09-10）：tint 0%（透明）+ 光学增益令牌阶梯 +
+        # 描边 12%/14% 黑；glassBlur 门控接 app.py 注入的 shadersUsable
         style_src = (QML_MAIN.parent / "Style.qml").read_text(encoding="utf-8")
         assert 'readonly property color menuFill: "#FFF7F7F9"' in style_src
-        assert 'readonly property color menuTint: "#B8F5F5F7"' in style_src
-        assert 'readonly property color menuBorder: "#14000000"' in style_src
-        assert 'readonly property color menuTintHi: "#D0FFFFFF"' in style_src
+        assert 'readonly property color menuTint: "#00FFFFFF"' in style_src
+        assert 'readonly property color menuBorder: "#1F000000"' in style_src
+        assert 'readonly property color menuTintHi: "#00FFFFFF"' in style_src
         assert 'readonly property color menuBorderHi: "#24000000"' in style_src
         assert 'readonly property color menuFillBorder: "#1A000000"' in style_src
+        assert "readonly property real menuBlur: 0.75" in style_src
+        assert "readonly property real menuBlurHi: 0.85" in style_src
+        assert "readonly property real menuSat: 0.45" in style_src
+        assert "readonly property real menuSatHi: 0.50" in style_src
+        assert "readonly property real menuBright: 0.02" in style_src
+        assert "readonly property real menuBrightHi: 0.04" in style_src
+        assert "readonly property real menuContrast: 0.06" in style_src
+        assert "readonly property real menuContrastHi: 0.10" in style_src
         assert "readonly property bool glassBlur" in style_src
         assert "shadersUsable" in style_src
         assert "MultiEffect" not in style_src
@@ -1655,8 +1669,19 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
                         assert float(me.property("maskThresholdMin")) == 0.5
                         assert me.property("blurEnabled") is True
                         assert me.property("blurMax") == 32
-                        assert float(me.property("blur")) == 0.75
-                        assert float(me.property("saturation")) == 0.15
+                        # 毛玻璃化（2026-09-10）：一级菜单 blur 0.75 +
+                        # 饱和 0.45 + 亮度 0.02 + 对比 0.06；二级（elevated）
+                        # 阶梯 0.85/0.50/0.04/0.10 —— 光学增益替代白 tint
+                        elev = menu.objectName() != "appContextMenu" and \
+                            menu.objectName() != "mirrorContextMenu"
+                        assert float(me.property("blur")) == \
+                            (0.85 if elev else 0.75)
+                        assert float(me.property("saturation")) == \
+                            (0.50 if elev else 0.45)
+                        assert float(me.property("brightness")) == \
+                            (0.04 if elev else 0.02)
+                        assert float(me.property("contrast")) == \
+                            (0.10 if elev else 0.06)
                         assert float(me.property("maskSpreadAtMin")) == 0.4
                         assert me.property("autoPaddingEnabled") is False
                         # 软件路径：模糊层隐藏（不采样），染色 = 不透明 menuFill
@@ -1900,15 +1925,23 @@ def settings_page(qapp, settings_file):
         _pump(20)
 
 
-def test_settings_page_loads_defaults_and_dropped_controls_gone(settings_page):
-        """默认值回填；被删控件（DPI 数字框 / 圆角三选一 + 滑块）不再出现
-        （DESIGN.md §3.8：隐形透传另测）。"""
+def test_settings_page_loads_defaults_and_dpi_controls_back(settings_page):
+        """默认值回填（DPI 控件 2026-09-11 回归：不跟随设备、160、倍率 1×）；
+        圆角控件仍不存在（隐形透传另测）。"""
         adb_field = settings_page.findChild(QObject, "adbPathField")
         glass = settings_page.findChild(QObject, "glassSwitch")
         assert adb_field is not None and glass is not None
         assert adb_field.property("text") == ""
         assert glass.property("checked") is True
-        for gone in ("cornerSlider", "dpiAutoSwitch", "dpiBox"):
+        auto_switch = settings_page.findChild(QObject, "dpiAutoSwitch")
+        cell = settings_page.findChild(QObject, "dpiCell")
+        assert auto_switch is not None and cell is not None
+        assert auto_switch.property("checked") is False
+        assert cell.property("box").property("value") == 160
+        assert settings_page.property("renderScale") == 1.0
+        slider = settings_page.findChild(QObject, "renderScaleSlider")
+        assert slider is not None
+        for gone in ("cornerSlider", "dpiBox"):
                 assert settings_page.findChild(QObject, gone) is None, gone
 
 
@@ -1940,21 +1973,25 @@ def test_settings_page_cancel_discards_changes(settings_page, settings_file):
         assert not Path(settings_file).exists()
 
 
-def test_settings_page_passes_through_dropped_settings(settings_page,
-                                                      settings_file):
-        """隐形透传：dpi / corner_mode / corner_size_dip 读入 → collect 原样带回
-        （SettingsApi.save 按整表构造，丢键即重置）。"""
+def test_settings_page_dpi_roundtrip_and_corner_passthrough(settings_page,
+                                                            settings_file):
+        """DPI 经真控件往返（400 → 开关灭 + 数值框 400 → 保存落盘 400）；
+        圆角仍隐形透传（SettingsApi.save 按整表构造，丢键即重置）。"""
         api = SettingsApi()
         assert api.save({
                 "scrcpy_path": "", "adb_path": "", "fps": 60, "bitrate_mbps": 30,
-                "dpi": 400, "corner_mode": "g2", "corner_size_dip": 72,
+                "dpi": 400, "render_scale": 1.0, "corner_mode": "g2",
+                "corner_size_dip": 72,
                 "glass_enabled": True,
         }) == []
         meta = settings_page.metaObject()
         assert meta.indexOfMethod("reloadFromApi()") >= 0
         meta.invokeMethod(settings_page, "reloadFromApi")
         _pump(30)
-        assert settings_page.property("dpiPass") == 400
+        assert settings_page.property("dpiAuto") is False
+        cell = settings_page.findChild(QObject, "dpiCell")
+        assert cell is not None
+        assert cell.property("box").property("value") == 400
         assert settings_page.property("cornerModePass") == "g2"
         assert settings_page.property("cornerSizePass") == 72
 
@@ -2403,3 +2440,142 @@ def test_run_app_refuses_second_panel(tmp_path, monkeypatch):
         assert app_mod.run_app() == app_mod.PANEL_LOCK_STOLEN
         assert messages and "已在运行" in messages[0]
         holder.unlock()
+
+
+class _DensityScaleSpyController(PanelController):
+        """Records setAppDensity/setAppScale and delegates to the real slots
+        (persistence + the notify signals drive the QML dot refresh)."""
+
+        def __init__(self, adb_binary: str) -> None:
+                super().__init__(adb_binary)
+                self.density_calls: list[tuple[str, int]] = []
+                self.scale_calls: list[tuple[str, float]] = []
+
+        @pyqtSlot(str, int)
+        def setAppDensity(self, package: str, dpi: int) -> None:
+                self.density_calls.append((package, dpi))
+                super().setAppDensity(package, dpi)
+
+        @pyqtSlot(str, float)
+        def setAppScale(self, package: str, scale: float) -> None:
+                self.scale_calls.append((package, scale))
+                super().setAppScale(package, scale)
+
+
+def test_context_menu_density_and_scale_submenus(qapp, no_adb, prefs_stub,
+                                                  settings_file):
+        """DPI ▸ / 渲染倍率 ▸ 二级菜单（2026-09-11 按应用，2026-09-12 倍率改
+    行式）：DPI 二级 = 跟随默认 + 160/240/320 + 自定义输入行（占位显示跟随
+    的默认值，自定义时自身圆点亮）；倍率二级 = 跟随默认 + 1×/1.4×/2×/3×
+    预设 + −/+ 微调行（0.1 步进，范围 1.0–3.0）；勾选行不收菜单（圆点即
+    时刷新）；与比例/窗口栏二级互斥。
+        """
+        controller = _DensityScaleSpyController("/nonexistent/adb-for-tests")
+        engine = _make_engine(controller, SettingsApi())
+        try:
+                root = engine.rootObjects()[0]
+                _pump(150)
+                grid = _grid(root)
+                grid.forceLayout()
+                _pump(50)
+                menu = root.findChild(QObject, "appContextMenu")
+                density_sub = root.findChild(QObject, "densitySubmenu")
+                scale_sub = root.findChild(QObject, "scaleSubmenu")
+                density_row = root.findChild(QObject, "menuDensity")
+                scale_row = root.findChild(QObject, "menuRenderScale")
+                assert density_sub is not None and scale_sub is not None
+                assert density_row.property("text") == "DPI"
+                assert scale_row.property("text") == "渲染倍率"
+                # 菜单列内序：DPI ▸ / 渲染倍率 ▸ 居断开保留画面之后
+                menu_col = sip.cast(density_row.property("parent"), QQuickItem)
+                order = [str(k.objectName()) for k in menu_col.childItems()]
+                assert order.index("menuKeepVd") < order.index("menuDensity")
+                assert order.index("menuDensity") < order.index("menuRenderScale")
+
+                tile = _find_delegate(root, grid, "tv.danmaku.bili")
+                _mouse(qapp, root, tile, Qt.MouseButton.RightButton)
+                _pump(200)
+                assert menu.property("openState") is True
+                assert density_sub.property("openState") is False
+
+                # 开 DPI 二级：其余二级收起；快捷档 + 输入行 + 跟随默认齐全；
+                # 自定义行圆点槽与占位默认值（settings 默认 160 → 「默认 160」）
+                density_row.click()
+                _pump(200)
+                assert density_sub.property("openState") is True
+                assert scale_sub.property("openState") is False
+                density_input = root.findChild(QObject, "densityInput")
+                assert density_input is not None
+                assert "160" in root.findChild(QObject, "densityPlaceholder") \
+                        .property("text")
+                assert root.findChild(QObject, "densityCustomDot") \
+                        .property("visible") is False
+                for name in ("densityFollowRow", "density160Row",
+                             "density240Row", "density320Row"):
+                        assert root.findChild(QObject, name) is not None, name
+
+                # 点 240 → setAppDensity(pkg, 240)，勾选行不收菜单
+                root.findChild(QObject, "density240Row").click()
+                _pump(120)
+                assert controller.density_calls == [("tv.danmaku.bili", 240)]
+                assert menu.property("openState") is True
+                # 选中圆点即时刷新（240 行亮、跟随默认灭）
+                def _dot(row) -> QQuickItem:
+                        return next(c for c in _walk(row)
+                                    if c.objectName() == "menuCheckDot")
+                assert _dot(root.findChild(QObject, "density240Row")) \
+                        .property("visible") is True
+                assert _dot(root.findChild(QObject, "densityFollowRow")) \
+                        .property("visible") is False
+
+                # 自定义值 300 → 自定义行自身圆点亮，档位行与跟随默认均灭
+                root.findChild(QObject, "menuDensity").click()
+                _pump(120)
+                density_input.setProperty("text", "300")
+                density_input.apply()
+                _pump(120)
+                assert controller.density_calls[-1] == ("tv.danmaku.bili", 300)
+                assert root.findChild(QObject, "densityCustomDot") \
+                        .property("visible") is True
+                assert _dot(root.findChild(QObject, "density240Row")) \
+                        .property("visible") is False
+
+                # 开渲染倍率二级：DPI 二级互斥收起；预设行齐全（1/1.4/2/3）
+                scale_row.click()
+                _pump(200)
+                assert scale_sub.property("openState") is True
+                assert density_sub.property("openState") is False
+                presets = [r for r in _walk(scale_sub)
+                           if r.objectName() == "scalePresetRow"]
+                assert len(presets) == 4
+                assert root.findChild(QObject, "scaleFollowRow") is not None
+                assert root.findChild(QObject, "scaleValueText") is not None
+
+                # 点预设 1.4 → setAppScale(pkg, 1.4)，预设行圆点亮
+                presets[1].click()
+                _pump(120)
+                assert controller.scale_calls[-1] == ("tv.danmaku.bili", 1.4)
+                assert _dot(presets[1]).property("visible") is True
+                assert root.findChild(QObject, "scaleCustomDot") \
+                        .property("visible") is False
+
+                # 微调 + → 从 1.4 步进到 1.5（无浮点噪声），自定义圆点亮、
+                # 预设圆点全灭；读数显示 1.5×
+                root.findChild(QObject, "scaleIncButton").click()
+                _pump(120)
+                assert controller.scale_calls[-1][1] == 1.5
+                assert root.findChild(QObject, "scaleCustomDot") \
+                        .property("visible") is True
+                for preset in presets:
+                        assert _dot(preset).property("visible") is False
+                assert root.findChild(QObject, "scaleValueText") \
+                        .property("text") == "1.5×"
+
+                # 跟随默认 → setAppScale(pkg, 0)（清 override）
+                root.findChild(QObject, "scaleFollowRow").click()
+                _pump(120)
+                assert controller.scale_calls[-1] == ("tv.danmaku.bili", 0.0)
+        finally:
+                controller.shutdown()
+                engine.deleteLater()
+                _pump(20)

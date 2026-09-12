@@ -35,7 +35,12 @@ from duo.core.engine import (
         is_wsl,
         probe,
 )
-from duo.core.monitor import primary_work_area, recommend_landscape, recommend_portrait
+from duo.core.monitor import (
+        apply_render_scale,
+        primary_work_area,
+        recommend_landscape,
+        recommend_portrait,
+)
 from duo.core.paths import logs_dir
 from duo.core.session import Session, SessionSpec
 from duo.core.settings import (
@@ -189,6 +194,13 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 else (settings.bitrate_mbps or 30)
         )
         dpi = args.dpi if args.dpi is not None else settings.dpi
+        # 渲染倍率：CLI 旗标 > 设置页默认（1.0 = 原生跟随窗口）。
+        render_scale = (
+                args.render_scale if args.render_scale is not None
+                else settings.render_scale
+        )
+        if not 1.0 <= render_scale <= 3.0:
+                raise AdbError(f"render scale {render_scale} out of range 1.0-3.0")
         corner = (
                 args.corner_radius if args.corner_radius is not None
                 else corner_radius_dip(settings)
@@ -214,12 +226,14 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # 窗口越大 dp 越多而非元素越大。实测谱系：手机 411-420dp
                 # / iPad 744-1024pt / Pad 4 Pro 1078dp 短边；密度建屏即定死
                 # （wm density -d 无效），scrcpy 不带 dpi 的自动值 201 是
-                # “保主屏 dp 长边”，不是我们要的“保元素尺寸”。回退 356。
+                # “保主屏 dp 长边”，不是我们要的“保元素尺寸”。仅当设置页
+                # 选了「跟随设备」（dpi=null）才探测；回退 160 桌面密度
+                # （2026-09-11 起与新默认一致）。
                 if dpi is None and display.mode == "flex":
                         try:
-                                dpi = device_density(adb_path, serial) or 356
+                                dpi = device_density(adb_path, serial) or 160
                         except AdbError:
-                                dpi = 356
+                                dpi = 160
                         display = DisplaySpec(
                                 mode=display.mode,
                                 width=display.width,
@@ -258,7 +272,15 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                         dpi=rec.dpi,
                                 )
                         engine_window = {}
+                # 渲染倍率（2026-09-11）：flex 会话按 窗口÷k 换算成固定屏
+                # （零失真放大，见 duo.core.monitor.apply_render_scale）；
+                # 窗口摆位放弃（比例锁后用户自管，同横屏 flex）。
+                if render_scale > 1.0 and display.mode == "flex":
+                        display = apply_render_scale(display, area, render_scale)
+                        engine_window = {}
                 area_text = f"work area {area.width}x{area.height}"
+                if render_scale > 1.0 and display.mode == "fixed":
+                        area_text += f" render÷{render_scale:g}"
                 # 诊断行带上实际拼出的 new-display：卡顿时一眼看出虚拟屏尺寸。
                 new_display = next(
                         (f.removeprefix("--new-display=") for f in display.to_flags()
@@ -445,6 +467,14 @@ def _build_parser() -> argparse.ArgumentParser:
         mirror.add_argument("--height", type=int, help="virtual display height (fixed mode)")
         mirror.add_argument(
                 "--dpi", type=int, default=None, help="virtual display density (auto by default)"
+        )
+        mirror.add_argument(
+                "--render-scale",
+                type=float,
+                default=None,
+                help="flex sessions render at window÷value (1.0-3.0; a 4K window "
+                     "at 2.0 renders at 1K, upscaled client-side to lighten "
+                     "the device)",
         )
         mirror.add_argument(
                 "--dp",

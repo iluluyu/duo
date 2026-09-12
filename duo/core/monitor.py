@@ -24,7 +24,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 
-from duo.core.engine import WindowGeometry
+from duo.core.aspects import scaled_size
+from duo.core.engine import DisplaySpec, WindowGeometry
 from duo.core.winproc import creation_flags
 
 _QUERY_TIMEOUT_S = 15.0
@@ -111,9 +112,11 @@ def recommend_landscape(
         1078dp@356-override. Density is fixed at display creation (`wm
         density -d` does not work on virtual displays, verified live),
         and scrcpy's no-dpi automatic value (201) preserves main-display
-        dp, not element size - hence the explicit device density.
+        dp, not element size - hence the explicit device density. The
+        inert fallback follows the settings default: 160 since 2026-09-11
+        (desktop-like, was 356).
         """
-        return DisplayRecommendation(dpi=356)
+        return DisplayRecommendation(dpi=160)
 
 
 def recommend_portrait(
@@ -133,8 +136,29 @@ def recommend_portrait(
                 height=height,
         )
         return DisplayRecommendation(
-                dpi=356,
+                dpi=160,
                 display_width=1080,
                 display_height=1920,
                 window=window,
         )
+
+
+def apply_render_scale(
+        display: DisplaySpec, area: WorkArea, scale: float
+) -> DisplaySpec:
+        """flex DisplaySpec × 倍率 → fixed DisplaySpec（窗口÷k 渲染）。
+
+        倍率 > 1.0 时 flex 会话换成固定屏：基准 = 意图窗口（横屏 flex 无显
+        式几何 → 主屏工作区，即最大化窗口；竖屏 flex 已带 1080x1920 初始
+        形状则按它缩），render = 基准 ÷ k（偶数取整见 aspects.scaled_size）。
+        固定屏 + 窗口比例锁 = 零失真放大（“窗口 4K、安卓 1K 渲染”）——
+        scrcpy flex+--max-size 是逐维钳制（比例被拉歪），不可用，论证见
+        docs/mirroring-quality.md §5。fixed/mirror 原样返回：固定比例会话
+        已有自己的几何（倍率不叠加），物理屏无法缩。
+        """
+        if scale <= 1.0 or display.mode != "flex":
+                return display
+        base_w = display.width if display.width is not None else area.width
+        base_h = display.height if display.height is not None else area.height
+        width, height = scaled_size(base_w, base_h, scale)
+        return DisplaySpec(mode="fixed", width=width, height=height, dpi=display.dpi)

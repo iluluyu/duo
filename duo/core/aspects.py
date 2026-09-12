@@ -78,6 +78,28 @@ ASPECT_PRESETS: list[AspectPreset] = [
 ]
 
 
+def scaled_size(width: int, height: int, scale: float) -> tuple[int, int]:
+        """(w, h) ÷ scale as even integers (渲染倍率的整数契约).
+
+        倍率语义（用户定稿 2026-09-11）：4K 窗口 ÷2 = 1K 渲染——倍率作用在
+        线性尺寸上。每维先四舍五入、奇数上调到偶（奇数显示高度更容易踩
+        编码器/窗口整数配置，aspects 表同款纪律）；两维独立取整带来 ≤1px
+        比例漂移，由窗口侧比例锁兜底不可见。最小 2px 防退化。
+
+        >>> scaled_size(3840, 2160, 2)
+        (1920, 1080)
+        >>> scaled_size(3840, 2054, 1.75)
+        (2194, 1174)
+        >>> scaled_size(3840, 2160, 4)
+        (960, 540)
+        """
+        if width <= 0 or height <= 0 or scale <= 0:
+                raise ValueError(f"invalid scaled_size input: {width}x{height}/{scale}")
+        w = max(2, round(width / scale))
+        h = max(2, round(height / scale))
+        return (w + (w & 1), h + (h & 1))
+
+
 def preset_by_id(aspect_id: str) -> AspectPreset | None:
         """The frozen preset with this menu id; None = not in the table.
 

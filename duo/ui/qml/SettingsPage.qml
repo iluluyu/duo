@@ -63,14 +63,23 @@ Item {
     property string topBarMode: "immersive"          // immersive | native
     property string bottomBarMode: "none"  // immersive | native | none
     // flex 虚拟屏分辨率档位已撤（2026-09-06 用户决策）：一律原始分辨率，
-    // 性能由 codec=h264+fps=60 承担，无往返字段。
+    // 性能由 codec=h264+fps=60 承担。2026-09-11 以「渲染倍率」回归（窗口÷k，
+    // 预设 1/1.4/2/3 + 0.1 微调，见下方滑杆）——语义从选档改为倍率。
+
+    // DPI（2026-09-11）：dpiAuto = 跟随设备（wm density 探测，设置键
+    // dpi=null）；否则固定数值，默认 160 桌面密度（1dp==1px，同屏 dp 最多）。
+    // 每应用可在右键菜单「DPI ▸」覆盖（gui_prefs density 节）。
+    property bool dpiAuto: false
+    // 渲染倍率：flex 会话的虚拟屏 = 窗口 ÷ 倍率（4K 窗口 2 倍即 1K 渲染），
+    // 范围 1.0–3.0（预设 1/1.4/2/3，滑杆步进 0.1；右键菜单另有微调行）；减轻
+    // 设备端渲染压力，画面由窗口侧零失真放大。每应用可覆盖（右键菜单）。
+    property real renderScale: 1.0
 
     // ---- 隐形透传（DESIGN §3.8 后端兼容）----------------------------------
-    // DPI / 圆角控件已从页面删除，但 SettingsApi.save(values) 按整表构造
+    // 圆角控件已从页面删除，但 SettingsApi.save(values) 按整表构造
     // Settings：map 里缺哪一键，那一键就落回默认值——丢键等于把用户的
-    // dpi / corner_mode / corner_size_dip 静默重置。load() 读入的原值存放
-    // 在此，collect() 原样带回，全程不经任何控件（settings.json 手改仍生效）。
-    property var dpiPass: null                  // int | null（null = 跟随显示密度）
+    // corner_mode / corner_size_dip 静默重置。load() 读入的原值存放在此，
+    // collect() 原样带回，全程不经任何控件（settings.json 手改仍生效）。
     property string cornerModePass: "system"    // system | g2 | none
     property int cornerSizePass: 48             // DIP，仅 g2 模式有意义
 
@@ -90,8 +99,12 @@ Item {
         root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
         root.topBarMode = (m.top_bar_mode == null) ? "immersive" : m.top_bar_mode
         root.bottomBarMode = (m.bottom_bar_mode == null) ? "none" : m.bottom_bar_mode
+        // DPI：null = 跟随设备；数值缺省回 160（新默认桌面密度）
+        root.dpiAuto = (m.dpi === undefined || m.dpi == null)
+        dpiCell.box.value = root.dpiAuto ? 160 : m.dpi
+        root.renderScale = (m.render_scale === undefined || m.render_scale == null)
+                           ? 1.0 : m.render_scale
         // 隐形透传：被删控件的字段只存不发，collect() 原样带回
-        root.dpiPass = (m.dpi === undefined || m.dpi == null) ? null : m.dpi
         root.cornerModePass = (m.corner_mode == null) ? "system" : m.corner_mode
         root.cornerSizePass = (m.corner_size_dip == null) ? 48 : m.corner_size_dip
     }
@@ -109,9 +122,10 @@ Item {
             "turn_screen_off": root.turnScreenOff,
             "top_bar_mode": root.topBarMode,
             "bottom_bar_mode": root.bottomBarMode,
+            "dpi": root.dpiAuto ? null : dpiCell.box.value,
+            "render_scale": root.renderScale,
             // 隐形透传：控件已删但 SettingsApi.save 按整表构造，丢键即
             // 重置为默认值——load 读进来的原值必须原样带回
-            "dpi": root.dpiPass,
             "corner_mode": root.cornerModePass,
             "corner_size_dip": root.cornerSizePass
         }
@@ -363,6 +377,116 @@ Item {
                 CaptionText {
                     width: parent.width
                     text: "黑屏防误触；主要对整机镜像有意义——虚拟屏会话本就与物理屏无关"
+                    wrapMode: Text.Wrap
+                }
+
+                // DPI：跟随设备开关 + DPI 数值框（默认 160 桌面密度）。
+                // 跟随设备 = 建屏时探测 wm density（元素物理尺寸同手机/平板）；
+                // 固定数值 = 桌面化密度（160 时 1dp==1px，同屏 dp 最多）。
+                // 生效于新会话；每应用可右键覆盖（gui_prefs density 节）。
+                Item {
+                    width: parent.width
+                    height: 32
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "DPI 跟随设备"
+                        font.family: Style.fontDefault
+                        font.pixelSize: 13
+                        color: Style.ink
+                    }
+                    GlassSwitch {
+                        objectName: "dpiAutoSwitch"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.dpiAuto
+                        Accessible.name: "DPI 跟随设备"
+                        onToggled: root.dpiAuto = checked
+                    }
+                }
+                NumberCell {
+                    id: dpiCell
+                    objectName: "dpiCell"
+                    width: parent.width
+                    title: "DPI"
+                    boxFrom: 120
+                    boxTo: 640
+                    accessName: "DPI"
+                    enabled: !root.dpiAuto
+                    opacity: enabled ? 1.0 : 0.45
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "默认 160 桌面密度（1dp≈1px，同屏内容最多）；跟随设备则元素尺寸同手机/平板"
+                    wrapMode: Text.Wrap
+                }
+
+                // 渲染倍率：窗口 ÷ 倍率 = 安卓渲染分辨率（4K 窗口 2 倍即 1K），
+                // 窗口侧零失真放大，减轻设备端渲染压力。1× = 原生跟随窗口；
+                // >1 时 flex 会话按倍率建固定屏（窗口比例锁）。生效于新会话。
+                Item {
+                    width: parent.width
+                    height: 20
+                    CaptionText {
+                        objectName: "renderScaleLabel"
+                        text: "渲染倍率"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        objectName: "renderScaleValue"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: parseFloat(root.renderScale.toFixed(1)) + "×"
+                        font.family: Style.fontDefault
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        color: Style.accent
+                    }
+                }
+                Slider {
+                    id: renderScaleSlider
+                    objectName: "renderScaleSlider"
+                    width: parent.width
+                    implicitHeight: 24
+                    from: 1.0
+                    to: 3.0
+                    stepSize: 0.1
+                    value: root.renderScale
+                    onMoved: root.renderScale = value
+                    Accessible.name: "渲染倍率"
+                    background: Rectangle {
+                        x: renderScaleSlider.leftPadding
+                        y: renderScaleSlider.topPadding
+                           + renderScaleSlider.availableHeight / 2 - height / 2
+                        width: renderScaleSlider.availableWidth
+                        height: 4
+                        radius: 2
+                        color: Style.hairline
+                        Rectangle {
+                            width: renderScaleSlider.visualPosition * parent.width
+                            height: parent.height
+                            radius: 2
+                            color: Style.accent
+                        }
+                    }
+                    handle: Rectangle {
+                        x: renderScaleSlider.leftPadding
+                           + renderScaleSlider.availableWidth * renderScaleSlider.visualPosition
+                           - width / 2
+                        y: renderScaleSlider.topPadding
+                           + renderScaleSlider.availableHeight / 2 - height / 2
+                        width: 16
+                        height: 16
+                        radius: 8
+                        color: "#FFFFFF"
+                        border.width: 1
+                        border.color: renderScaleSlider.pressed ? Style.accentHover : Style.accent
+                    }
+                }
+                CaptionText {
+                    width: parent.width
+                    text: "窗口 ÷ 倍率 = 安卓渲染分辨率（4K 窗口 2 倍即 1K），减轻设备端渲染压力；1× = 原生跟随窗口"
                     wrapMode: Text.Wrap
                 }
             }
