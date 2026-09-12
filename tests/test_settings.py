@@ -271,3 +271,56 @@ def test_saved_explicit_bar_modes_not_migrated(tmp_path, monkeypatch):
         assert problems == []
         assert loaded.top_bar_mode == "native"
         assert loaded.bottom_bar_mode == "immersive"
+
+
+# ---------------------- DPI 默认值与渲染倍率（2026-09-11）
+
+
+def test_dpi_defaults_to_desktop_160():
+        """新默认 = 160 桌面密度（不再是设备密度探测）；倍率默认 1.0 原生。"""
+        fresh = Settings()
+        assert fresh.dpi == 160
+        assert fresh.render_scale == 1.0
+
+
+def test_dpi_explicit_null_keeps_follow_device(tmp_path, monkeypatch):
+        """显式 "dpi": null = 跟随设备（保存页开关的持久形态），不得被新
+        默认 160 顶掉——老文件静默翻语义比缺省更糟。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(json.dumps({"dpi": None}), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.dpi is None
+
+
+def test_dpi_missing_key_falls_back_to_default(tmp_path, monkeypatch):
+        """缺键（新装/手删）= 新默认 160。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(json.dumps({"fps": 60}), encoding="utf-8")
+        loaded, _problems = load_settings()
+        assert loaded.dpi == 160
+
+
+@pytest.mark.parametrize("raw,expected", [
+        (2.5, 2.5), (2, 2.0), (1.0, 1.0), (3.0, 3.0),
+])
+def test_render_scale_accepts_numbers(tmp_path, monkeypatch, raw, expected):
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(
+                json.dumps({"render_scale": raw}), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert problems == []
+        assert loaded.render_scale == expected
+
+
+@pytest.mark.parametrize("raw", ["fast", True, 0.5, 3.5, 8.0, None, [2.0]])
+def test_render_scale_rejects_junk(tmp_path, monkeypatch, raw):
+        """坏值/超范围回默认 1.0 并进问题清单（保存前校验同路）。"""
+        monkeypatch.setattr(settings_mod, "settings_path", lambda: tmp_path / "s.json")
+        (tmp_path / "s.json").write_text(
+                json.dumps({"render_scale": raw}), encoding="utf-8")
+        loaded, problems = load_settings()
+        assert loaded.render_scale == 1.0
+        assert any("render_scale" in p for p in problems)
+        with pytest.raises(ValueError):
+            save_settings(Settings(render_scale=9.0))

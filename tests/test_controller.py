@@ -2641,3 +2641,108 @@ def test_audio_restart_respawn_keeps_bar_override(
         assert spawned[0][spawned[0].index("--chrome-top") + 1] == "native"
         assert spawned[1][spawned[1].index("--chrome-top") + 1] == "native"
         assert spawned[2][spawned[2].index("--chrome-top") + 1] == "immersive"
+
+
+# ---------------------- DPI/渲染倍率按应用（gui_prefs density/scale 节）
+
+
+def test_density_prefs_roundtrip_and_clear(no_adb, prefs_stub, qapp):
+        """density 节读写：缺省跟随设置页默认；显式 override 落盘、新控制
+        器读回；非法值只报状态；0 清除后包条目整个退场（不留空壳节）。"""
+        controller = PanelController("/fake/adb.exe")
+        assert controller.densityFor("tv.danmaku.bili") \
+                == {"explicit": False, "dpi": None, "default": 160}
+
+        controller.setAppDensity("tv.danmaku.bili", 240)
+        assert controller.densityFor("tv.danmaku.bili") \
+                == {"explicit": True, "dpi": 240, "default": 160}
+        assert json.loads(prefs_stub.payload)["density"]["tv.danmaku.bili"] \
+                == {"dpi": 240}
+        assert controller.statusText == "哔哩哔哩 将以 DPI 240 建屏（下次启动生效）"
+
+        # 新控制器读回同一记忆（持久化，非内存态）
+        second = PanelController("/fake/adb.exe")
+        assert second.densityFor("tv.danmaku.bili") \
+                == {"explicit": True, "dpi": 240, "default": 160}
+
+        # 非法值：只报状态，不落库不改记忆
+        second.setAppDensity("tv.danmaku.bili", 9999)
+        assert second.densityFor("tv.danmaku.bili") \
+                == {"explicit": True, "dpi": 240, "default": 160}
+        assert second.statusText == "DPI 需在 120–640"
+
+        # 0 = 清除 override：explicit 消失、包条目退场
+        second.setAppDensity("tv.danmaku.bili", 0)
+        assert second.densityFor("tv.danmaku.bili") \
+                == {"explicit": False, "dpi": None, "default": 160}
+        assert json.loads(prefs_stub.payload)["density"] == {}
+        assert second.statusText == "哔哩哔哩 DPI 将跟随默认"
+
+
+def test_scale_prefs_roundtrip_and_effective_default(no_adb, prefs_stub, qapp,
+                                                      monkeypatch):
+        """scale 节读写：无 override 时 effective = 设置页默认（fresh read）；
+        显式 override 落盘读回；非法值只报状态；0 清除后整节退场。"""
+        controller = PanelController("/fake/adb.exe")
+        # no_adb 把 load_settings 钉在 Settings() 默认（render_scale 1.0）
+        assert controller.scaleFor("tv.danmaku.bili") \
+                == {"explicit": False, "scale": 1.0, "default": 1.0}
+
+        # 设置页默认变化能到达下一次菜单读取（fresh read 契约）
+        monkeypatch.setattr(
+                controller_mod, "load_settings",
+                lambda: (Settings(render_scale=3.0), []))
+        assert controller.scaleFor("tv.danmaku.bili") \
+                == {"explicit": False, "scale": 3.0, "default": 3.0}
+
+        controller.setAppScale("tv.danmaku.bili", 2.0)
+        assert controller.scaleFor("tv.danmaku.bili") \
+                == {"explicit": True, "scale": 2.0, "default": 3.0}
+        assert json.loads(prefs_stub.payload)["scale"]["tv.danmaku.bili"] \
+                == {"scale": 2.0}
+        assert controller.statusText == "哔哩哔哩 渲染倍率 2×（窗口÷2，下次启动生效）"
+
+        # 非法值：只报状态，不落库
+        controller.setAppScale("tv.danmaku.bili", 8.0)
+        assert controller.scaleFor("tv.danmaku.bili") \
+                == {"explicit": True, "scale": 2.0, "default": 3.0}
+        assert controller.statusText == "渲染倍率需在 1.0–3.0"
+
+        # 0 = 清除：effective 回设置页默认（此处 monkeypatch 后为 3.0）
+        controller.setAppScale("tv.danmaku.bili", 0)
+        assert controller.scaleFor("tv.danmaku.bili") \
+                == {"explicit": False, "scale": 3.0, "default": 3.0}
+        assert json.loads(prefs_stub.payload)["scale"] == {}
+
+
+def test_build_launch_argv_injects_density_and_scale(no_adb, prefs_stub):
+        """density 节覆盖建屏密度（flex/fixed 均注入 --dpi）；render scale
+        节+设置页默认仅 flex 路径注入 --render-scale（固定几何不叠加）。"""
+        base = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
+        assert "--dpi" not in base
+        assert "--render-scale" not in base
+
+        prefs_stub.payload = json.dumps(
+                {"density": {"tv.danmaku.bili": {"dpi": 240}}})
+        argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
+        assert argv[argv.index("--dpi") + 1] == "240"
+        assert "--render-scale" not in argv
+
+        prefs_stub.payload = json.dumps({
+                "density": {"tv.danmaku.bili": {"dpi": 240}},
+                "scale": {"tv.danmaku.bili": {"scale": 2.0}},
+        })
+        argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
+        assert argv[argv.index("--dpi") + 1] == "240"
+        assert argv[argv.index("--render-scale") + 1] == "2"
+
+        # 固定几何（按比例/记忆启动）：倍率不叠加，DPI 仍生效
+        argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False,
+                                 width=2560, height=1440)
+        assert "--render-scale" not in argv
+        assert argv[argv.index("--dpi") + 1] == "240"
+
+        # 设置页默认倍率（无 per-app 覆盖）同样注入 flex 路径
+        prefs_stub.payload = None
+        argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
+        assert "--render-scale" not in argv      # 默认 1.0 = 原生，不注入

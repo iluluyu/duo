@@ -8,6 +8,8 @@ group after, entries in the doc's listed order.
 
 from __future__ import annotations
 
+import pytest
+
 from duo.core.aspects import (
         ASPECT_PRESETS,
         BODY_LABEL,
@@ -15,6 +17,7 @@ from duo.core.aspects import (
         BODY_PORTRAIT_ID,
         body_aspect_from_wm_size,
         preset_by_id,
+        scaled_size,
         transposed,
 )
 
@@ -144,3 +147,21 @@ def test_transposed_body_pair_math():
         assert portrait.width / portrait.height == body.height / body.width
         # Transposing twice is the identity (the menu pair round-trips).
         assert transposed(portrait) == body
+
+
+def test_scaled_size_integer_discipline():
+        """倍率几何：4K 窗口 ÷2 = 1K 渲染（用户定稿语义）；四舍五入后奇数
+        上调到偶（编码器/窗口整数配置）；非法输入拒绝。"""
+        assert scaled_size(3840, 2160, 2) == (1920, 1080)
+        assert scaled_size(3840, 2160, 4) == (960, 540)
+        assert scaled_size(3840, 2160, 1.5) == (2560, 1440)
+        assert scaled_size(3840, 2160, 1.25) == (3072, 1728)
+        assert scaled_size(1080, 1920, 2) == (540, 960)
+        # 非整除：round 后偶化（2194.86→2195→2196；1174.29→1174 已偶）
+        assert scaled_size(3841, 2055, 1.75) == (2196, 1174)
+        # 小窗口 × 高倍率不塌缩到 0：最小 2px
+        assert scaled_size(64, 32, 4) == (16, 8)
+        with pytest.raises(ValueError):
+                scaled_size(0, 100, 2)
+        with pytest.raises(ValueError):
+                scaled_size(100, 100, 0)

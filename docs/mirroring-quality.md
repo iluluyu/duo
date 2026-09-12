@@ -31,16 +31,39 @@ scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并
 - `--turn-screen-off`：settings 开关（默认 false，黑屏防误触，虚拟屏仅省电意义）；
   与 `--stay-awake` 正交并存。
 - `--video-buffer`：拒绝（增加延迟，USB 链路抖动小）。
-- `--max-size`：不默认。flex 由 `--new-display` 定分辨率吃不到；mirror 低端 PC
-  解码吃紧时再 `-m 1600`（像素 -56%，双端降载；USB2 带宽仅用 <15% 非瓶颈）。
+- `--max-size`：**flex 会话禁用**（2026-09-11 源码定论）：server 端
+  `NewDisplayCapture.requestResize` 对 flex 是**逐维钳制**（constrain
+  preserveAspectRatio=false），4K 16:9 窗口 + `-m 1920` → 1920×1920 方屏
+  → stretched 渲染比例拉歪；镜像会话低端 PC 解码吃紧时可用
+  （逐维但比例保持，另有 letterbox 兑底）。
 - `--video-orientation`：已移除（4.1 报 unknown option）。
 - V4L2：Linux only，排除。
 
-## 5. flex 虚拟屏尺寸（2026-09-06 定稿）
+## 5. 虚拟屏尺寸与渲染倍率（2026-09-11 定稿）
 
-应用会话 = **固定 `--new-display=2560x1440/480`**（原始分辨率/三档/flex 跟随均已试废，
-原因见 docs/window-experience.md §3）。流畅度由 h264 + 60fps 承担。
-分辨率档位设置（`flex_resolution`）已撤除，旧 settings.json 残键被无害忽略。
+应用会话 = `--new-display=<初始形状>/<dpi>` + `--flex-display` 跟随窗口
+（native 填满，unscaled；拖拽过渡 `--render-fit=stretched`）。流畅度由
+h264 + 60fps 承担；历史实验（固定 2560x1440/480、三档、比例跟随）见
+window-experience.md §3。
+
+**渲染倍率 `render_scale`（2026-09-11 回归，接替 2026-09-06 撤除的
+`flex_resolution` 档位）**：语义从「选档」改为**窗口÷倍率**（用户定稿：
+4K 窗口 ÷2 = 1K 渲染，即倍率作用在线性尺寸）。范围 1.0–3.0 自由取值（预设 1/1.4/2）
+（预设 1/1.4/2/3 + 0.1 步进微调），设置页默认 + 右键菜单按应用覆盖（gui_prefs `scale` 节）。
+
+实现路径（唯一正确解，scrcpy 4.1 原生限制下）：倍率 >1.0 时 flex 会话
+**换算成固定屏** `--new-display=工作区÷k`（`monitor.apply_render_scale`），
+窗口比例锁 + 客户端放大 = 零失真零黑边；固定比例会话不叠加（自带几何）。
+整数契约：每维 round 后奇数上调到偶（`aspects.scaled_size`，奇数显示高度
+易踩编码器/窗口整数配置），两维独立取整的 ≤1px 比例漂移由比例锁兑底。
+
+## 5b. 虚拟屏密度（2026-09-11 默认改桌面档）
+
+`settings.dpi` 默认 **160**（mdpi 基准，1dp==1px，同屏 dp 最多 = 桌面观感；
+此前默认设备密度探测，元素物理尺寸同手机/平板）。「跟随设备」仍是可选项
+（显式 `"dpi": null`，老文件不静默翻语义；探测在 CLI `_run_mirror`），
+按应用覆盖在右键菜单「DPI ▸」（gui_prefs `density` 节，120–640 自由数值）。
+回退链：设置页/覆盖 > 设备探测（仅 null）> 160。
 
 ## 6. PC 端解码与长期策略
 

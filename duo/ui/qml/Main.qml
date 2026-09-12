@@ -28,6 +28,16 @@
 //        setKeepVd(package, on)（断开保留画面按应用记忆，写 gui_prefs.json
 //        behavior 节；勾选的应用启动带 --no-vd-destroy-content，断开后留
 //        在虚拟屏不回落手机主屏）/
+//        densityFor(package) → {explicit,dpi}（DPI 菜单选中态：explicit
+//        =有按应用覆盖，否则圆点在「跟随默认」）/
+//        setAppDensity(package, dpi)（DPI 按应用记忆：具体数值 120–640
+//        钉住建屏密度，凌驾设置页默认；0 = 清除跟随默认；写 gui_prefs.json
+//        density 节）/
+//        scaleFor(package) → {explicit,scale}（渲染倍率菜单态：scale =
+//        effective = 按应用覆盖若设置，否则设置页默认；explicit 同上）/
+//        setAppScale(package, scale)（渲染倍率按应用记忆：1.0–3.0 自由值
+//        （预设 1/1.4/2/3，微调步进 0.1），窗口÷k = 安卓渲染分辨率（4K 窗口 2 倍即 1K），仅 flex 会话生效；
+//        0 = 清除跟随默认；写 gui_prefs.json scale 节）/
 //        setMediaVolume(index)（设备媒体流音量 0..15，Android 侧 cmd
 //        media_session；拖动防抖 200ms 后调用）
 //        startMirror() / stopSession(key) / startAppOnDisplay(key) /
@@ -37,6 +47,8 @@
 //   信号 barPrefsChanged(package)：同上，刷新「窗口栏 ▸」选中圆点
 //   信号 audioPrefsChanged(package)：同上，刷新「音频独占」勾选圆点
 //   信号 behaviorPrefsChanged(package)：同上，刷新「断开保留画面」勾选圆点
+//   信号 densityPrefsChanged(package)：同上，刷新「DPI ▸」选中圆点
+//   信号 scalePrefsChanged(package)：同上，刷新「渲染倍率 ▸」滑杆/圆点
 //   属性 mediaVolume(real)：设备媒体音量 index，-1 = 未知（不预读，首次
 //        拖动后已知，notify=mediaVolumeChanged）
 //   属性 turnScreenOff(bool)：镜像时关闭设备屏幕（Settings.turn_screen_off，
@@ -50,7 +62,9 @@
 //   右键/长按 = 上下文菜单（打开 / 置顶 / 显示模式：自适应窗口｜固定比例
 //   ▸ 二级菜单——按应用记忆持久化，DESIGN.md §3.7；窗口栏 ▸ 二级菜单——
 //   上巴 跟随默认/沉浸/系统，下巴 跟随默认/沉浸/系统/不显示，按应用覆盖
-//   设置页默认）；★ 角标置顶
+//   设置页默认；DPI ▸ 二级菜单——跟随默认/160/240/320/自定义输入，
+//   按应用覆盖建屏密度；渲染倍率 ▸ 二级菜单——跟随默认/1×/1.4×/2×/3×
+//   预设+自定义微调（1.0–3.0，步进 0.1），按应用覆盖渲染分辨率）；★ 角标置顶
 //   常显、hover 露出。未知应用（icon 空串）显示包名哈希取色的首字 squircle
 //   （Style.fallbackPalette）。
 // 设置页：顶栏胶囊「设置」段或 Ctrl+, 把 SettingsPage.qml push 上 StackView；
@@ -266,6 +280,12 @@ ApplicationWindow {
             // behaviorPrefsChanged 即时刷新）——驱动「断开保留画面」
             // 勾选圆点
             property bool mKeepVd: false
+            // 当前条目的 DPI 记忆（openFor 时拉取，densityPrefsChanged
+            // 即时刷新）——驱动「DPI ▸」二级菜单选中圆点与输入框
+            property var mDensity: ({ explicit: false, dpi: null })
+            // 当前条目的渲染倍率记忆（openFor 时拉取，scalePrefsChanged
+            // 即时刷新）——驱动「渲染倍率 ▸」二级菜单滑杆与圆点
+            property var mScale: ({ explicit: false, scale: 1.0 })
             // 空档位兜底（菜单未打开时不渲染出 undefined）
             readonly property var mEntry: entry ?? ({ package: "", label: "", key: "", icon: "", installed: false, pinned: false })
 
@@ -292,11 +312,15 @@ ApplicationWindow {
                 }
                 mAudio = ctrl.audioExclusiveFor(String(e.package))
                 mKeepVd = ctrl.keepVdFor(String(e.package))
+                mDensity = ctrl.densityFor(String(e.package))
+                mScale = ctrl.scaleFor(String(e.package))
                 x = snapGrid(Math.max(4, Math.min(px, stack.width - width - 4)))
                 y = snapGrid(Math.max(4, Math.min(py, stack.height - height - 4)))
                 ctxPlate.open(x, y)
                 aspectSub.dismiss()
                 barSub.dismiss()
+                densitySub.dismiss()
+                scaleSub.dismiss()
                 openState = true
                 forceActiveFocus()
             }
@@ -304,6 +328,8 @@ ApplicationWindow {
                 openState = false
                 aspectSub.dismiss()   // 两级一起收（Esc/选毕/点外部）
                 barSub.dismiss()
+                densitySub.dismiss()
+                scaleSub.dismiss()
             }
 
             // 浮层板 = MenuGlassPlate（真·高斯毛玻璃三明治，软件回退
@@ -393,6 +419,26 @@ ApplicationWindow {
                     onClicked: ctrl.setKeepVd(
                         ctxMenu.mEntry.package, !ctxMenu.mKeepVd)
                 }
+                // ---- DPI ▸（2026-09-11 按应用）：跟随默认/160/240/320/
+                // 自定义输入，凌驾设置页默认；写 gui_prefs.json density 节。
+                MenuSubmenuRow {
+                    objectName: "menuDensity"
+                    text: "DPI"
+                    active: densitySub.openState
+                    onHoveredChanged: if (hovered) densitySub.open()
+                    onClicked: densitySub.open()
+                }
+                // ---- 渲染倍率 ▸（2026-09-11 按应用，2026-09-12 改行式）：
+                // 预设 1/1.4/2/3 + 自定义微调，窗口÷k
+                // = 安卓渲染分辨率（仅 flex 会话生效）；写 gui_prefs.json
+                // scale 节。
+                MenuSubmenuRow {
+                    objectName: "menuRenderScale"
+                    text: "渲染倍率"
+                    active: scaleSub.openState
+                    onHoveredChanged: if (hovered) scaleSub.open()
+                    onClicked: scaleSub.open()
+                }
             }
         }
 
@@ -417,10 +463,12 @@ ApplicationWindow {
             Behavior on opacity { NumberAnimation { duration: Style.durFast } }
 
             // 展开位置：一级右侧留 4，垂直错位 4；窄窗右侧放不下 → 向左
-            // 展开（仍留 4 边距）；高菜单钳制在面板内。同时收起窗口栏二级
+            // 展开（仍留 4 边距）；高菜单钳制在面板内。同时收起其余二级
             // （同一时刻只有一条展开链）
             function open() {
                 barSub.dismiss()
+                densitySub.dismiss()
+                scaleSub.dismiss()
                 var gap = 4
                 var right = ctxMenu.x + ctxMenu.width + gap
                 x = right + width <= stack.width - gap
@@ -493,9 +541,11 @@ ApplicationWindow {
             Behavior on opacity { NumberAnimation { duration: Style.durFast } }
 
             // 展开位置与 aspectSub 同规则：一级右侧留 4、垂直错位 4；窄窗
-            // 放不下向左展开；高菜单钳制在面板内；开窗栏即收比例二级
+            // 放不下向左展开；高菜单钳制在面板内；开窗栏即收其余二级
             function open() {
                 aspectSub.dismiss()
+                densitySub.dismiss()
+                scaleSub.dismiss()
                 var gap = 4
                 var right = ctxMenu.x + ctxMenu.width + gap
                 x = right + width <= stack.width - gap
@@ -550,6 +600,398 @@ ApplicationWindow {
             }
         }
 
+        // ================= DPI 二级菜单（按应用，2026-09-11） =================
+        // 同款亚克力浮层、同展开规则：跟随默认（清 override）/ 160 / 240 /
+        // 320 快捷档 + 自定义输入行（−/+ 步进 10 + 可键入，IntValidator
+        // 120–640）。选中圆点 = explicit 记忆；自定义值落在快捷档上时该档
+        // 也亮。点选即写 gui_prefs.json density 节，生效于下一次启动。
+        Item {
+            id: densitySub
+            objectName: "densitySubmenu"
+            z: 110   // 二级浮层盖在一级菜单（z 100）之上，点外部由拦截层兜住
+            property bool openState: false
+
+            width: 128
+            height: densitySubCol.implicitHeight + 8
+            opacity: openState ? 1.0 : 0.0
+            visible: opacity > 0.01
+            enabled: openState
+            Behavior on opacity { NumberAnimation { duration: Style.durFast } }
+
+            function open() {
+                aspectSub.dismiss()
+                barSub.dismiss()
+                scaleSub.dismiss()
+                var gap = 4
+                var right = ctxMenu.x + ctxMenu.width + gap
+                x = right + width <= stack.width - gap
+                   ? right
+                   : Math.max(gap, ctxMenu.x - width - gap)
+                y = Math.max(gap, Math.min(ctxMenu.y + gap,
+                                           stack.height - height - gap))
+                x = snapGrid(x)
+                y = snapGrid(y)
+                densityPlate.open(x, y)
+                densityInput.sync()
+                openState = true
+            }
+            function dismiss() {
+                openState = false
+                densityInput.focus = false
+            }
+
+            MenuGlassPlate { id: densityPlate; elevated: true }
+
+            Column {
+                id: densitySubCol
+                y: 4
+                width: parent.width
+
+                MenuSectionLabel {
+                    label: "DPI"
+                    headerName: "densitySectionHeader"
+                    textName: "densitySectionHeaderText"
+                }
+                MenuCheckRow {
+                    objectName: "densityFollowRow"
+                    text: "跟随默认"
+                    marked: !ctxMenu.mDensity.explicit
+                    onClicked: ctrl.setAppDensity(ctxMenu.mEntry.package, 0)
+                }
+                MenuCheckRow {
+                    objectName: "density160Row"
+                    text: "160 桌面"
+                    marked: ctxMenu.mDensity.explicit && ctxMenu.mDensity.dpi === 160
+                    onClicked: ctrl.setAppDensity(ctxMenu.mEntry.package, 160)
+                }
+                MenuCheckRow {
+                    objectName: "density240Row"
+                    text: "240"
+                    marked: ctxMenu.mDensity.explicit && ctxMenu.mDensity.dpi === 240
+                    onClicked: ctrl.setAppDensity(ctxMenu.mEntry.package, 240)
+                }
+                MenuCheckRow {
+                    objectName: "density320Row"
+                    text: "320 触控"
+                    marked: ctxMenu.mDensity.explicit && ctxMenu.mDensity.dpi === 320
+                    onClicked: ctrl.setAppDensity(ctxMenu.mEntry.package, 320)
+                }
+                // hairline 分隔（上下各 4px 留白）
+                Item {
+                    x: 12
+                    width: parent.width - 24
+                    implicitHeight: 9
+                    Rectangle { y: 4; width: parent.width; height: 1; color: Style.hairline }
+                }
+                // 自定义输入行：与其他行同栅格（圆点槽 x8），[−][数值][+]；
+                // 无 override 时占位显示跟随的默认值（跟随设备 / 默认 N）
+                Item {
+                    objectName: "densityCustomRow"
+                    x: 4
+                    width: parent.width - 8
+                    implicitHeight: 30
+
+                    Dot {
+                        objectName: "densityCustomDot"
+                        visible: ctxMenu.mDensity.explicit
+                                 && ctxMenu.mDensity.dpi !== null
+                                 && ctxMenu.mDensity.dpi !== 160
+                                 && ctxMenu.mDensity.dpi !== 240
+                                 && ctxMenu.mDensity.dpi !== 320
+                        x: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        dotSize: 4
+                        dotColor: Style.accent
+                    }
+                    AbstractButton {
+                        id: densityDec
+                        objectName: "densityDecButton"
+                        x: 18
+                        width: 22
+                        height: 28
+                        background: Rectangle {
+                            radius: 8
+                            color: densityDec.pressed ? Style.pressWash
+                                : (densityDec.hovered ? Style.hoverWash : "transparent")
+                        }
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: "−"
+                            font.pixelSize: 14
+                            color: Style.ink2
+                        }
+                        onClicked: densityInput.step(-10)
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "减小 DPI"
+                    }
+                    Rectangle {
+                        x: 42
+                        width: parent.width - 42 - 24
+                        height: 28
+                        radius: 8
+                        color: "#FFFFFF"
+                        border.width: 1
+                        border.color: densityInput.activeFocus ? Style.accent : Style.hairline
+                        TextInput {
+                            id: densityInput
+                            objectName: "densityInput"
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            horizontalAlignment: TextInput.AlignHCenter
+                            verticalAlignment: TextInput.AlignVCenter
+                            font.pixelSize: 13
+                            color: Style.ink
+                            validator: IntValidator { bottom: 120; top: 640 }
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            selectByMouse: true
+                            onAccepted: densityInput.apply()
+                            onEditingFinished: densityInput.apply()
+                            Keys.onEscapePressed: ctxMenu.dismiss()
+                            // 占位（TextInput 无 placeholderText）：无 override
+                            // 时提示跟随的默认值（跟随设备 / 默认 N）
+                            Text {
+                                objectName: "densityPlaceholder"
+                                anchors.fill: parent
+                                visible: densityInput.text === ""
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 12
+                                color: Style.ink2
+                                text: ctxMenu.mDensity.default === null
+                                      || ctxMenu.mDensity.default === undefined
+                                      ? "跟随设备"
+                                      : "默认 " + ctxMenu.mDensity.default
+                            }
+                            function sync() {
+                                text = (ctxMenu.mDensity.explicit && ctxMenu.mDensity.dpi !== null)
+                                       ? String(ctxMenu.mDensity.dpi) : ""
+                            }
+                            function step(delta) {
+                                var v = parseInt(text)
+                                if (isNaN(v))
+                                    v = ctxMenu.mDensity.explicit && ctxMenu.mDensity.dpi !== null
+                                      ? ctxMenu.mDensity.dpi
+                                      : (ctxMenu.mDensity.default !== null
+                                         && ctxMenu.mDensity.default !== undefined
+                                         ? ctxMenu.mDensity.default : 160)
+                                v = Math.max(120, Math.min(640, v + delta))
+                                text = String(v)
+                                apply()
+                            }
+                            function apply() {
+                                var v = parseInt(text)
+                                if (!isNaN(v) && v >= 120 && v <= 640)
+                                    ctrl.setAppDensity(ctxMenu.mEntry.package, v)
+                            }
+                        }
+                    }
+                    AbstractButton {
+                        id: densityInc
+                        objectName: "densityIncButton"
+                        anchors.right: parent.right
+                        width: 22
+                        height: 28
+                        background: Rectangle {
+                            radius: 8
+                            color: densityInc.pressed ? Style.pressWash
+                                : (densityInc.hovered ? Style.hoverWash : "transparent")
+                        }
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: "+"
+                            font.pixelSize: 14
+                            color: Style.ink2
+                        }
+                        onClicked: densityInput.step(10)
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "增大 DPI"
+                    }
+                }
+            }
+        }
+
+        // ================= 渲染倍率二级菜单（按应用，2026-09-11 定稿 2026-09-12） =================
+        // 预设档 1×/1.4×/2×/3×（行式选择，与其他二级菜单同语言）+ 自定义
+        // 微调行（−/+ 步进 0.1，范围 1.0–3.0）：窗口÷倍率 = 安卓渲染分
+        // 辨率（4K 窗口 2 倍即 1K），仅 flex 会话生效（CLI 侧换算成固定
+        // 屏）。写 gui_prefs.json scale 节。步进用 0.1 粒度取整，避免
+        // 浮点噪声（1.4+0.1 ≠ 1.5 的经典坑）。
+        Item {
+            id: scaleSub
+            objectName: "scaleSubmenu"
+            z: 110   // 二级浮层盖在一级菜单（z 100）之上，点外部由拦截层兜住
+            property bool openState: false
+
+            width: 128
+            height: scaleSubCol.implicitHeight + 8
+            opacity: openState ? 1.0 : 0.0
+            visible: opacity > 0.01
+            enabled: openState
+            Behavior on opacity { NumberAnimation { duration: Style.durFast } }
+
+            function open() {
+                aspectSub.dismiss()
+                barSub.dismiss()
+                densitySub.dismiss()
+                var gap = 4
+                var right = ctxMenu.x + ctxMenu.width + gap
+                x = right + width <= stack.width - gap
+                   ? right
+                   : Math.max(gap, ctxMenu.x - width - gap)
+                y = Math.max(gap, Math.min(ctxMenu.y + gap,
+                                           stack.height - height - gap))
+                x = snapGrid(x)
+                y = snapGrid(y)
+                scalePlate.open(x, y)
+                openState = true
+            }
+            function dismiss() { openState = false }
+
+            MenuGlassPlate { id: scalePlate; elevated: true }
+
+            Column {
+                id: scaleSubCol
+                y: 4
+                width: parent.width
+
+                MenuSectionLabel {
+                    label: "渲染倍率"
+                    headerName: "scaleSectionHeader"
+                    textName: "scaleSectionHeaderText"
+                }
+                MenuCheckRow {
+                    objectName: "scaleFollowRow"
+                    text: "跟随默认"
+                    marked: !ctxMenu.mScale.explicit
+                    onClicked: ctrl.setAppScale(ctxMenu.mEntry.package, 0)
+                }
+                Repeater {
+                    model: [
+                        { v: 1.0, label: "1× 原生" },
+                        { v: 1.4, label: "1.4× 省一半" },
+                        { v: 2.0, label: "2×" },
+                        { v: 3.0, label: "3×" },
+                    ]
+                    delegate: MenuCheckRow {
+                        objectName: "scalePresetRow"
+                        text: modelData.label
+                        marked: ctxMenu.mScale.explicit
+                                && Math.abs(ctxMenu.mScale.scale - modelData.v) < 0.001
+                        onClicked: ctrl.setAppScale(
+                            ctxMenu.mEntry.package, modelData.v)
+                    }
+                }
+                // hairline 分隔（上下各 4px 留白）
+                Item {
+                    x: 12
+                    width: parent.width - 24
+                    implicitHeight: 9
+                    Rectangle { y: 4; width: parent.width; height: 1; color: Style.hairline }
+                }
+                // 自定义微调行：与其他行同栅格（圆点槽 x8），[−][读数][+]；
+                // 步进 0.1；无 override 时读数暗色显示跟随的默认值
+                Item {
+                    id: scaleRow
+                    objectName: "scaleCustomRow"
+                    x: 4
+                    width: parent.width - 8
+                    implicitHeight: 30
+
+                    HoverHandler { id: scaleHover }
+
+                    function fmt(v) {
+                        return parseFloat(Number(v).toFixed(1)) + "×"
+                    }
+
+                    Dot {
+                        objectName: "scaleCustomDot"
+                        visible: ctxMenu.mScale.explicit
+                                 && [1.0, 1.4, 2.0, 3.0].every(function (p) {
+                                     return Math.abs(ctxMenu.mScale.scale - p) >= 0.001
+                                 })
+                        x: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        dotSize: 4
+                        dotColor: Style.accent
+                    }
+                    AbstractButton {
+                        id: scaleDec
+                        objectName: "scaleDecButton"
+                        x: 18
+                        width: 22
+                        height: 28
+                        background: Rectangle {
+                            radius: 8
+                            color: scaleDec.pressed ? Style.pressWash
+                                : (scaleDec.hovered ? Style.hoverWash : "transparent")
+                        }
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: "−"
+                            font.pixelSize: 14
+                            color: Style.ink2
+                        }
+                        onClicked: scaleRow.step(-0.1)
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "减小渲染倍率"
+                    }
+                    Rectangle {
+                        x: 42
+                        width: parent.width - 42 - 24
+                        height: 28
+                        radius: 8
+                        color: "#FFFFFF"
+                        border.width: 1
+                        border.color: scaleHover.hovered ? Style.accent : Style.hairline
+                        Text {
+                            objectName: "scaleValueText"
+                            anchors.centerIn: parent
+                            text: ctxMenu.mScale.explicit
+                                  ? scaleRow.fmt(ctxMenu.mScale.scale)
+                                  : (ctxMenu.mScale.default !== undefined
+                                     ? scaleRow.fmt(ctxMenu.mScale.default)
+                                     : "1×")
+                            font.pixelSize: 13
+                            font.weight: ctxMenu.mScale.explicit ? Font.DemiBold : Font.Normal
+                            color: ctxMenu.mScale.explicit ? Style.ink : Style.ink2
+                        }
+                    }
+                    AbstractButton {
+                        id: scaleInc
+                        objectName: "scaleIncButton"
+                        anchors.right: parent.right
+                        width: 22
+                        height: 28
+                        background: Rectangle {
+                            radius: 8
+                            color: scaleInc.pressed ? Style.pressWash
+                                : (scaleInc.hovered ? Style.hoverWash : "transparent")
+                        }
+                        contentItem: Text {
+                            anchors.centerIn: parent
+                            text: "+"
+                            font.pixelSize: 14
+                            color: Style.ink2
+                        }
+                        onClicked: scaleRow.step(0.1)
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "增大渲染倍率"
+                    }
+                    function step(delta) {
+                        var base = ctxMenu.mScale.explicit
+                                   ? ctxMenu.mScale.scale
+                                   : (ctxMenu.mScale.default !== undefined
+                                      ? ctxMenu.mScale.default : 1.0)
+                        var v = Math.round((base + delta) * 10) / 10
+                        v = Math.max(1.0, Math.min(3.0, v))
+                        if (Math.abs(v - base) < 0.001)
+                            return
+                        ctrl.setAppScale(ctxMenu.mEntry.package, v)
+                    }
+                }
+            }
+        }
+
         // 显示模式记忆变化 → 菜单开着时即时刷新选中圆点（信号带包名，
         // 只刷当前条目的菜单；选毕即关菜单，此路主要服务同包名长按切换）
         Connections {
@@ -582,6 +1024,20 @@ ApplicationWindow {
             function onBehaviorPrefsChanged(package) {
                 if (ctxMenu.openState && ctxMenu.mEntry.package === package)
                     ctxMenu.mKeepVd = ctrl.keepVdFor(String(package))
+            }
+            // DPI 记忆变化 → 刷新二级菜单圆点与输入框（步进/键入不收菜单）
+            function onDensityPrefsChanged(package) {
+                if (ctxMenu.openState && ctxMenu.mEntry.package === package) {
+                    ctxMenu.mDensity = ctrl.densityFor(String(package))
+                    if (!densityInput.activeFocus)
+                        densityInput.sync()
+                }
+            }
+            // 渲染倍率记忆变化 → 刷新圆点与微调读数（预设行/读数直接绑
+            // mScale，步进不收菜单）
+            function onScalePrefsChanged(package) {
+                if (ctxMenu.openState && ctxMenu.mEntry.package === package)
+                    ctxMenu.mScale = ctrl.scaleFor(String(package))
             }
         }
 
@@ -1049,8 +1505,10 @@ ApplicationWindow {
             height: canvasRoot.height
             blurEnabled: true
             blurMax: 32
-            blur: 0.75
-            saturation: 0.15
+            blur: plate.elevated ? Style.menuBlurHi : Style.menuBlur
+            saturation: plate.elevated ? Style.menuSatHi : Style.menuSat
+            brightness: plate.elevated ? Style.menuBrightHi : Style.menuBright
+            contrast: plate.elevated ? Style.menuContrastHi : Style.menuContrast
             autoPaddingEnabled: false
             maskEnabled: true
             maskThresholdMin: 0.5
@@ -1076,7 +1534,8 @@ ApplicationWindow {
             }
         }
 
-        // ③ 霜面染色 + hairline；软件回退 = 不透明 menuFill
+        // ③ hairline（tint 0% 毛玻璃化：无霜面染色层，仅描边；
+        // 光学增益在 ② MultiEffect）；软件回退 = 不透明 menuFill
         Rectangle {
             anchors.fill: parent
             radius: Style.flyoutRadius

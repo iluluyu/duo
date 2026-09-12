@@ -5,11 +5,15 @@ instantiated directly (no Main.qml, no controller) against either the real
 SettingsApi (tmp settings.json) or a recording stub - so these tests stay
 green while the main panel churns.
 
-Covers the 2026-09 cleanup contract:
-  - dpi / corner_mode / corner_size_dip pass invisibly through the page:
+Covers the 2026-09-11 contract:
+  - dpi lives in real controls again (跟随设备 switch + DPI number cell,
+    default 160 desktop density); collect() returns null only when the
+    switch is on (跟随设备).
+  - render_scale (渲染倍率) round-trips through the page (slider 1.0-4.0).
+  - corner_mode / corner_size_dip still pass invisibly through the page:
     SettingsApi.save builds the whole Settings table, so a missing key
     would silently reset the user's value to its default.
-  - DPI/corner controls are gone; footer keeps only 保存.
+  - corner controls are gone; footer keeps only 保存.
   - audio row label + option names; probe results are transient.
 """
 
@@ -43,6 +47,7 @@ SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 
 SETTINGS_KEYS = {
         "scrcpy_path", "adb_path", "fps", "bitrate_mbps", "dpi",
+        "render_scale",
         "corner_mode", "corner_size_dip", "glass_enabled",
         "audio_policy", "video_codec", "turn_screen_off",
         "top_bar_mode", "bottom_bar_mode",
@@ -137,8 +142,9 @@ def make_page(qapp):
 
 
 @pytest.fixture()
-def settings_page(make_page):
-    """Page over the real SettingsApi (defaults; no settings.json yet)."""
+def settings_page(make_page, settings_file):
+    """Page over the real SettingsApi (defaults; isolated tmp settings.json
+    ——真机上的用户文件会让默认值断言不可复现，必须钉住路径)。"""
     return make_page(SettingsApi())
 
 
@@ -151,15 +157,15 @@ def _save_changes(page: QObject) -> None:
 # ------------------------------------------- ① 隐形透传（DESIGN §3.8）
 
 
-def test_removed_dpi_and_corner_values_pass_through_to_save(make_page):
-    """load 带自定义 dpi/圆角 → collect 原样带回，save 收到的 map 键全值同。
-
-    SettingsApi.save 按整表构造 Settings：map 缺哪一键，那一键就落回默认
-    ——丢键等于把用户的 dpi / corner_mode / corner_size_dip 静默重置。
+def test_custom_dpi_roundtrips_and_corner_passes_through(make_page):
+    """load 带自定义 dpi → 真控件回填（dpiAuto=false、数值 400）→ collect
+    带回；圆角仍隐形透传。SettingsApi.save 按整表构造 Settings：map 缺
+    哪一键，那一键就落回默认——丢键等于静默重置。
     """
     api = _RecordingApi({
         "scrcpy_path": "", "adb_path": "", "fps": 60, "bitrate_mbps": 30,
-        "dpi": 400, "corner_mode": "g2", "corner_size_dip": 72,
+        "dpi": 400, "render_scale": 2.5, "corner_mode": "g2",
+        "corner_size_dip": 72,
         "glass_enabled": True, "audio_policy": "latest",
         "video_codec": "auto", "turn_screen_off": False,
     })
@@ -167,29 +173,35 @@ def test_removed_dpi_and_corner_values_pass_through_to_save(make_page):
     accepted: list[bool] = []
     page.accepted.connect(lambda: accepted.append(True))
 
+    assert page.property("dpiAuto") is False
+    assert page.property("renderScale") == 2.5
     _save_changes(page)
 
     assert accepted == [True]
     assert len(api.saved) == 1
     saved = api.saved[0]
-    assert set(saved) == SETTINGS_KEYS          # 整表 13 键一个不少
+    assert set(saved) == SETTINGS_KEYS          # 整表 14 键一个不少
     assert saved["dpi"] == 400
+    assert saved["render_scale"] == 2.5
     assert saved["corner_mode"] == "g2"
     assert saved["corner_size_dip"] == 72
 
 
 def test_null_dpi_passes_through_as_null(make_page):
-    """dpi 为 null（跟随显示密度）时透传仍是 null，不会被占位值顶掉。"""
+    """dpi 为 null（跟随设备）时开关亮、collect 仍是 null，不会被占位值顶掉。"""
     api = _RecordingApi({
         "scrcpy_path": "", "adb_path": "", "fps": 60, "bitrate_mbps": 30,
-        "dpi": None, "corner_mode": "none", "corner_size_dip": 0,
+        "dpi": None, "render_scale": 1.0, "corner_mode": "none",
+        "corner_size_dip": 0,
         "glass_enabled": True, "audio_policy": "off",
         "video_codec": "h264", "turn_screen_off": True,
     })
     page = make_page(api)
+    assert page.property("dpiAuto") is True
     _save_changes(page)
     saved = api.saved[0]
     assert saved["dpi"] is None
+    assert saved["render_scale"] == 1.0
     assert saved["corner_mode"] == "none"
     assert saved["corner_size_dip"] == 0
 
@@ -199,7 +211,8 @@ def test_custom_dpi_and_corner_survive_real_api_save(make_page, settings_file):
     api = SettingsApi()
     assert api.save({
         "scrcpy_path": "", "adb_path": "", "fps": 60, "bitrate_mbps": 30,
-        "dpi": 400, "corner_mode": "g2", "corner_size_dip": 72,
+        "dpi": 400, "render_scale": 2.0, "corner_mode": "g2",
+        "corner_size_dip": 72,
         "glass_enabled": True, "audio_policy": "latest",
         "video_codec": "auto", "turn_screen_off": False,
     }) == []
@@ -212,17 +225,29 @@ def test_custom_dpi_and_corner_survive_real_api_save(make_page, settings_file):
     assert accepted == [True]
     raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
     assert raw["dpi"] == 400
+    assert raw["render_scale"] == 2.0
     assert raw["corner_mode"] == "g2"
     assert raw["corner_size_dip"] == 72
 
 
-# ------------------------------------------------- ② 删除即删除
+# ------------------------------------------------- ② 控件存废
 
 
-def test_dpi_and_corner_controls_are_gone(settings_page):
-    """DPI 数字框/自动开关、圆角三选一/滑块/Canvas 预览不复存在。"""
-    for name in ("dpiBox", "dpiAutoSwitch", "cornerSlider", "cornerPreview"):
-        assert settings_page.findChild(QObject, name) is None, name
+def test_dpi_controls_are_back_corner_controls_still_gone(settings_page):
+    """DPI 控件回归（跟随设备开关 + 数值框，2026-09-11）；圆角三选一/
+    滑块/Canvas 预览仍不存在。"""
+    auto_switch = settings_page.findChild(QObject, "dpiAutoSwitch")
+    cell = settings_page.findChild(QObject, "dpiCell")
+    assert auto_switch is not None
+    assert cell is not None
+    # 默认：不跟随设备（固定 160 桌面密度），数值框可用
+    assert settings_page.property("dpiAuto") is False
+    assert auto_switch.property("checked") is False
+    box = cell.property("box")
+    assert box is not None and box.property("value") == 160
+    assert cell.property("enabled") is True
+    for gone in ("cornerSlider", "cornerPreview"):
+        assert settings_page.findChild(QObject, gone) is None, gone
 
 
 def test_footer_has_only_save_button(settings_page):

@@ -49,6 +49,8 @@ from duo.core.engine import probe
 from duo.core.paths import data_dir, logs_dir
 from duo.core.session import display_id_from_log
 from duo.core.settings import (
+        DPI_RANGE,
+        RENDER_SCALE_RANGE,
         VALID_BAR_MODES,
         load_settings,
         resolve_adb_path,
@@ -330,6 +332,73 @@ def save_behavior_prefs(prefs: dict[str, dict[str, bool]]) -> None:
         _write_prefs_doc(doc)
 
 
+def load_density_prefs() -> dict[str, dict[str, int]]:
+        """Read the persisted per-app display-density overrides (missing = none).
+
+        Shape（DPI 按应用，右键菜单「DPI ▸」，2026-09-11）::
+
+            {package: {"dpi": 240}}
+
+        Only well-formed entries within DPI_RANGE survive a hand-edited
+        file - the same discipline as :func:`load_bar_prefs` (a corrupt
+        entry costs one choice, not a broken launch path).
+        """
+        saved = _read_prefs_doc().get("density", {})
+        if not isinstance(saved, dict):
+                return {}
+        prefs: dict[str, dict[str, int]] = {}
+        for package, choice in saved.items():
+                dpi = choice.get("dpi") if isinstance(choice, dict) else None
+                if (
+                        isinstance(package, str)
+                        and isinstance(dpi, int)
+                        and not isinstance(dpi, bool)
+                        and DPI_RANGE[0] <= dpi <= DPI_RANGE[1]
+                ):
+                        prefs[package] = {"dpi": dpi}
+        return prefs
+
+
+def save_density_prefs(prefs: dict[str, dict[str, int]]) -> None:
+        """Persist the per-app display-density overrides for the next run."""
+        doc = _read_prefs_doc()
+        doc["density"] = prefs
+        _write_prefs_doc(doc)
+
+
+def load_scale_prefs() -> dict[str, dict[str, float]]:
+        """Read the persisted per-app render-scale overrides (missing = none).
+
+        Shape（渲染倍率按应用，右键菜单「渲染倍率 ▸」，2026-09-11）::
+
+            {package: {"scale": 2.0}}
+
+        倍率语义：窗口÷k = 安卓渲染分辨率（4K 窗口 2 倍即 1K）。仅 flex 会
+        话生效（CLI 侧换算成固定屏）；范围同 settings.RENDER_SCALE_RANGE。
+        """
+        saved = _read_prefs_doc().get("scale", {})
+        if not isinstance(saved, dict):
+                return {}
+        prefs: dict[str, dict[str, float]] = {}
+        for package, choice in saved.items():
+                scale = choice.get("scale") if isinstance(choice, dict) else None
+                if (
+                        isinstance(package, str)
+                        and isinstance(scale, (int, float))
+                        and not isinstance(scale, bool)
+                        and RENDER_SCALE_RANGE[0] <= float(scale) <= RENDER_SCALE_RANGE[1]
+                ):
+                        prefs[package] = {"scale": float(scale)}
+        return prefs
+
+
+def save_scale_prefs(prefs: dict[str, dict[str, float]]) -> None:
+        """Persist the per-app render-scale overrides for the next run."""
+        doc = _read_prefs_doc()
+        doc["scale"] = prefs
+        _write_prefs_doc(doc)
+
+
 def _pin_fixed_display(argv: list[str], width: int, height: int) -> None:
         """Inject the CLI's FIXED display mode onto a mirror argv (in place).
 
@@ -368,6 +437,45 @@ def _pin_chrome_bars(argv: list[str], package: str | None = None) -> None:
                 "--chrome-bottom",
                 override.get("bottom") or settings.bottom_bar_mode,
         ]
+
+
+def _pin_density(argv: list[str], package: str | None = None) -> None:
+        """Inject a per-app display-density override onto a mirror argv.
+
+        Same fresh-read discipline as ``_pin_chrome_bars``: the gui_prefs
+        ``density`` 节（右键菜单「DPI ▸」） overrides the settings-page
+        ``dpi`` default for THIS package only. flex/fixed sessions alike
+        (both create virtual displays); the device mirror takes no flag
+        (physical display density is not ours to set).
+        """
+        if package is None:
+                return
+        choice = load_density_prefs().get(package)
+        if isinstance(choice, dict) and isinstance(choice.get("dpi"), int):
+                argv += ["--dpi", str(choice["dpi"])]
+
+
+def _pin_render_scale(argv: list[str], package: str | None = None) -> None:
+        """Inject the effective render scale onto a FLEX mirror argv.
+
+        Per-app override (gui_prefs ``scale`` 节) beats the settings-page
+        ``render_scale`` default - both freshly read so a save between two
+        panel launches reaches the very next window. Only the flex path
+        calls this: fixed-aspect sessions carry their own geometry and the
+        scale must not stack on top (see build_launch_argv).
+        """
+        if package is None:
+                return
+        choice = load_scale_prefs().get(package)
+        scale = (
+                float(choice["scale"]) if isinstance(choice, dict)
+                and isinstance(choice.get("scale"), (int, float))
+                else None
+        )
+        if scale is None:
+                scale = load_settings()[0].render_scale
+        if scale > 1.0:
+                argv += ["--render-scale", format(scale, "g")]
 
 
 def _display_size(display: dict[str, object] | None) -> tuple[int, int] | None:
@@ -440,6 +548,11 @@ def build_launch_argv(
         scrcpy ``--no-vd-destroy-content``：会话断开后应用留在虚拟屏而不
         回落手机主屏。flex/fixed 两种虚拟屏路径同享；设备镜像
         (:func:`build_device_mirror_argv`) 无自建显示，恒不注入。
+
+        DPI/渲染倍率（2026-09-11，右键菜单按应用记忆）：density 节
+        覆盖 flex/fixed 会话的建屏密度（``--dpi``）；render scale 节+
+        设置页默认仅注入 flex 路径（``--render-scale``，CLI 侧换算成固定
+        屏 窗口÷k），固定几何会话不叠加（已有自己的分辨率）。
         """
         frozen = getattr(sys, "frozen", False)
         argv = [sys.executable, *([] if frozen else ["-m", "duo"])]
@@ -453,14 +566,20 @@ def build_launch_argv(
                 "--session-log",
                 str(panel_log_path(package)),
         ]
+        fixed = False
         if width is not None and height is not None:
                 _pin_fixed_display(argv, width, height)
+                fixed = True
         else:
                 size = _display_size(display)
                 if size is not None:
                         _pin_fixed_display(argv, *size)
+                        fixed = True
                 elif portrait:
                         argv.append("--portrait")
+        _pin_density(argv, package)
+        if not fixed:
+                _pin_render_scale(argv, package)
         # 窗口栏模式：每次启动按包取 effective（override 优先于设置页默认，
         # 见 _pin_chrome_bars），断开保留画面紧随其后，音频的 --no-audio
         # 仍恒居末位。
@@ -577,6 +696,12 @@ class PanelController(QObject):
         # The per-app session-exit choice (断开保留画面) of one package
         # flipped (QML refreshes that check dot off this).
         behaviorPrefsChanged = pyqtSignal(str)
+        # The per-app display-density override of one package flipped (QML
+        # refreshes the DPI submenu selection dots off this).
+        densityPrefsChanged = pyqtSignal(str)
+        # The per-app render-scale override of one package flipped (QML
+        # refreshes the 渲染倍率 submenu off this).
+        scalePrefsChanged = pyqtSignal(str)
         engineLockedChanged = pyqtSignal(bool)
         turnScreenOffChanged = pyqtSignal()
         # The device media volume index changed (-1 = unknown; the slider
@@ -615,6 +740,12 @@ class PanelController(QObject):
                 # 现场查这份内存态注入 --no-vd-destroy-content（_keep_vd），
                 # 与 audio 一样即选即持久化。
                 self._behavior_prefs = load_behavior_prefs()
+                # DPI 按应用（density 节，右键菜单「DPI ▸」）：启动
+                # 注入每次重读磁盘（_pin_density），此处仅存菜单态。
+                self._density_prefs = load_density_prefs()
+                # 渲染倍率按应用（scale 节，右键菜单「渲染倍率 ▸」）：同上，
+                # 注入重读磁盘（_pin_render_scale），此处仅存菜单态。
+                self._scale_prefs = load_scale_prefs()
                 # 设备媒体音量 index（0..15）；-1 = 未知——预读已放弃
                 # （--get 输出无数字可解析，见 duo.core.adb），首次拖动
                 # 滑杆（setMediaVolume）才进入已知态。
@@ -1382,6 +1513,103 @@ class PanelController(QObject):
                 else:
                         self._set_status(f"{label} 断开后将退回手机主屏")
                 self.behaviorPrefsChanged.emit(package)
+
+        @pyqtSlot(str, result="QVariant")
+        def densityFor(self, package: str) -> dict[str, object]:
+                """DPI state for the submenu dots + custom-row placeholder.
+
+                ``{"explicit": bool, "dpi": int|None, "default": int|None}`` -
+                an explicit per-app override when one is remembered, else
+                null; ``default`` is the settings-page dpi (null = 跟随设备)
+                freshly read so the placeholder shows what 跟随默认 means.
+                """
+                choice = self._density_prefs.get(package)
+                dpi = choice.get("dpi") if isinstance(choice, dict) else None
+                settings, _problems = load_settings()
+                return {
+                        "explicit": isinstance(dpi, int),
+                        "dpi": dpi,
+                        "default": settings.dpi,
+                }
+
+        @pyqtSlot(str, int)
+        def setAppDensity(self, package: str, dpi: int) -> None:
+                """Remember (or clear) one per-app display-density override.
+
+                右键菜单「DPI ▸」：dpi 为具体数值（120–640）钉住该应用
+                的建屏密度，凌驾于设置页默认；dpi=0 清除 override（跟随
+                默认）。即选即持久化（gui_prefs density 节），生效于下一次
+                启动；非法值只报状态不落库。
+                """
+                if dpi == 0:
+                        self._density_prefs.pop(package, None)
+                        save_density_prefs(self._density_prefs)
+                        self._set_status(
+                                f"{session_label(package)} DPI 将跟随默认")
+                        self.densityPrefsChanged.emit(package)
+                        return
+                if not DPI_RANGE[0] <= dpi <= DPI_RANGE[1]:
+                        self._set_status(f"DPI 需在 {DPI_RANGE[0]}–{DPI_RANGE[1]}")
+                        return
+                self._density_prefs[package] = {"dpi": int(dpi)}
+                save_density_prefs(self._density_prefs)
+                self._set_status(
+                        f"{session_label(package)} 将以 DPI {dpi} 建屏（下次启动生效）")
+                self.densityPrefsChanged.emit(package)
+
+        @pyqtSlot(str, result="QVariant")
+        def scaleFor(self, package: str) -> dict[str, object]:
+                """Render-scale state for the submenu dots + placeholder.
+
+                ``{"explicit": bool, "scale": effective, "default": float}`` -
+                the effective value is the per-app override when one is
+                remembered, else the settings-page default (fresh read, so
+                a settings save between two menu openings reaches the next
+                one); ``default`` feeds the custom-row placeholder.
+                """
+                choice = self._scale_prefs.get(package)
+                scale = (
+                        float(choice["scale"])
+                        if isinstance(choice, dict)
+                        and isinstance(choice.get("scale"), (int, float))
+                        else None
+                )
+                override = scale is not None
+                settings, _problems = load_settings()
+                if scale is None:
+                        scale = settings.render_scale
+                return {
+                        "explicit": override,
+                        "scale": scale,
+                        "default": settings.render_scale,
+                }
+
+        @pyqtSlot(str, float)
+        def setAppScale(self, package: str, scale: float) -> None:
+                """Remember (or clear) one per-app render-scale override.
+
+                右键菜单「渲染倍率 ▸」：scale 为 1.0–3.0 的自由值（预设
+                1/1.4/2/3 + 0.1 步进微调；窗口 ÷k = 安卓渲染分辨率，仅
+                flex 会话生效）；scale=0 清除
+                override（跟随默认）。即选即持久化（gui_prefs scale 节），
+                生效于下一次启动。
+                """
+                if scale == 0:
+                        self._scale_prefs.pop(package, None)
+                        save_scale_prefs(self._scale_prefs)
+                        self._set_status(
+                                f"{session_label(package)} 渲染倍率将跟随默认")
+                        self.scalePrefsChanged.emit(package)
+                        return
+                if not RENDER_SCALE_RANGE[0] <= scale <= RENDER_SCALE_RANGE[1]:
+                        self._set_status("渲染倍率需在 1.0–3.0")
+                        return
+                self._scale_prefs[package] = {"scale": float(scale)}
+                save_scale_prefs(self._scale_prefs)
+                self._set_status(
+                        f"{session_label(package)} 渲染倍率 {format(scale, 'g')}×"
+                        f"（窗口÷{format(scale, 'g')}，下次启动生效）")
+                self.scalePrefsChanged.emit(package)
 
         @pyqtSlot(int)
         def setMediaVolume(self, index: int) -> None:
