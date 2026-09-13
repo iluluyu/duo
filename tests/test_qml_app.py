@@ -475,14 +475,15 @@ def test_app_tile_held_guard(qapp, no_adb, prefs_stub, settings_file):
                 _pump(20)
 
 
-def test_app_tile_pin_button_and_dock_move(qapp, no_adb, prefs_stub, settings_file):
+def test_app_tile_context_pin_and_dock_shortcut(qapp, no_adb, prefs_stub, settings_file):
         """Pin badge: one per tile, ★ tracks the pinned state, and a pinned
         tile LEAVES the grid for the pinned-row card (pinnedApps). The grid
         model is checked via its (filtered) model property — no delegate
         walking after the rebuild storm."""
         text = QML_MAIN.read_text(encoding="utf-8")
-        assert 'objectName: "pinButton"' in text
-        assert "ctrl.togglePin(tile.modelData.package)" in text   # badge wired to slot
+        # 星形角标已移除（2026-09-13 用户复审）：置顶入口=右键菜单。
+        assert 'objectName: "pinButton"' not in text
+        assert "ctrl.togglePin(ctxMenu.mEntry.package)" in text   # menu wired to slot
 
         controller = PanelController("/nonexistent/adb-for-tests")
         engine = _make_engine(controller, SettingsApi())
@@ -505,27 +506,20 @@ def test_app_tile_pin_button_and_dock_move(qapp, no_adb, prefs_stub, settings_fi
                 grid.forceLayout()   # materialize delegates offscreen
                 _pump(50)
                 items = list(_walk(sip.cast(grid, QQuickItem)))
-                assert sum(1 for i in items if i.objectName() == "pinButton") == 3
-                # 未置顶：微信在网格里（非首格），角标 ☆
+                # 星形角标已移除：磁贴上不再有 pinButton。
+                assert sum(1 for i in items if i.objectName() == "pinButton") == 0
+                # 未置顶：微信在网格里（非首格）
                 assert "com.tencent.mm" in {e["package"] for e in _grid_model(root)}
                 mm = next(
                         i for i in items if i.property("modelData") is not None
                         and i.property("modelData")["package"] == "com.tencent.mm"
                 )
                 assert mm.property("x") > 0
-                badge = next(
-                        c for c in mm.childItems() if c.objectName() == "pinButton"
-                )
-                star = next(
-                        c for c in badge.childItems()
-                        if c.metaObject().className() == "QQuickText"
-                )
-                assert star.property("text") == "☆"
 
-                # 置顶：搬去固定栏模型 → 网格不再含它，固定卡出现
+                # 置顶：固定卡出现（网格保留条目——固定=快捷方式）
                 controller.togglePin("com.tencent.mm")
                 _pump(250)   # 卡片 140ms 淡入 + 模型重建
-                assert "com.tencent.mm" not in {e["package"] for e in _grid_model(root)}
+                assert "com.tencent.mm" in {e["package"] for e in _grid_model(root)}
                 pinned = [str(e["package"]) for e in controller.pinnedApps]
                 assert pinned == ["com.tencent.mm"]
                 assert all(bool(e["pinned"]) for e in controller.pinnedApps)
@@ -1455,8 +1449,14 @@ def test_fallback_palette_deterministic(qapp, no_adb, prefs_stub, settings_file)
                 fb = next(i for i in _walk(tile) if i.objectName() == "fallbackIcon")
                 expected = expected_fallback_color(pkg)
                 assert fb.property("visible") is True
-                assert fb.property("color").name() == expected
-                assert fb.property("radius") == 14   # 60px squircle 23%
+                # G2 squircle fallback：SVG data-URI，fill = 色板色
+                from urllib.parse import unquote
+
+                img = next(i for i in _walk(fb)
+                           if i.metaObject().className() == "QQuickImage")
+                svg = unquote(str(img.property("source")))
+                assert "data:image/svg+xml;utf8,<svg" in svg
+                assert f"fill='{expected}'" in svg.lower()   # 60px G2 超椭圆角 23%
                 letter = next(i for i in _walk(fb)
                               if i.metaObject().className() == "QQuickText")
                 assert letter.property("text") == "哔"
@@ -1470,7 +1470,9 @@ def test_fallback_palette_deterministic(qapp, no_adb, prefs_stub, settings_file)
                 _pump(50)
                 fb2 = next(i for i in _walk(_find_delegate(root, grid, pkg))
                            if i.objectName() == "fallbackIcon")
-                assert fb2.property("color").name() == expected
+                img2 = next(i for i in _walk(fb2)
+                            if i.metaObject().className() == "QQuickImage")
+                assert f"fill='{expected}'" in unquote(str(img2.property("source"))).lower()
 
                 # 固定卡 44px 版本同色（另一尺寸的同一取色函数）
                 controller.togglePin(pkg)
@@ -1479,8 +1481,10 @@ def test_fallback_palette_deterministic(qapp, no_adb, prefs_stub, settings_file)
                 icon = _find_delegate(root, card, pkg)
                 fb_small = next(i for i in _walk(icon)
                                 if i.objectName() == "fallbackIcon")
-                assert fb_small.property("color").name() == expected
-                assert fb_small.property("radius") == 10
+                img_small = next(i for i in _walk(fb_small)
+                                 if i.metaObject().className() == "QQuickImage")
+                assert f"fill='{expected}'" in unquote(
+                    str(img_small.property("source"))).lower()
         finally:
                 controller.shutdown()
                 engine.deleteLater()

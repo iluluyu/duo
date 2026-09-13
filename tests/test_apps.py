@@ -127,7 +127,7 @@ def test_extract_icon_raster_gets_rounded_mask(tmp_path: Path):
 
 
 def test_app_info_icon_cache_name_is_versioned(tmp_path: Path, monkeypatch):
-        """Icon caches carry the .r3 suffix; apk/metadata caches do not."""
+        """Icon caches carry the .r20 suffix; apk/metadata caches do not."""
         import duo.core.apps as apps
 
         monkeypatch.setattr(apps, "aapt2_ensure", lambda root=None: tmp_path / "aapt2.exe")
@@ -157,7 +157,7 @@ def test_app_info_icon_cache_name_is_versioned(tmp_path: Path, monkeypatch):
 
         info = apps.app_info(StubAdb(), "cn.com.langeasy.LangEasyLexis", tmp_path)
         assert info.icon_path == captured["out"]
-        assert captured["out"].name == "cn.com.langeasy.LangEasyLexis.r3.png"
+        assert captured["out"].name == "cn.com.langeasy.LangEasyLexis.r20.png"
         # The apk and metadata caches keep their unversioned names.
         assert (tmp_path / "apks" / "cn.com.langeasy.LangEasyLexis.apk").exists()
         assert (tmp_path / "apks" / "cn.com.langeasy.LangEasyLexis.json").exists()
@@ -227,3 +227,146 @@ def test_label_sort_key_orders_labels_by_first_letter():
         assert label_sort_key("不背单词") == "bbdc"
         assert label_sort_key("哔哩哔哩") == "blbl"
         assert label_sort_key("WPS Office") == "wps office"
+
+
+def test_render_device_icons_caches_and_feeds_app_info(tmp_path: Path):
+        """The on-device render pass writes .r13 caches app_info serves."""
+        import io
+        import json
+
+        from PIL import Image
+
+        from duo.core.apps import app_info, parse_renderer_meta, render_device_icons
+
+        artwork = Image.new("RGBA", (432, 432), (18, 184, 104, 255))
+        buffer = io.BytesIO()
+        artwork.save(buffer, format="PNG")
+
+        class FakeAdb:
+                serial = "fake"
+
+                def push(self, local: Path, remote: str) -> None:
+                        if remote.endswith("pkgs.txt"):
+                                self.packages = local.read_text().split()
+                        elif remote.endswith(".dex"):
+                                pass
+
+                def pull(self, remote: str, local: Path) -> None:
+                        self.run("pull", remote, str(local))
+
+                def run(self, *args: str, timeout: float = 0.0) -> str:
+                        if args[0] == "pull":
+                                remote, dest = args[1], Path(args[2])
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                if remote.endswith("labels.txt"):
+                                        dest.write_text(
+                                                "a.b.c\tadaptive\t42\t9.9\tApp C\n"
+                                                "x.y\terror\t0\t?\tBad\n",
+                                                encoding="utf-8",
+                                        )
+                                elif remote.endswith("a.b.c.png"):
+                                        dest.write_bytes(buffer.getvalue())
+                                return ""
+                        return ""
+
+                def shell(self, command: str, timeout: float = 0.0) -> str:
+                        return ""
+
+        meta = parse_renderer_meta("a.b.c\tadaptive\t42\t9.9\tApp C\n")
+        assert meta == {
+                "a.b.c": {
+                        "kind": "adaptive", "version": "42",
+                        "version_name": "9.9", "label": "App C",
+                }
+        }
+        assert render_device_icons(FakeAdb(), ["a.b.c", "x.y"], tmp_path) is True
+        cached = tmp_path / "icons" / "a.b.c.r20.png"
+        assert cached.exists()
+        with Image.open(cached) as icon:
+                assert icon.size == (288, 288)   # 72/108 visible crop of 432
+                for corner in [(0, 0), (0, 287), (287, 0), (287, 287)]:
+                        assert icon.getpixel(corner)[3] == 0
+        device_meta = json.loads((tmp_path / "icons" / "device_meta.json").read_text())
+        assert "a.b.c" in device_meta
+        info = app_info(FakeAdb(), "a.b.c", tmp_path)
+        assert info.label == "App C"
+        assert info.version_name == "9.9"
+        assert info.icon_path == cached
+
+
+def test_render_device_icons_incremental_skips_warm_cache(tmp_path: Path):
+        """A warm cache (same versionCode, PNG present) renders nothing.
+
+        The incremental contract: labels.txt still comes back from the
+        device, but no package file is pulled and no post-processing
+        runs - the second call must not even ask for package PNGs.
+        """
+        import io
+
+        from PIL import Image
+
+        from duo.core.apps import render_device_icons
+
+        artwork = Image.new("RGBA", (432, 432), (18, 184, 104, 255))
+        buffer = io.BytesIO()
+        artwork.save(buffer, format="PNG")
+        pulled_pngs: list[str] = []
+
+        class FakeAdb:
+                serial = "fake"
+
+                def push(self, local: Path, remote: str) -> None:
+                        pass
+
+                def pull(self, remote: str, local: Path) -> None:
+                        self.run("pull", remote, str(local))
+
+                def run(self, *args: str, timeout: float = 0.0) -> str:
+                        if args[0] == "pull":
+                                remote, dest = args[1], Path(args[2])
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                if remote.endswith("labels.txt"):
+                                        dest.write_text(
+                                                "a.b.c\tadaptive\t42\t9.9\tApp C\n",
+                                                encoding="utf-8",
+                                        )
+                                elif remote.endswith(".png"):
+                                        pulled_pngs.append(remote)
+                                        dest.write_bytes(buffer.getvalue())
+                                return ""
+                        return ""
+
+                def shell(self, command: str, timeout: float = 0.0) -> str:
+                        return ""
+
+        assert render_device_icons(FakeAdb(), ["a.b.c"], tmp_path) is True
+        assert pulled_pngs, "first pass pulls the artwork"
+        first_meta = (tmp_path / "icons" / "device_meta.json").read_text()
+        cached = tmp_path / "icons" / "a.b.c.r20.png"
+        stamp = cached.stat().st_mtime_ns
+
+        pulled_pngs.clear()
+        assert render_device_icons(FakeAdb(), ["a.b.c"], tmp_path) is True
+        assert not pulled_pngs, "warm cache pulls no package files"
+        assert cached.stat().st_mtime_ns == stamp, "no re-processing"
+        assert (tmp_path / "icons" / "device_meta.json").read_text() == first_meta
+
+
+def test_render_device_icons_requires_dex(tmp_path: Path, monkeypatch):
+        """No dex on disk -> False, nothing crashes."""
+        from duo.core.apps import render_device_icons
+
+        class FakeAdb:
+                serial = "fake"
+
+                def push(self, local: Path, remote: str) -> None:
+                        pass
+
+                def run(self, *args: str, timeout: float = 0.0) -> str:
+                        return ""
+
+                def shell(self, command: str, timeout: float = 0.0) -> str:
+                        return ""
+
+        monkeypatch.setattr("duo.core.apps._RENDER_DEX", tmp_path / "missing.dex")
+        assert render_device_icons(FakeAdb(), ["a.b.c"], tmp_path) is False

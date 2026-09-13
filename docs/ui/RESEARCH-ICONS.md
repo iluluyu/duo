@@ -3,6 +3,7 @@
 > 目标：解决三个现状痛点——① 不规则图标（圆形 logo、异形）提取后观感差；
 > ② 大 APK（QQ/微信 >200MB）无图标；③ 预设 SVG / 哈希色 / 真实提取三来源混排不统一。
 > 本文只做调研与方案推荐，不改代码。事实底账见 RESEARCH.md §2，视觉规范见 DESIGN.md §3.1。
+> **实施进展（2026-09-13）见 §8。**
 
 ## 0. 背景与现状（对照基线）
 
@@ -313,3 +314,332 @@ P2-4/P2-5（体验增强）。P0-1+P0-2 合计可消灭痛点 ①②③ 的根�
 - Simple Icons 法律免责声明：https://github.com/simple-icons/simple-icons/blob/master/DISCLAIMER.md
 - 品牌 logo 的商标/著作权问题：https://law.stackexchange.com/questions/68128/
 - 商标指名使用：https://signa.so/blog/trademark-fair-use-explained
+
+---
+
+## 8. 实施记录（2026-09-13，P0-2 + adaptive 优先级）
+
+真机渲染图 0913.png 定位两类真实提取图标的观感问题：酷安（透明底悬浮
+绿色圆形 logo）与不背单词（白底遗留位图）在网格里与预设 squircle 混排
+突兀。实施对应 §6 的 P0-2（生成式统一）+ 一处优先级修正：
+
+### 8.1 adaptive 合成优先（duo/core/apps.py `extract_icon`）
+
+旧逻辑对 `.xml` 图标引用**先取同资源的 legacy 光栅变体**（"most apps
+still ship one"），adaptive 图层合成仅作兜底——酷安这类现代 app 的圆形
+era 光栅抢占了规范 adaptive artwork，是圆形观感的根因。修正为：
+
+- fg 光栅可解析 → 必走 adaptive 合成（432/288 官方几何，内容安全区居中）；
+- fg 为 vector drawable（无光栅文件）且存在 legacy 光栅 → legacy 光栅（合成
+  会丢 logo，不抢占）；bg-only 纯色板不作为抢占理由；
+- 两者皆无 → 维持旧行为（bg-only 板或 None）。
+
+### 8.2 光栅归一化 pass（`normalize_raster`，§6 P0-2 落地）
+
+所有 legacy 光栅（含 adaptive 兑现失败的兜底）进入圆角蒙版前先过
+归一化，两类失败形状修复，其余原样通过：
+
+| 入参形状 | 判据 | 处理 |
+|---|---|---|
+| 满幅 artwork | 内容 bbox ≥ 两轴 96% 且 bbox 内覆盖率 ≥ 90% | 直通（只套圆角蒙版） |
+| 透明底悬浮色块（酷安型） | bbox 内不透明覆盖率 ≥ 50%，主色非中性 | 裁内容 → 缩至画布 75% 居中落到主色 squircle 板（同色无缝） |
+| 白底遗留位图（不背单词型） | 边框环 85% 同色且近白，内容非满幅 | 从边框泛洪背景 → 重涂为主色调 72% 向白渐变（pastel tint）；内容像素不动（内圈白色泛洪不到，保留） |
+| 彩色实底位图 | 边框同色但非近白 | 直通（本就是品牌色板，authentic） |
+| 线稿/异形低覆盖 | 覆盖率 < 50% | 直通（不猜背景，避免破坏） |
+| 中性色主色（黑白 logo） | 主色近白/近黑 | 直通（无可用板色） |
+| <48px 小图 | — | 直通（噪声不可信） |
+
+参数：内容占比 0.75（落在规范 adaptive 前景典型区间 62-78%，agy Opus+glm 交叉评审）；
+背景容差 = RGB 距离和 ≤60；近白 = luma ≥224 且 chroma ≤18；
+tint = HSL(h, clamp(s×0.55, 0.16-0.38), L 0.87)——各色相 ΔE≈13-16 恒定存在感。缓存代 .r3 → .r5（alpha 乘法 + adaptive 白底重涂 + 75% 占比，旧缓存自然作废）。
+
+主色提取：4-bit 桶直方图，跳过 alpha<128 与中性色像素，取众数桶均值。
+白底重涂只改泛洪到的背景像素，内圈白色（logo 里的白环）不受影响。
+
+### 8.3 刻意不做
+
+- adaptive 合成结果不再过 normalize（内容已按规范排布，二次处理会过度）；
+- 中性/线稿不猜背景（宁可保留 authentic，不引入哈希色板耦合）；
+- P0-1（端侧 DEX）、P1-3（部分拉取）、P2-4（icon pack 导入）本次不动。
+
+### 8.4 真机复测后的两处补充修复（2026-09-13 下午）
+
+真机首轮部署后像素解剖（酷安/不背单词的 r3 vs r4 缓存）发现两个新事实：
+
+1. **圆角蒙版的 putalpha 直接覆盖源 alpha**：透明底光栅（酷安 legacy
+   res/o-_.png 即透明底绿圆）被抹成不透明黑底——0913.png 酷安黑块的
+   真正根因不是"圆形异形"而是黑底。修复：蒙版改为与源 alpha 通道
+   相乘（`ImageChops.multiply`），透明内容在直通路径也保真。
+2. **adaptive 路径的白底 bg 层**：不背单词的 adaptive bg 是纯白图层，
+   优先走合成后白底问题原样保留（换了个尺寸）。修复：
+   `_compose_adaptive` 在裁切前过 `_recolor_white_bg`（与光栅路径共用
+   的泛洪重涂）；彩色 bg 层不受影响（近白门控自然放行直通）。
+
+另：blob 内容占比按 agy Opus + glm 双评审从 68% 调至 75%（落在规范
+adaptive 前景典型区间 62-78%）；白底 tint 从 RGB lighten(0.72) 改为
+HSL 定向调色（保色调，各色相存在感恒定）。
+
+## 9. 设备端渲染（2026-09-13，P0-1 完成）+ G2 精致化
+
+### 9.1 为什么回到设备端
+
+§8 的 aapt2 管线修好了图标质量，但速度与覆盖留下两类残局：
+(1) 114 个三方应用全量首扫要分钟级（拉整包 APK + 多轮 dump，酷安
+116MB）；(2) inset 嵌套引用（Office 系）与部分 layer-list bg 仍解不出，
+残留 4-10 个白板。社区成熟方案（scrcpy server、APIE）证明另一条路：
+**把一个小 DEX 推到 /data/local/tmp，app_process 起 Java 进程，让系统
+自己的 PackageManager 渲染图标**——adaptive 图层、inset、渐变、混淆资源
+全部由系统原生处理，桌面看到什么我们拿到什么。
+
+### 9.2 DuoIconRenderer（duo/resources/duo_icon_renderer.java → duo_icons.dex）
+
+- 编译：javac（android-34 android.jar）→ D8 --release，5KB dex，
+  源码与产物一并入库（duo.spec datas 打包）。
+- 关键坑 1：`pm.getApplicationIcon(pkg)` 在 ColorOS 上对所有包返回
+  默认 adaptive 图标甚至抛 SecurityException——必须用
+  `pm.getResourcesForApplication(pkg).getDrawableForDensity(info.icon,
+  densityDpi, theme)` 手动加载（顺带按屏幕密度取最清晰变体）。
+- 关键坑 2：`ActivityThread.systemMain()` 前必须
+  `Looper.prepareMainLooper()`，否则 PackageManager binder 回调创建
+  handler 时崩溃。
+- 关键坑 3：adb exec-out 的 stdin 转发不可靠（BufferedReader 永久
+  阻塞）——包列表走设备端文件（push pkgs.txt，argv 传路径）。
+- 输出：每包 `<pkg>.png`（adaptive = 432px 全 108 单位 artwork；
+  legacy = 固有尺寸、密度最优、上限 576px 平方画布居中）+
+  labels.txt（pkg/kind/versionCode/versionName/label，制表符分隔）。
+
+### 9.3 PC 侧后处理（apps.py）
+
+- `render_device_icons(adb, packages)`：一次 app_process 跑完全部包
+  （114 包 4.0s），单次 pull 回传，逐包后处理入缓存 `.r11.png` +
+  `device_meta.json`；`app_info` 先查该缓存，miss 才走 APK+aapt2
+  fallback。控制器在 _load_all_apps 里对三方包 ∪ 已安装目录包批量
+  预取，113 个图标含面板启动共 ~31s（旧管线分钟级）。
+- adaptive：432 裁 72/108 可视中心 → `_recolor_white_bg` → G2 蒙版；
+  **若裁切结果仍有透明**（ColorOS 上 Telegram 的 adaptive bg 层就是
+  透明、依赖 OEM 蒙版成圆），转 `normalize_raster` 垫板。
+- legacy：LANCZOS 统一重采样到 288（此前 67-1208px 共 20 种固有尺寸
+  上屏，小图发虚大图锯齿——"缩放有点问题"的根因）→
+  `normalize_raster` → G2 蒙版。
+
+### 9.4 G2 连续曲率圆角（本轮"精致化"）
+
+圆弧圆角在直边交点曲率 0→1/r 突变，60px 下有"切角感"。改为
+`g2_outline`：角部 r×r 盒内超椭圆 |u/r|^n+|v/r|^n=1（n=5），与直边
+零曲率衔接。三面同构：PNG 蒙版（4x 超采样多边形 + LANCZOS 回缩，
+<4 的 alpha 残渣吸附 0）；预设 SVG 模板（v3，同函数出 path）；QML
+fallback（JS 复刻同公式，SVG data-URI 渲染）。注意四角参数化中 TR/BL
+需 swap cos/sin 项，方向反了会切掉直边（首个实现的坑）。
+
+### 9.5 白底/透明角兜底链（glm 三轮验收驱动）
+
+- 边框白家族 ≥40% 即以其均值为 flood 基色（OPPO 商城白底+绿带：
+  模态边色是绿带，旧行为直接放弃）。
+- 透明角图标的三个 passthrough 出口（满版白底夸克/低覆盖 OTA 线稿/
+  中性内容日历）一律先白底化再走 `_recolor_white_bg`；彩色满版不受
+  影响（flood 只吃白）。
+- 纯中性内容 → 冷银板 (217,221,227)（HSL 215°/0.16/0.87）；
+  flood 后全白无信息图整版涂银板。
+- 真机终验：113 个图标 0 白板 0 透明角；glm 十二宫放大验收 Telegram
+  破洞/OPPO 白板修复确认，G2 圆角 PASS。
+
+## 10. 第四轮：圆角 30% + 内容尺度统一 + 暗板（2026-09-13）
+
+用户反馈三项，对应三个修复：
+
+1. **圆角太小**：G2 角延展 23% → **30%**（60px 格 r=18），更接近
+   ColorOS/HyperOS 桌面的圆润观感。三处同步：蒙版默认值、预设 SVG
+   模板（v4，r=18/60）、QML fallback（JS 0.30）。
+
+2. **bilibili/Flexcil/Google "明显放大"**：根因是各应用 adaptive fg
+   在 artwork 内的摆位不一（可视区 0.55-0.78 都有），并排忽大忽小。
+   根治：dex 对 adaptive 额外输出 **fg/bg 两个分层渲染 PNG**（
+   `AdaptiveIconDrawable.getForeground()/getBackground()` 各画 432），
+   PC 侧 `_compose_layers` 用 fg alpha bbox（真实造型轮廓，扁平合成
+   图里不可得）把前景归一到统一视觉带：span>0.72 缩到 0.66、
+   span<0.52 放大到 ≤0.56（限幅 1.2x 防糊），bg 层近白则 tint。
+   Google/Gemini 的纯白 bg 检测不到主色 → 冷银板（四色 G 在银板上
+   对比反而更好）。
+
+3. **计算器（暗色）角部填充**：ColorOS 计算器是满宽深灰蓝圆
+   legacy，透明角在 G2 切边处露底。`normalize_raster` 新增满宽造型
+   扩板：bbox span≥0.95 且 mean 不透明色 luma<0.45（暗造型）→ 以
+   **造型原色**垫满画布（计算器 (63,67,78) 深板，暗色身份保留）。
+   亮造型（白底满版）不适用此分支——alpha_composite 的 over 语义下
+   不透明白底会盖住任何板色（夸克回归白板的教训），必须落回 flood
+   重涂链。缓存代 .r12。
+
+真机终验：113 图标 0 白板；bilibili/Flexcil/Google/酷安/Telegram 前景
+span 全部落 0.64-0.66 带；计算器深板成型。
+
+## 11. 第五轮收敛：圆角 38% + 分层合成的三个坑（2026-09-13）
+
+- **圆角 30%→38%**：glm 像素测量发现 G2 的视觉切入带 ≈ 0.44×角延展
+  （渐进切点的数学特性），30% 只等效圆弧 ~13%，仍偏方。上到 38%
+  （288px 图 r=110，边缘实心起点 x≈63=22%）后视觉等效 ≈ iOS/ColorOS
+  带宽。预设 v5（r=23/60）、QML fallback 0.38 同步。
+- **分层合成的三个坑**（本轮流出的 r13 黑心事件）：
+  1. Telegram 的 fg 层带一块黑色装饰小样（span 0.50），触发"小前景
+     放大"分支后放大成黑块——**删除放大分支**，fg 在带内（≤0.72）
+     一律原样贴（与系统桌面一致）；只保留 >0.72 的缩小归一。
+  2. `_resize_over` 的预乘 backdrop 原来传黑色，fg 缩放后透明边缘烧黑
+     ——backdrop 必须传 plate 主色。
+  3. Telegram 的图层分配与直觉相反：可见内容在 bg 层（白盘+蓝圆 0.7
+     宽），fg 几乎全空。`_recolor_white_bg` 增加圆盘判定：宽高比
+     0.9-1.1、coverage 0.60-0.90（≈π/4）、直径 ≥65% 的圆盘内容用
+     **原色融合**（满版品牌色，Telegram/夸克蓝环），带状/满版白底
+     （OPPO 绿带、日历黑字）保持 pastel tint。缓存代 .r14。
+
+真机：113 图标 0 白板 0 黑块；Telegram 满版蓝、夸克原色蓝板、计算器
+深板、bili/Google/Flexcil 内容 0.64-0.66 带全部就位。
+
+## 12. 第六轮：Apple 纯超椭圆 + 边缘三修（2026-09-13）
+
+用户四点反馈（圆角再加大参考 Apple、边缘锯齿、白线、bilibili 色差），
+社区调研（squircle.js / iOS 超椭圆文献）确认 iOS 图标 = 纯五次超椭圆
+无直边，非"直边+圆角"结构：
+
+- **形状**：`apply_rounded_mask` 默认 r=50% —— g2_outline 的四段角
+  曲线在边中点相接、直边长度归零，形状退化为完整超椭圆，与 Apple
+  数学同构。轮廓采样 40→96 步/角、蒙版超采样 4x→6x。
+- **显示端锯齿**：288px 缓存缩到 60px 显示（150% DPI 下 90px）是
+  ~3-5x 缩小，Qt 默认滤波产生摩尔纹/锯齿——QML Image 加
+  `mipmap: true` + `smooth: true`（社区标准解）。
+- **白圈**（夸克/Telegram logo 边缘白环）：flood 白重涂的边界白 AA
+  像素残留——替换循环前对 flood mask 做 1px 8 邻域膨胀
+  （MaxFilter(3)），膨胀区内仍近白的像素一并重涂。
+- **bilibili 色差**：fg 层自带与 bg 同色的底块（粉 TV 脸叠粉渐变
+  bg，两块粉色调不一产生突变）。`_strip_ground_tone`：fg 不透明像素
+  中与 plate 中心色接近（diff L<28）的占比 ≥40% 时整块透明化，露出
+  bg 渐变 → 色调连续；Google/Word 等 fg 与 bg 不同色不受影响。
+  剥离后 fg bbox 重算，span 归一自然适配。缓存代 .r15、预设 v6
+  （r=30/60）。
+
+真机：113 图标 0 白板；Telegram/夸克白圈消除（径向采样连续）；
+bili 行扫描为连续渐变。
+
+## 13. 第七轮：定向边缘收锐 `_crisp_edges`（2026-09-13）
+
+glm 第六轮放大审出残留白圈：**小尺寸 legacy 放大引入的宽 AA 带**——
+夸克 107px 原图 LANCZOS 放大到 288 时，logo 边缘的白↔板过渡带同步
+放大到 2-3px，flood 的 1px 膨胀盖不住。60px 显示态径向亮度剖面无
+亮峰（人眼不可见），但 288 缓存放大态可见。
+
+`_crisp_edges`（所有 G2 出图前统一过）：大窗口中值滤波（Median 7）
+近似"板色场"（细内容在中值中消失）→ 内容 mask（与场差 >16）→ 边
+缘带（内容收缩 2px）→ 带内亮于场 8+ 的像素重涂场色。夸克环采样
+全为板色 (11-17,82-85,255)，Telegram 环偏差 ≤6/通道；0.02s/图。
+缓存代 .r16。
+
+## 14. 第八轮：白底忠实策略 + 六图标个案（2026-09-13）
+
+用户反馈调性反转："夸克这种应该是白底，现在的图标都不够显著了"——
+统一重涂体系让应用失去辨识度。定调：**官方忠实优先，生成式只兜底**。
+
+个案根因与修复：
+- **高德**（半涂银蓝板+绿边）：`_solid_border_color` 白家族判定对
+  渐变底误判 → 加渐变排除（边框采样通道极差 >40 即非均匀底，直通）。
+- **优酷**（品牌大圆被缩+银板）：fg 满宽（span≥0.95）是设计本身，
+  不再缩放；bg 白层按新策略忠实保留。
+- **夸克/日历/OTA**：白底直通（品牌白），仅 flatten 透明角；全白
+  无内容才银板兜底（113 个中 1 个边缘 case）。
+- **Flexcil 色阶**：`_crisp_edges` 的 Median(7) 场在渐变板上
+  posterise 成块 → 场改为"板区保真 + 内容区 GaussianBlur(7) 填充"
+  （薄内容从场中消失但渐变无损）。
+- **邮件/小红书圆角瑕疵**：满宽渐变圆用均值色扩板产生色调接缝 →
+  `_edge_ring_color`（alpha 边缘 3px 环带均值）扩板，渐变圆无缝。
+- **Telegram**：随白底忠实回归官方白圈蓝圆（bg 层本就是白盘+蓝圆）。
+
+`_recolor_white_bg` 大幅简化（白底直通+银板兜底），disc/tint 逻辑
+退役；`normalize_raster` 的暗造型扩板、透明 blob 板保留。缓存代
+.r17。113 图标 37s 重生成，1 个全白边缘 case（sangfor 淡 logo）。
+
+## 15. 第九轮：白边/灰点/色阶/乱码 + 全量包 + 固定快捷方式（2026-09-13）
+
+- **天气/主题商店白边**：两案不同根因。天气是圆角方形蓝图标（coverage
+  0.95 → full_bleed → flatten **白**补角 → 角部白弧）——`_flatten_white`
+  改为**边框模态色补角**（蓝图标补蓝、白图标补白，近黑模态=透明代理
+  时回退内容均值）+ 环带白线重涂（`_repaint_ring_whites`：透明边界
+  3px 内的近白实心像素涂板色，Android 渲染自带的 1px 白描边线）。
+  主题商店是**系统应用不在 -3 批渲染**（无缓存 → fallback 字母板）——
+  Adb.all_packages() 全量批渲染，113 → 289 个图标，系统应用首次获得
+  真图标。
+- **夸克角部灰点**：107px 原图透明角的 RGB 从黑跳白，resize 放大后
+  flatten 混灰——`_defringe_to`（半透明像素 RGB 重涂目标色）在
+  flatten/扩板前执行。
+- **Flexcil 色阶**：`_crisp_edges` 的修复对大内容边缘（F 字）在渐变
+  板上留场色台阶——双重门限：fix 面积 >0.4% 且非边缘环带（>50%
+  距画布边 12.5% 内）才跳过。
+- **Sam Helper 乱码 / 不背单词橙块 / ChatGPT 黑块**（同一根因三面）：
+  bg 层纯白无墨时曾用「fg 均值色当板」——浅蓝 fg（Sam Helper）恰好
+  成立，但橙色印章（不背单词）把整格吞成橙块、黑色结（ChatGPT）
+  吞成黑板。终版语义：**bg 无墨时白就是官方底**（印章/黑结/浅蓝
+  块都属 fg 内容，原位保留、照常参与内容带归一），plate 直接恢复
+  纯白；仅 bg 全透明（Telegram 类）保留 fg 满位豁免。FlClash 靛蓝
+  块同源，随终版一并修复。
+- **固定=快捷方式**：`apps` 模型保留置顶条目（与 pinnedApps 共享
+  同一 dict，icon patch 双模型一次生效）；togglePin 改为
+  `_add_shortcut`/`_remove_from`。glm 曾报「bilibili 未回插网格」，
+  放宽色阈值的像素聚类确认网格 (660,780) 处 27 命中簇即 bilibili
+  磁贴——目测误报；pytest 全链路 + 真机像素双重确认。缓存代 .r18。
+
+458 tests + ruff + mypy 全绿；全量 sweep 81s（289 图标）。
+
+## 16. 第十轮：EasyTier 蓝板吞没与板色选择总规则（2026-09-13）
+
+- **症状**：easytier-gui 显示为纯蓝块无图形。原图=透明底+亮蓝
+  网状线条（coverage 0.35、mean=线条色）。
+- **根因链**：coverage<0.5 → `_flatten_white` 补角；透明边框模态=
+  透明黑 → r18 引入的「内容均值回退」把**线条色当板色** → 蓝板+
+  蓝线=吞没。同设计曾让白圆浮透明（r18 前黑板）受益——均值回退
+  对「内容=块板」成立、对「内容=线条」是灾难。
+- **板色选择总规则**（收敛，用户点名理清）：
+  1. **不透明边框的模态色**可直接补角（夸克白、天气蓝圆角方）；
+  2. 透明边框时，**均值回退仅当不透明占比 ≥0.70**（均值=板，天
+     气 0.95/优酷满版）；稀疏内容（<0.70）补角一律**白**——任何
+     单色内容贴同色板都会被吞（EasyTier 蓝、假想黑圆同理）；
+  3. dominant 当板前提：内容**非单色**或**实心**（不透明占 bbox
+     ≥0.55，酷安绿圆白核 0.785）；**稀疏镂空的单色线条艺术**
+     （`_is_monochrome_art`）用白板（EasyTier/ChatGPT 类线条）。
+  一句话：**板与内容必须有区分度；拿不准时白**（与白底忠实定调
+  一致）。
+- 新增 `test_sparse_line_art_keeps_white_not_content_plate` 锁行
+  为；`test_normalize_floating_blob_lands_on_same_color_plate`
+  （酷安实心圆）回归通过。缓存代 .r20。
+
+## 17. 第十一轮：图标加载性能（2026-09-13，用户：「还能再快一点」）
+
+### 瓶颈测量
+- 单图后处理 ~55ms（compose 26 + crisp 18 + G2 13），289 图标串行
+  ≈16s——不是大头；
+- **真正的大头是架构**：每次启动 `render_device_icons` 全量重跑
+  （dex 渲染 289 包 ~12-15s + 目录 pull 289×3 文件 ~30s + 全量后处
+  理 16s ≈ 86s），且缓存命中的图标也被压在 render 之后才亮。
+
+### 优化（三层，全部落地）
+1. **缓存秒亮（pass 1）**：`app_info(..., cache_only=True,
+   device_meta=...)` 只读缓存（meta 一次读入避免 289 次 IO），miss
+   直接跳过（不碰 APK fallback 慢路径）——网格在 ADB 枚举完成后
+   毫秒级出全部已缓存图标；
+2. **增量渲染（pass 2）**：dex 仍全量跑（12s，后台无感知），但只
+   pull `labels.txt` 对比 versionCode——**pending（新装/升级/缺缓存）
+   为空时零文件传输零后处理**；>30 个才目录整体 pull，少量时逐文
+   件 pull；meta 只合并 pending 项；
+3. **并行后处理**：`ThreadPoolExecutor(8)`（PIL C 内核释放 GIL），
+  bump 缓存代的全量重生成 16s → ~3s。
+
+### Rust 调研结论（用户问询，已答复在案）
+单图 55ms 的主体是 PIL 的 C 实现（LANCZOS/高斯/合成）；Python 层
+仅调度。瓶颈在「无增量」的架构而非语言——增量后日常启动零后处
+理，Rust 重写无收益空间（设备端 dex+adb 传输 ~12s 是固有开销，
+换语言不变）。不引入 Rust，避免双构建链复杂度。
+
+### 体验（QML）
+真图标到达时从 fallback 字母板 **180ms 交叉淡入**（opacity
+Behavior 替代硬切换）。
+
+### 实测
+冷启动（缓存全热）：真图标出现 86s → **t≈4s**（彩色像素曲线
+t4/t8/t14/t22/t34 = 6679/6589/6798/6828/6839，8s 处低谷为淡入
+中间态）。`test_render_device_icons_incremental_skips_warm_cache`
+锁增量契约。缓存代维持 .r20（无管线改动）。

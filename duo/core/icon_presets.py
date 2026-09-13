@@ -18,7 +18,7 @@ from duo.core.paths import data_dir
 
 #: Template revision - bump when the SVG template changes so cached files
 #: (version-suffixed) never serve the old shape.
-_TEMPLATE_VERSION = 2
+_TEMPLATE_VERSION = 6
 
 
 def lighten(hex_color: str, fraction: float) -> str:
@@ -33,6 +33,20 @@ def lighten(hex_color: str, fraction: float) -> str:
 
         values = [toward_white(int(hex_color[i : i + 2], 16)) for i in (1, 3, 5)]
         return "#{:02X}{:02X}{:02X}".format(*values)
+
+
+def _g2_squircle_path(size: int, radius: int) -> str:
+        """SVG path tracing the shared G2 smooth-corner outline (apps.py).
+
+        Preset tiles must match the mask applied to real extracted icons -
+        same superellipse n=5, the full Apple-style curve (30 of 60).
+        """
+        from duo.core.apps import g2_outline
+
+        points = g2_outline(size, size, radius)
+        head, *tail = points
+        steps = " ".join(f"L{x:.2f} {y:.2f}" for x, y in tail)
+        return f"M{head[0]:.2f} {head[1]:.2f} {steps} Z"
 
 
 def render_preset_svg(preset: AppPreset) -> str:
@@ -55,7 +69,7 @@ def render_preset_svg(preset: AppPreset) -> str:
 <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0" stop-color="{gradient_top}"/><stop offset="1" stop-color="{preset.color}"/>
 </linearGradient></defs>
-<rect x="0" y="0" width="60" height="60" rx="14" fill="url(#bg)"/>
+<path d="{_g2_squircle_path(60, 30)}" fill="url(#bg)"/>
 <text x="30" y="{baseline}" text-anchor="middle"
       font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif"
       font-size="28" font-weight="600" fill="{ink}">{escape(preset.glyph)}</text>

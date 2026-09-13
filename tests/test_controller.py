@@ -275,7 +275,7 @@ def test_uninstalled_entries_leave_the_models(no_adb, prefs_stub, qapp):
         assert controller.pinnedApps == []
 
 
-def test_orphan_pin_hidden_until_reinstall(no_adb, prefs_stub, qapp):
+def test_orphan_pin_hidden_from_both_until_reinstall(no_adb, prefs_stub, qapp):
         """孤儿 pin：卸载后固定卡消失但 prefs 保留，重装自动回固定卡。
 
         有意行为（见 _rebuild_apps 注释）：一次卸载不丢用户的固定选择，
@@ -299,7 +299,7 @@ def test_orphan_pin_hidden_until_reinstall(no_adb, prefs_stub, qapp):
         assert controller.pinnedApps[0]["package"] == pkg
         assert controller.pinnedApps[0]["installed"] is True
         assert controller.pinnedApps[0]["pinned"] is True
-        assert pkg not in {entry["package"] for entry in controller.apps}
+        assert pkg in {entry["package"] for entry in controller.apps}
 
 
 def test_empty_catalog_guard_leaves_empty_models_standing(
@@ -358,12 +358,10 @@ def test_apps_model_sorts_pinyin_across_catalog_and_extras(no_adb, prefs_stub, q
         assert rows[0] == ("阿里", "org.alpha.app")   # al < bbdc < ... < zbar
 
 
-def test_toggle_pin_moves_entry_between_grid_and_pinned_row(no_adb, prefs_stub, qapp):
-        """Pin: the entry MOVES to the pinned row; the grid never repeats it.
+def test_toggle_pin_adds_shortcut_row_entry(no_adb, prefs_stub, qapp):
+        """Pin = shortcut: the pinned row gains the entry, grid keeps it.
 
-        Fixed-row semantics (DESIGN.md §3.3): pinned tiles leave the grid
-        instead of floating to its top. One toggle = exactly one
-        appsChanged + one pinnedAppsChanged emit.
+        One toggle = exactly one appsChanged + one pinnedAppsChanged emit.
         """
         controller = PanelController("/fake/adb.exe")
         label, package = _catalog_rows()[-1]   # would sit last in the grid
@@ -380,15 +378,16 @@ def test_toggle_pin_moves_entry_between_grid_and_pinned_row(no_adb, prefs_stub, 
         assert len(pin_emits) == 1
         assert controller.pinnedApps[0]["package"] == package
         assert controller.pinnedApps[0]["pinned"] is True
-        assert [entry["package"] for entry in controller.apps] == grid_before[:-1]
+        assert [entry["package"] for entry in controller.apps] == grid_before
         assert json.loads(prefs_stub.payload)["pinned"] == [package]
         assert controller.statusText == f"已置顶 {label}"
 
-        # A fresh controller reads the pin back: the row splits the same way.
+        # A fresh controller reads the pin back: the row keeps the
+        # shortcut and the grid keeps the entry.
         second = PanelController("/fake/adb.exe")
         assert second.pinnedApps[0]["package"] == package
         assert second.pinnedApps[0]["pinned"] is True
-        assert package not in [entry["package"] for entry in second.apps]
+        assert package in [entry["package"] for entry in second.apps]
 
         # Unpin: back to the pinyin position, persist again, one emit pair.
         second_app_emits: list[int] = []
@@ -404,26 +403,26 @@ def test_toggle_pin_moves_entry_between_grid_and_pinned_row(no_adb, prefs_stub, 
         assert second.statusText == f"已取消置顶 {label}"
 
 
-def test_pinned_third_party_app_lives_only_in_pinned_row(no_adb, prefs_stub, qapp):
-        """A pinned third-party app never appears in the grid.
+def test_pinned_third_party_app_also_lives_in_grid(no_adb, prefs_stub, qapp):
+        """A pinned third-party app lives in the grid AND the pinned row.
 
         The pin can outlive discovery (persisted for a package not yet in
-        the model); when the listing arrives the entry goes straight to
-        the pinned row, and rebuilds keep it there.
+        the model); when the listing arrives the entry enters both models
+        and rebuilds keep it there.
         """
         controller = PanelController("/fake/adb.exe")
         controller.togglePin("org.outside.app")   # not in the model yet
         controller.allAppsReady.emit(["org.outside.app"])
-        assert "org.outside.app" not in {
+        assert "org.outside.app" in {
                 entry["package"] for entry in controller.apps
         }
         assert controller.pinnedApps[0]["package"] == "org.outside.app"
         assert controller.pinnedApps[0]["pinned"] is True
 
-        # A rebuild (install poll) keeps it in the pinned row only -
-        # third-party survival requires the device to still report it.
+        # A rebuild (install poll) keeps it in both models - third-party
+        # survival requires the device to still report it.
         controller._installedResolved.emit({"org.outside.app"})
-        assert "org.outside.app" not in {
+        assert "org.outside.app" in {
                 entry["package"] for entry in controller.apps
         }
         assert controller.pinnedApps[0]["package"] == "org.outside.app"
@@ -771,7 +770,7 @@ def test_info_sweep_settles_pinned_row_once(no_adb, prefs_stub, qapp):
         controller.allAppsReady.emit(["org.zeta.app", "org.beta.app"])
         frozen_row = [str(e["package"]) for e in controller.pinnedApps]
         assert frozen_row == ["org.beta.app", "org.zeta.app"]   # Beta < Zeta
-        assert controller.apps == []   # 两个都在固定行，网格为空
+        assert len(controller.apps) == 2   # 固定=快捷方式：网格保留两者
 
         pin_emits: list[int] = []
         controller.pinnedAppsChanged.connect(lambda: pin_emits.append(1))

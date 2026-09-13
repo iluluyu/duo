@@ -29,7 +29,7 @@ def test_render_contains_gradient_stops_and_glyph():
         assert svg.count("stop-color=") == 2
         assert ">微</text>" in svg
         assert 'viewBox="0 0 60 60"' in svg
-        assert 'rx="14"' in svg
+        assert "M0.00 30.00" in svg and "fill=\"url(#bg)\"" in svg
 
 
 def test_gradient_uses_lightened_top_and_brand_bottom():
@@ -61,7 +61,7 @@ def test_preset_icon_path_writes_then_caches(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(icon_presets, "data_dir", lambda: tmp_path)
 
         path = preset_icon_path("com.tencent.mm")
-        assert path == tmp_path / "presets" / "com.tencent.mm.v2.svg"
+        assert path == tmp_path / "presets" / "com.tencent.mm.v6.svg"
         assert path is not None and path.exists()
         content = path.read_text(encoding="utf-8")
         assert "微" in content

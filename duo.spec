@@ -31,6 +31,7 @@ REPO = SPECPATH
 datas = [
     (os.path.join(REPO, "duo/ui/qml"), "duo/ui/qml"),
     (os.path.join(REPO, "duo/resources/chrome_overlay.cs"), "duo/resources"),
+    (os.path.join(REPO, "duo/resources/duo_icons.dex"), "duo/resources"),
     (os.path.join(REPO, "assets/duo.ico"), "assets"),
 ]
 

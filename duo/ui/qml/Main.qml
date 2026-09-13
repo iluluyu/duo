@@ -1274,7 +1274,7 @@ ApplicationWindow {
     }
 
     // 应用图标 + 未知应用 fallback：真实/预设图标（file URL，Image 原生
-    // 渲染 PNG/SVG）优先，icon 空串 → 首字 squircle（圆角 23%）+ 包名
+    // 渲染 PNG/SVG）优先，icon 空串 → 首字 G2 squircle（超椭圆角 23%）+ 包名
     // 哈希取色的柔和色板 + 白字首字（DESIGN.md §3.1，禁止灰底圆）。
     component AppGlyph: Item {
         id: glyph
@@ -1283,19 +1283,63 @@ ApplicationWindow {
         width: size
         height: size
 
+        // G2 squircle（超椭圆角 n=5，23%），与 apps.py 蒙版同构；
+        // fallback 用 JS 拼的 SVG data-URI 渲染，避免 Canvas 重绘。
+        function g2SquircleSource(square, color) {
+            let r = Math.round(square * 0.5)
+            let n = 2.0 / 5.0
+            let steps = 24
+            let pts = []
+            let corner = (cx, cy, sx, sy, swap) => {
+                for (let i = 0; i <= steps; i++) {
+                    let t = Math.PI / 2 * i / steps
+                    let c = Math.pow(Math.cos(t), n)
+                    let s = Math.pow(Math.sin(t), n)
+                    if (swap) { let tmp = c; c = s; s = tmp }
+                    pts.push((cx + sx * r * c).toFixed(2) + "," + (cy + sy * r * s).toFixed(2))
+                }
+            }
+            corner(r, r, -1, -1, false)
+            pts.push((square - r) + ",0")
+            corner(square - r, r, 1, -1, true)
+            pts.push(square + "," + (square - r))
+            corner(square - r, square - r, 1, 1, false)
+            pts.push(r + "," + square)
+            corner(r, square - r, -1, 1, true)
+            pts.push("0," + r)
+            let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + square + " " + square + "'>" +
+                      "<polygon points='" + pts.join(" ") + "' fill='" + color + "'/></svg>"
+            return "data:image/svg+xml;utf8," + encodeURIComponent(svg)
+        }
+
         Image {
             anchors.fill: parent
-            visible: glyph.modelData.icon !== ""
+            // 真图标到达时从 fallback 交叉淡入（缓存秒亮后视觉连续）
+            opacity: glyph.modelData.icon !== "" ? 1.0 : 0.0
+            visible: opacity > 0.01
             source: visible ? glyph.modelData.icon : ""
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
+            // 288px 缓存缩到 60px 显示：mipmap 消除缩小锯齿/摩尔纹
+            mipmap: true
+            smooth: true
+            Behavior on opacity { NumberAnimation { duration: 180 } }
         }
-        Rectangle {
+        Item {
             objectName: "fallbackIcon"
             anchors.fill: parent
-            radius: Math.round(glyph.size * 0.23)   // squircle 23%（60→14 / 44→10）
-            visible: glyph.modelData.icon === ""
-            color: root.fallbackColor(String(glyph.modelData.package))
+            opacity: glyph.modelData.icon === "" ? 1.0 : 0.0
+            visible: opacity > 0.01
+            Image {
+                anchors.fill: parent
+                source: glyph.modelData.icon === ""
+                        ? glyph.g2SquircleSource(
+                              Math.round(glyph.size),
+                              root.fallbackColor(String(glyph.modelData.package)))
+                        : ""
+                smooth: true
+                fillMode: Image.PreserveAspectFit
+            }
             Text {
                 anchors.centerIn: parent
                 text: String(glyph.modelData.label).charAt(0)
@@ -1381,45 +1425,8 @@ ApplicationWindow {
             Accessible.name: tile.modelData.label
         }
 
-        // 置顶角标：叠在 tileMa 之上（后声明 → 更高堆叠序，点击不穿透到
-        // 磁贴），位于图标右上角。已置顶常显 ★（强调色），未置顶仅在 hover
-        // 时露出 ☆ 提示可点；不安装也允许置顶（与模型状态一致，装好即在顶）。
-        AbstractButton {
-            id: pinBtn
-            objectName: "pinButton"
-            width: 26
-            height: 26
-            anchors.top: parent.top
-            anchors.topMargin: 1
-            anchors.horizontalCenter: parent.horizontalCenter
-            // 图标 60px 居中：角标压在图标右上角，右侧略微悬出
-            anchors.horizontalCenterOffset: 21
-            opacity: tile.modelData.pinned || tileMa.containsMouse ? 1.0 : 0.0
-            visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: Style.durFast } }
-
-            background: Rectangle {
-                radius: 13
-                color: pinBtn.pressed ? Style.pressWash
-                                      : (pinBtn.hovered ? Style.hoverWash : Style.cardFill)
-                border.width: 1
-                border.color: Style.cardBorder
-                Behavior on color { ColorAnimation { duration: Style.durFast } }
-            }
-            contentItem: Text {
-                text: tile.modelData.pinned ? "★" : "☆"
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
-                color: tile.modelData.pinned ? Style.accent : Style.ink2
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            onClicked: ctrl.togglePin(tile.modelData.package)
-            Accessible.role: Accessible.Button
-            Accessible.name: tile.modelData.pinned
-                              ? "取消置顶 " + tile.modelData.label
-                              : "置顶 " + tile.modelData.label
-        }
+        // 置顶入口=右键菜单（2026-09-13 用户复审：图标右上角的
+        // 圆圈+星角标没有必要，已移除；固定行本身即置顶状态的显示）。
     }
 
     // 固定卡小图标（44px）：无文字，点击/右键/长按语义与磁贴一致
