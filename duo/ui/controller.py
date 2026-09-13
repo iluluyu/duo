@@ -36,6 +36,8 @@ from duo.core.apps import (
         app_info,
         label_sort_key,
         parse_resolve_activity,
+        read_device_meta,
+        render_device_icons,
 )
 from duo.core.aspects import (
         BODY_LANDSCAPE_ID,
@@ -961,10 +963,9 @@ class PanelController(QObject):
 
         @pyqtProperty(list, notify=appsChanged)
         def apps(self) -> list[dict[str, object]]:
-                """The QML grid model: unpinned entries only, pinyin-initial
-                label order (catalog and third-party apps interleaved).
-                Pinned tiles live in :attr:`pinnedApps` instead - the grid
-                never repeats them (DESIGN.md §3.3).
+                """The QML grid model: ALL installed entries (pinned
+                included - pinning is a shortcut into the pinned row, the
+                grid never hides them), pinyin-initial label order.
 
                 Entries carry package/label/key/installed/pinned plus
                 ``icon`` as a file URL string (the bundled preset until the
@@ -1365,44 +1366,49 @@ class PanelController(QObject):
 
         @pyqtSlot(str)
         def togglePin(self, package: str) -> None:
-                """Pin/unpin an app: MOVE it between grid and pinned row.
+                """Pin/unpin an app: the pinned row gains/loses a shortcut.
 
-                One user action = exactly one model mutation + one
-                ``appsChanged``/``pinnedAppsChanged`` emit pair: the move,
-                flag patch, re-sort and notify all land together, so QML
-                rebuilds once (the batch contract the icon/info hops
-                already follow). A package not currently in either model
-                still persists its pin state - it applies when the entry
-                appears (catalog landing, a third-party listing, or a
-                reinstall after the installed-only grid dropped it): orphan
-                pins are never pruned from prefs on purpose.
+                The grid never hides a pinned entry (pin = shortcut, not a
+                move). One user action = exactly one model mutation + one
+                ``appsChanged``/``pinnedAppsChanged`` emit pair. A package
+                not currently in the model still persists its pin state -
+                it applies when the entry appears (catalog landing, a
+                third-party listing, or a reinstall after the installed-only
+                grid dropped it): orphan pins are never pruned on purpose.
                 """
                 label = session_label(package)
                 if package in self._pinned:
                         self._pinned.discard(package)
                         self._set_status(f"已取消置顶 {label}")
-                        self._move_entry(self._pinned_apps, self._apps, package, False)
+                        self._remove_from(self._pinned_apps, package)
                 else:
                         self._pinned.add(package)
                         self._set_status(f"已置顶 {label}")
-                        self._move_entry(self._apps, self._pinned_apps, package, True)
+                        self._add_shortcut(self._pinned_apps, package)
                 save_pinned_prefs(self._pinned)
                 self._sort_apps()
                 self.appsChanged.emit()
                 self.pinnedAppsChanged.emit()
 
-        def _move_entry(
-                self,
-                source: list[dict[str, object]],
-                target: list[dict[str, object]],
-                package: str,
-                pinned: bool,
+        def _remove_from(
+                self, source: list[dict[str, object]], package: str
         ) -> bool:
-                """Move one entry between the two models; False = absent."""
+                """Drop one entry from ``source`` (the grid keeps its own)."""
                 for index, entry in enumerate(source):
                         if str(entry["package"]) == package:
-                                entry["pinned"] = pinned
-                                target.append(source.pop(index))
+                                entry["pinned"] = False
+                                source.pop(index)
+                                return True
+                return False
+
+        def _add_shortcut(
+                self, target: list[dict[str, object]], package: str
+        ) -> bool:
+                """Add the grid's entry to the pinned row (same dict object)."""
+                for entry in self._apps:
+                        if str(entry["package"]) == package:
+                                entry["pinned"] = True
+                                target.append(entry)
                                 return True
                 return False
 
@@ -2075,7 +2081,10 @@ class PanelController(QObject):
                         entry["pinned"] = package in self._pinned
                         entry["key"] = label_sort_key(str(entry["label"]))
                         entries.append(entry)
-                self._apps = [entry for entry in entries if not entry["pinned"]]
+                # Pinning is a shortcut, not a move: the grid keeps every
+                # entry (same dict objects shared with the pinned row, so
+                # icon patches hit both models at once).
+                self._apps = entries
                 self._pinned_apps = [entry for entry in entries if entry["pinned"]]
                 self._sort_apps()
                 self.appsChanged.emit()
@@ -2121,7 +2130,7 @@ class PanelController(QObject):
                                 "pinned": package in self._pinned,
                         })
                 if fresh:
-                        self._apps.extend(entry for entry in fresh if not entry["pinned"])
+                        self._apps.extend(fresh)
                         self._pinned_apps.extend(entry for entry in fresh if entry["pinned"])
                         self._sort_apps()
                         self.appsChanged.emit()
@@ -2276,30 +2285,54 @@ class PanelController(QObject):
                                 except (AdbError, OSError):
                                         return
                                 self.allAppsReady.emit(packages)
-                                # Sequential background resolution: real icon + label
-                                # per app (cached in the data dir after first pass).
-                                # Results hop in chunks of 8: a first sweep over
-                                # ~100 third-party packages costs minutes of adb
-                                # roundtrips, and a single end-of-sweep emit leaves
-                                # every label as its package-derived fallback the
-                                # whole time (reads as "exploration stopped").
-                                # Chunking keeps the batch contract per hop - one
-                                # appsChanged = one grid rebuild - while progress
-                                # lands visibly; _apply_app_info patches in place
-                                # and freezes the order until the sweep ends.
+                                # Pass 1 - CACHE-ONLY: every cached icon and
+                                # label surfaces instantly (no device I/O,
+                                # no APK fallback); a warm cache means the
+                                # grid is complete within milliseconds.
+                                device_meta = read_device_meta()
+                                misses: list[str] = []
                                 chunk_size = 8
                                 batch: list[tuple[str, object, str]] = []
+
+                                def _flush(batch: list[tuple[str, object, str]]) -> None:
+                                        if batch:
+                                                self.appInfoReady.emit(list(batch))
+                                                batch.clear()
+
                                 for package in packages:
+                                        try:
+                                                info = app_info(
+                                                        adb, package,
+                                                        device_meta=device_meta,
+                                                        cache_only=True,
+                                                )
+                                        except Exception:
+                                                misses.append(package)
+                                                continue
+                                        batch.append((package, info.icon_path, info.label))
+                                        if len(batch) >= chunk_size:
+                                                _flush(batch)
+                                _flush(batch)
+                                # Pass 2 - INCREMENTAL on-device render for
+                                # every installed package (system apps
+                                # included): only new/upgraded packages get
+                                # pulled and post-processed, then their
+                                # metadata lands in the merged file.
+                                with contextlib.suppress(Exception):
+                                        render_device_icons(adb, adb.all_packages())
+                                # Pass 3 - resolve exactly the pass-1
+                                # misses (the render pass just cached them:
+                                # each hit is a file-exists check, chunked
+                                # so progress stays visible).
+                                for package in misses:
                                         try:
                                                 info = app_info(adb, package)
                                         except Exception:
                                                 continue
                                         batch.append((package, info.icon_path, info.label))
                                         if len(batch) >= chunk_size:
-                                                self.appInfoReady.emit(batch)
-                                                batch = []
-                                if batch:
-                                        self.appInfoReady.emit(batch)
+                                                _flush(batch)
+                                _flush(batch)
                         finally:
                                 # Sweep over - on success, on an early return
                                 # (no device / listing failed) or on any
