@@ -23,6 +23,7 @@ VALID_CORNER_MODES = ("system", "g2", "none")
 VALID_AUDIO_POLICIES = ("latest", "all", "off")
 VALID_VIDEO_CODECS = ("auto", "h264", "h265", "av1")
 VALID_BAR_MODES = ("immersive", "native", "none")
+VALID_THEMES = ("light", "dark", "system")
 
 # Input ranges, not hardware promises (docs §4.1).
 FPS_RANGE = (1, 240)
@@ -59,6 +60,10 @@ class Settings:
                                          # (edge quality/clipping unresolved)
         corner_size_dip: int = 48      # iPhone/iPad-like squircle proportion
         glass_enabled: bool = True
+        # 外观主题（2026-09-12 暗色模式）：light / dark / system（跟随
+        # Windows 系统色）。面板启动时解析、保存后即时切换；system 的
+        # 实时跟随经 QGuiApplication.styleHints().colorSchemeChanged。
+        theme: str = "light"
         # 投屏质量三项（docs/mirroring-quality.md）：
         # latest = 新会话带音频时，其他音频会话自动重启为 --no-audio
         # all = 不做单音频仲裁（多会话并行音频，用户自担混音嘈杂）
@@ -166,6 +171,11 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 problems.append(f"glass_enabled: 期望布尔，实际为 {glass!r}")
                 glass = defaults.glass_enabled
 
+        theme = raw.get("theme", defaults.theme)
+        if theme not in VALID_THEMES:
+                problems.append(f"theme: {theme!r} 不在 {VALID_THEMES}")
+                theme = defaults.theme
+
         audio_policy = raw.get("audio_policy", defaults.audio_policy)
         if audio_policy not in VALID_AUDIO_POLICIES:
                 problems.append(
@@ -208,6 +218,7 @@ def _sanitize(raw: dict, problems: list[str]) -> Settings:
                 corner_mode=corner_mode,
                 corner_size_dip=corner_size if corner_size is not None else 0,
                 glass_enabled=glass,
+                theme=theme,
                 audio_policy=audio_policy,
                 video_codec=video_codec,
                 top_bar_mode=top_bar_mode,
@@ -295,6 +306,7 @@ __all__ = [
         "Settings",
         "VALID_AUDIO_POLICIES",
         "VALID_BAR_MODES",
+        "VALID_THEMES",
         "VALID_CORNER_MODES",
         "VALID_VIDEO_CODECS",
         "corner_radius_dip",

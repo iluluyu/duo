@@ -120,6 +120,13 @@ def _resolve_bar_mode(flag: str | None, setting: str) -> str:
         return setting if flag is None else flag
 
 
+def _resolve_glass(flag: str | None, setting: bool) -> bool:
+        """--glass: explicit flag beats the saved glass_enabled setting."""
+        if flag is None:
+                return setting
+        return flag == "1"
+
+
 def _resolve_video(
         scrcpy_path: str,
         serial: str,
@@ -409,6 +416,8 @@ def _run_mirror(args: argparse.Namespace) -> int:
                                 args.chrome_bottom, settings.bottom_bar_mode),
                         pin_top=read_top_pin(args.app) if args.app else False,
                         pin_file=pin_file,
+                        glass=_resolve_glass(args.glass, settings.glass_enabled),
+                        bar_theme=settings.theme,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
@@ -535,6 +544,14 @@ def _build_parser() -> argparse.ArgumentParser:
                 "(overlay), native or none (no bar - the default, since "
                 "scrcpy right-click already sends BACK); follows the "
                 "settings bottom_bar_mode when omitted",
+        )
+        mirror.add_argument(
+                "--glass",
+                choices=["0", "1"],
+                default=None,
+                help="window bars material: 1 = frosted glass (default), "
+                     "0 = plain opaque; follows the settings glass_enabled "
+                     "when omitted",
         )
         mirror.add_argument(
                 "--corner-radius",

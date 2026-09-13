@@ -115,12 +115,18 @@ def build_is_fresh(exe: Path, stamp_file: Path, stamp: str) -> bool:
 
 
 def compile_command(csc: str, source_win: str, out_win: str) -> list[str]:
-        """Assemble the csc.exe argv that builds the overlay executable."""
+        """Assemble the csc.exe argv that builds the overlay executable.
+
+        ``/codepage:65001``：源文件是 UTF-8 无 BOM，legacy csc 默认按系统
+        ANSI（中文 Windows = GBK）读——多字节注释偶发错位出 CS1056
+        （2026-09-12 真实复现），显式按 UTF-8 读才确定。
+        """
         return [
                 csc,
                 "-nologo",
                 "-target:winexe",
                 "-optimize+",
+                "-codepage:65001",
                 f"-out:{out_win}",
                 "-r:System.dll",
                 "-r:System.Drawing.dll",
@@ -144,6 +150,8 @@ def overlay_command(
         bottom_bar_mode: str = "immersive",
         pin_top: bool = False,
         pin_file: str | None = None,
+        glass: bool = True,
+        bar_theme: str = "system",
 ) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
@@ -178,6 +186,15 @@ def overlay_command(
         every toggle, so the next launch of the same app resumes pinned.
         Device mirroring (no package) passes no file: its pin lives and
         dies with the session.
+
+        ``glass`` (2026-09-12 玻璃材质总开关): False = the overlay renders
+        plain opaque bars instead of frosted glass (both the immersive
+        capsule and the native chin; sampled luminance adaptivity for
+        ink/pill colors stays on).
+
+        ``bar_theme`` (light|dark|system): consumed only by the plain
+        material (light #F3F3F3 / dark #202020); ``system`` resolves the
+        Windows AppsUseLightTheme registry value inside the overlay.
         """
         argv = [
                 exe,
@@ -197,6 +214,10 @@ def overlay_command(
                 bottom_bar_mode,
                 "--pin-top",
                 "1" if pin_top else "0",
+                "--glass",
+                "1" if glass else "0",
+                "--bar-theme",
+                bar_theme,
         ]
         if video_width and video_height:
                 argv += ["--video-w", str(video_width), "--video-h", str(video_height)]
@@ -307,6 +328,8 @@ class ChromeOverlay:
                 bottom_bar_mode: str = "immersive",
                 pin_top: bool = False,
                 pin_file: Path | None = None,
+                glass: bool = True,
+                bar_theme: str = "system",
         ) -> None:
                 self._title = title
                 self._serial = serial
@@ -331,6 +354,8 @@ class ChromeOverlay:
                         bottom_bar_mode=bottom_bar_mode,
                         pin_top=pin_top,
                         pin_file=pin_arg,
+                        glass=glass,
+                        bar_theme=bar_theme,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 
@@ -353,6 +378,7 @@ class ChromeOverlay:
                         f"top={self.command[self.command.index('--chrome-top') + 1]} "
                         f"bottom={self.command[self.command.index('--chrome-bottom') + 1]} "
                         f"pin={self.command[self.command.index('--pin-top') + 1]} "
+                        f"glass={self.command[self.command.index('--glass') + 1]} "
                         f"argv={self.command}\n"
                 ).encode("utf-8", errors="replace")
                 # The child inherits the descriptor; the parent-side handle can

@@ -8,9 +8,11 @@ offscreen + software 渲染；只在 adb 边界打桩（一台在线设备 + 目
 
     .venv/bin/python scripts/qml_shots.py
 
-输出两张 PNG 到 docs/validation/assets/：
+输出四张 PNG 到 docs/validation/assets/：
     qml-main.png           主面板正常态（设备在线、目录应用已装、状态 toast）
     qml-settings.png       设置页默认态（DPI/圆角控件已删，仅剩玻璃开关）
+    qml-main-dark.png      同上，暗色主题（settings theme=dark → applyTheme）
+    qml-settings-dark.png  同上，暗色主题
 """
 
 from __future__ import annotations
@@ -127,6 +129,21 @@ def main() -> int:
                 print("[fatal] 设置页未推入", file=sys.stderr)
                 return 2
         grab(window, "qml-settings.png")
+
+        # 暗色两图：临时 settings 写 theme=dark 后走生产 applyTheme() 路径
+        # （与用户在设置页保存后即时切换完全同链路，不重启引擎）
+        (TMP / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
+        controller.applyTheme()
+        pump(300)
+        if not controller.effectiveDark:
+                print("[fatal] 暗色未生效", file=sys.stderr)
+                return 2
+        grab(window, "qml-settings-dark.png")
+        back = window.findChild(QObject, "capsuleHome")
+        if back is not None:
+                back.click()
+                pump(400)
+        grab(window, "qml-main-dark.png")
 
         # 按测试同款顺序拆卸：先杀 QML 引擎（绑定不再重估），再停控制器，
         # 避免进程退出期 GC 顺序导致的 "ctrl of null" 绑定噪音。

@@ -24,7 +24,7 @@
 | `duo/ui/controller.py` | `PanelController`：QML 的唯一数据源（`ctrl`）。设备/应用/会话/偏好全部经它；图标后台拉取、批量通知契约也在这 |
 | `duo/ui/qml/Main.qml` | 主面板全部 QML：布局、顶栏胶囊、四枚菜单浮层、可复用组件库（`component` 定义在文件尾部） |
 | `duo/ui/qml/SettingsPage.qml` | 设置页（StackView push），经 `settingsApi` 读写 |
-| `duo/ui/qml/Style.qml` | 视觉令牌单例（唯一色板/圆角/时长/字体/fallback 色板）。改色只改这里 + DESIGN.md §2 同步 |
+| `duo/ui/qml/Style.qml` | 视觉令牌单例（亮/暗双值，`dark` 绑定 `ctrl.effectiveDark`；改色只改这里 + DESIGN.md §2 同步） |
 | `duo/ui/qml/qmldir` | 注册 `Style` singleton（删文件必炸 import，勿动） |
 
 ### 会话窗 chrome（C# overlay，Windows 专用）
@@ -47,7 +47,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `scripts/qml_shots.py` | offscreen + software 渲染出图：`qml-main.png` / `qml-settings.png` 到 `docs/validation/assets/`。DESIGN.md 铁律 10 的出图验收 |
+| `scripts/qml_shots.py` | offscreen + software 渲染出图：`qml-main.png` / `qml-settings.png` / `qml-main-dark.png` / `qml-settings-dark.png`（暗色走 applyTheme 生产路径）到 `docs/validation/assets/`。DESIGN.md 铁律 10 的出图验收 |
 | `tests/test_qml_app.py` | 引擎加载、设置往返、controller 绑定 |
 | `tests/test_settings_qml.py` | SettingsPage.qml 结构断言（按 objectName） |
 | `tests/test_icon_presets.py` | 预设 SVG 内容/缓存断言 |
@@ -132,6 +132,9 @@ glass-recipe.md。
 - 即时刷新信号：`displayModeChanged` / `barPrefsChanged` /
   `audioPrefsChanged` / `behaviorPrefsChanged`（都带 package，菜单开着时
   刷选中圆点）
+- 外观态（2026-09-12）：属性 `effectiveDark`（system 已折叠的亮/暗）与
+  `glassMaterial`（玻璃总开关），notify 都是 `themeChanged`；保存后调
+  `applyTheme()` 重读 settings 即时生效（Style 单例绑定这两个属性）
 - 按应用记忆全部落 `gui_prefs.json`：`display`（显示模式）/ `bars`（窗口栏）/
   `audio`（音频独占）/ `behavior`（断开保留画面）
 
@@ -186,6 +189,10 @@ patch，扫描结束一次重排（`_apply_info_sweep_done`）。
   （per-app override 否则设置页默认）→ 注入 `--chrome-top` /
   `--chrome-bottom`（`chrome.py overlay_command`）→ settings 校验枚举 →
   C# `NormalizeBarMode` 归一（未知值回退 immersive）。
+- **玻璃材质总开关**（2026-09-12）：同链路追加 `--glass 0|1` +
+  `--bar-theme light|dark|system`（controller `_pin_glass` fresh-read
+  settings 的 `glass_enabled`/`theme`）；关 = 上巴/下巴普通不透明材质
+  （配方见 window-experience.md §13）。
 - **默认值**（`settings.py`）：上巴 immersive、下巴 none（scrcpy 右键已是
   返回，下巴对多数会话冗余）。设置页两字段 = 默认值，仅未单独设置的应用
   生效。
@@ -204,11 +211,17 @@ patch，扫描结束一次重排（`_apply_info_sweep_done`）。
   （最小化/比例适配/铺满/关闭），mirror/fixed 3 键（无铺满——比例窗不可
   拉伸）。
 - **底板**（`DrawCapsuleAcrylic`）：PrintWindow 采样视频内容（reveal 时 +
-  约 300ms 节奏，永不逐帧）→ 1/8 降采样模糊（约 20px）→ 饱和 1.15 →
-  暗熏 `rgba(28,28,30,0.55)`；无样本时干底 `rgba(28,28,30,0.71)`；
-  1px 顶部亮边 rgba(255,255,255,0.10) + 胶囊外圈 rim rgba(255,255,255,0.27)。
+  约 300ms 节奏；胶囊 + 3σ overscan）→ Kovesi 3×box 真高斯
+  （σ = **6.0 DIP ×DPI，亮暗一致**）→ core 区 1:1 直贴 → 双态
+  vibrancy（暗 0.90/+0.02，亮 0.98/+0.10）。frost 直接进入透明层，
+  不再叠于暗干板：暗态 α0.90 / 10% 活底，亮态 α0.86 / 14% 活底；
+  无样本时才用 #1C1C1E@92% 干板。顶光渐变暗态 2.4%→0.4%、亮态
+  8%→1.5%。亮度阈值 0.50±0.04 迟滞；亮态深墨、暗态白字。
+  静止态零描边；固定态 rim 为 35% 黑 / 50% 白。轮廓、rim 与字形
+  走 3× 超采样，预乘后用 N×N 盒平均降采样（无振铃），再送
+  UpdateLayeredWindow。完整论述见 `docs/window-experience.md` §11。
 - **按钮字形**：Segoe Fluent Icons（回退 Segoe MDL2 Assets）12px×scale，
-  静止 opacity 0.78 / hover 1.0：
+  自适应墨/白（亮态 #1D1D1F α0.85 / 暗态 #FFFFFF α0.90，hover 均 1.0）：
   `─ E921` 最小化、`⤢ E740` 比例适配（FakeMaximize fit）、`⤒ E922` 铺满
   工作区（FakeMaximize fill，仅 flex）、`✕ E8BB` 关闭；激活态切换
   `⤡ E923` restore 字形（`SetMaximized`）。
@@ -239,9 +252,12 @@ patch，扫描结束一次重排（`_apply_info_sweep_done`）。
 
 ### 4.5 其余 chrome 面
 
-- **下巴** `ChinWindow`：底部胶囊（浅色亚克力配方），○ 单击 = 返回，长按 =
-  镜像窗 keyevent 3 / 虚拟屏 `am start --display N -c HOME`。**虚拟屏永不发
-  keyevent 3**（HOME 被系统全局拦截落物理屏，面板"回主页"芯片同语义）。
+- **下巴** `ChinWindow`：底部通栏 32px 毛玻璃（2026-09-12 Opus 统一：真高斯
+  σ10 + 1:2 预降采样、双态矩阵/活底/顶光/干底与胶囊同值、静止零描边、原始
+  采样亮度判据；配方与性能路径见 window-experience.md §13），○ 单击 = 返回，
+  长按 = 镜像窗 keyevent 3 / 虚拟屏 `am start --display N -c HOME`。
+  **虚拟屏永不发 keyevent 3**（HOME 被系统全局拦截落物理屏，面板"回主页"
+  芯片同语义）。
 - **侧带** `SideBandWindow`：仅 immersive 上巴存在，左右各 8DIP 隐形移动带
   （三带皆可拖窗）。native 上巴不建（系统 caption 拖动）。
 - **EdgeStrip**：顶边 6px 缩放带 + caption 中央 1/2×24DIP 移动带（左右 1/4
@@ -260,7 +276,7 @@ patch，扫描结束一次重排（`_apply_info_sweep_done`）。
 
 ## 5. 设置页（SettingsPage.qml）
 
-- 结构：分组卡片流（引擎 / 投屏质量 / 外观），无标题行无返回钮（顶栏胶囊
+- 结构：分组卡片流（引擎 / 投屏质量 / 窗口栏（默认）/ 外观），无标题行无返回钮（顶栏胶囊
   即导航）；Esc = 取消（`cancelled` → pop），底部唯一「保存」（`accepted`
   → `ctrl.resolveAdb()` + pop）。
 - 数据合同：`settingsApi.load()/save(map)/probe()/loadProblems()`，键同
@@ -270,6 +286,11 @@ patch，扫描结束一次重排（`_apply_info_sweep_done`）。
   回），新增删字段时照此办理。
 - 窗口栏两字段（`topBarMode` immersive / `bottomBarMode` none）是**默认值**
   语义，不是立即生效——见 §4.1 链路。
+- 外观卡（2026-09-12）：「主题」三选一（`themeMode` light|dark|system，
+  objectName themeLight/themeDark/themeSystem；保存后 `ctrl.applyTheme()`
+  即时生效，system 经 Qt colorSchemeChanged 实时跟随）+「玻璃材质」开关
+  （`glassOn` → settings `glass_enabled`，上巴/下巴/右键菜单统一总开关）。
+  文案 KISS（Opus 裁决）：说明一句能说完不用两句，自解释控件零说明。
 
 ## 6. 跨切面合同
 

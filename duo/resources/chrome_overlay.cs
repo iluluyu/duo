@@ -12,9 +12,10 @@
 //                                   re-pressing; release ends it)
 //   cursor in the top edge band  -> top-right capsule: minimize /
 //                                   maximize (taskbar-safe, emulated) /
-//                                   close - over SAMPLED light menu-glass
-//                                   (glass-recipe.md tier); right-click
-//                                   on it toggles pin (stays revealed)
+//                                   close - over SAMPLED transparent
+//                                   glass (docs/window-experience.md
+//                                   §11); right-click on it toggles
+//                                   pin (stays revealed)
 //   always-on (window visible)   -> chin: "<" back (adb keyevent);
 //                                   "O" hold: HOME on every display
 //                                   (virtual-desktop layer hint; vendors
@@ -43,7 +44,8 @@
 // Rendering is per-pixel-alpha layered windows (UpdateLayeredWindow) with
 // hand-made acrylic: the content behind each bar is sampled from the target
 // window itself (PrintWindow PW_RENDERFULLCONTENT), blurred by down/up
-// scaling, then white-tinted (menu glass, docs/window-experience.md §11).
+// scaling, then white-tinted - transparent glass, premultiplied before the
+// push (docs/window-experience.md §11 通透化修订).
 // No OS composition API dependency - the SetWindowCompositionAttribute
 // route returns E_FAIL on Win11 24H2.
 //
@@ -80,6 +82,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -232,7 +235,8 @@ namespace DuoChrome
             string mode = "flex", sessionLog = null;
             string topMode = "immersive", bottomMode = "immersive";
             string pinFile = null;
-            bool home = false, pinTop = false;
+            bool home = false, pinTop = false, glass = true;
+            string barTheme = "system";
             int videoW = 0, videoH = 0, cornerDip = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
@@ -248,6 +252,8 @@ namespace DuoChrome
                 else if (argv[i] == "--chrome-top") topMode = argv[i + 1];
                 else if (argv[i] == "--chrome-bottom") bottomMode = argv[i + 1];
                 else if (argv[i] == "--pin-top") pinTop = argv[i + 1] == "1";
+                else if (argv[i] == "--glass") glass = argv[i + 1] == "1";
+                else if (argv[i] == "--bar-theme") barTheme = argv[i + 1];
                 else if (argv[i] == "--pin-file") pinFile = argv[i + 1];
             }
             if (title == null || serial == null || adb == null)
@@ -257,7 +263,8 @@ namespace DuoChrome
                     + "[--session-log <path>] "
                     + "[--chrome-top immersive|native|none] "
                     + "[--chrome-bottom immersive|native|none] "
-                    + "[--pin-top 0|1] [--pin-file <path>]");
+                    + "[--pin-top 0|1] [--pin-file <path>] [--glass 0|1] "
+                    + "[--bar-theme light|dark|system]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -276,10 +283,11 @@ namespace DuoChrome
                 + " mode=" + mode + " video=" + videoW + "x" + videoH
                 + " chrome=" + topMode + "/" + bottomMode
                 + " pin=" + (pinTop ? 1 : 0)
+                + " glass=" + (glass ? 1 : 0)
                 + (sessionLog == null ? "" : " log=" + sessionLog));
             using (Controller c = new Controller(
                 title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip,
-                topMode, bottomMode, pinTop, pinFile))
+                topMode, bottomMode, pinTop, pinFile, glass, barTheme))
             {
                 Application.Run();
             }
@@ -378,7 +386,20 @@ namespace DuoChrome
             base.WndProc(ref m);
         }
 
-        public void SetSample(Bitmap behind)
+        public virtual void SetSample(Bitmap behind)
+        {
+            SwapSample(behind);
+        }
+
+        /// <summary>Overscanned variant: ``core`` = the window's own rect in
+        /// sample coordinates. The sample carries a >= 3-sigma margin around
+        /// it (glass-recipe.md 硬规则 2：模糊核触边即伪影)。</summary>
+        public virtual void SetSample(Bitmap behind, Rectangle core)
+        {
+            SwapSample(behind);
+        }
+
+        private void SwapSample(Bitmap behind)
         {
             Bitmap old = _behind;
             _behind = behind;
@@ -386,24 +407,61 @@ namespace DuoChrome
         }
 
         protected bool GhostBackdrop;   // true = no bar surface, only what PaintBar draws
+        protected bool Supersample;     // ghost 表面 3× 超采样
+
+        // 干底待命色（无采样可用）：暗玻璃 #1C1C1E@92%，胶囊/下巴共用
+        protected static readonly Color DryGlass = Color.FromArgb(235, 28, 28, 30);
 
         public void Render()
         {
             if (Width <= 0 || Height <= 0) return;
             using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
             {
-                using (Graphics g = Graphics.FromImage(bmp))
+                if (GhostBackdrop)
                 {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.PixelOffsetMode = PixelOffsetMode.Half;
-                    if (GhostBackdrop)
+                    if (Supersample)
                     {
-                        // Minimal surface: unpainted pixels stay alpha=0 and
-                        // pass clicks through to the mirrored app.
-                        PaintBar(g);
+                        // 3× 超采样和盒降采样配方见 docs/window-experience.md §11。
+                        const int Ss = 3;
+                        using (Bitmap hi = new Bitmap(Width * Ss, Height * Ss,
+                            PixelFormat.Format32bppArgb))
+                        {
+                            using (Graphics hg = Graphics.FromImage(hi))
+                            {
+                                hg.SmoothingMode = SmoothingMode.AntiAlias;
+                                hg.PixelOffsetMode = PixelOffsetMode.Half;
+                                hg.Transform = new Matrix(Ss, 0f, 0f, Ss, 0f, 0f);
+                                PaintBar(hg);
+                            }
+                            MaskSurface(hi);
+                            PremultiplyAlpha(hi);
+                            using (Bitmap box = DownscaleNx(hi, Ss))
+                            using (Graphics g = Graphics.FromImage(bmp))
+                            {
+                                g.CompositingMode = CompositingMode.SourceCopy;
+                                g.DrawImage(box, 0, 0, Width, Height);
+                            }
+                        }
+                        PushLayered(bmp, true);
+                        return;
                     }
                     else
                     {
+                        using (Graphics g = Graphics.FromImage(bmp))
+                        {
+                            g.SmoothingMode = SmoothingMode.AntiAlias;
+                            g.PixelOffsetMode = PixelOffsetMode.Half;
+                            PaintBar(g);
+                        }
+                    }
+                    MaskSurface(bmp);
+                }
+                else
+                {
+                    using (Graphics g = Graphics.FromImage(bmp))
+                    {
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        g.PixelOffsetMode = PixelOffsetMode.Half;
                         using (Region region = ClipRegion())
                         {
                             g.SetClip(region, CombineMode.Replace);
@@ -416,16 +474,14 @@ namespace DuoChrome
             }
         }
 
-        /// <summary>Hand-made acrylic: blur the sampled content (downscale
-        /// then upscale), then wash it with the 82% white menu-glass tint
-        /// (docs/window-experience.md §11). The native chin overrides this
-        /// only to add its outline hairline + seam margin mapping; the
+        /// <summary>Hand-made acrylic (frost, 2026-09-10 毛玻璃化): blur
+        /// the sampled content (downscale then upscale) through the shared
+        /// vibrancy matrix - NO flat tint. The native chin overrides this
+        /// only to add its adaptive hairline + seam margin mapping; the
         /// native top needs no override - C2 made it a real system caption
         /// with a DWM backdrop, drawn by the OS itself.</summary>
         protected virtual void DrawAcrylic(Graphics g)
         {
-            // Hand-made acrylic: blur the sampled content (downscale then
-            // upscale), then wash it with the menu-glass tint.
             if (_behind != null && _behind.Width > 0 && _behind.Height > 0)
             {
                 int qw = Math.Max(1, Width / 12);
@@ -438,19 +494,92 @@ namespace DuoChrome
                         sg.PixelOffsetMode = PixelOffsetMode.Half;
                         sg.DrawImage(_behind, new Rectangle(0, 0, qw, qh));
                     }
-                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    g.PixelOffsetMode = PixelOffsetMode.Half;
-                    g.DrawImage(small, new Rectangle(0, 0, Width, Height));
+                    using (ImageAttributes ia = new ImageAttributes())
+                    {
+                        ia.SetColorMatrix(NewVibrancyMatrix());
+                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = PixelOffsetMode.Half;
+                        g.DrawImage(small, new Rectangle(0, 0, Width, Height),
+                            0, 0, qw, qh, GraphicsUnit.Pixel, ia);
+                    }
                 }
             }
-            using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
-                g.FillRectangle(tint, 0, 0, Width, Height);
         }
 
         protected virtual void PaintBar(Graphics g) { }
 
+        /// <summary>Shaped ghost surfaces return their silhouette path for
+        /// a bitmap of the given size (null = no mask). Applied BEFORE the
+        /// supersample downscale so the silhouette ramp gets the same
+        /// high-quality filtering as the content.</summary>
+        protected virtual GraphicsPath MaskPath(int w, int h)
+        {
+            return null;
+        }
+
+        /// <summary>Multiply the bitmap's alpha by an anti-aliased fill of
+        /// the MaskPath shape (see ApplyShapeMask).</summary>
+        protected void MaskSurface(Bitmap bmp)
+        {
+            GraphicsPath path = MaskPath(bmp.Width, bmp.Height);
+            if (path == null) return;
+            ApplyShapeMask(bmp, path);
+            path.Dispose();
+        }
+
+        /// <summary>Multiply the bitmap's alpha by an anti-aliased fill of
+        /// ``path``: GDI+ SetClip is a 1-bit hard staircase, but FillPath
+        /// with AntiAlias produces a proper coverage ramp - rasterizing the
+        /// shape white-on-transparent and folding its alpha into the
+        /// surface gives a smooth silhouette with zero spill outside
+        /// (the capsule's old straddling rim painted a translucent gray
+        /// halo onto the video = "边缘灰影" root cause #2).</summary>
+        protected static void ApplyShapeMask(Bitmap bmp, GraphicsPath path)
+        {
+            using (Bitmap mask = new Bitmap(bmp.Width, bmp.Height,
+                PixelFormat.Format32bppArgb))
+            {
+                using (Graphics mg = Graphics.FromImage(mask))
+                {
+                    mg.SmoothingMode = SmoothingMode.AntiAlias;
+                    mg.PixelOffsetMode = PixelOffsetMode.Half;   // align with content/rim rasterization
+                    using (SolidBrush white = new SolidBrush(Color.White))
+                        mg.FillPath(white, path);
+                }
+                Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+                BitmapData dst = bmp.LockBits(rect, ImageLockMode.ReadWrite,
+                    PixelFormat.Format32bppArgb);
+                BitmapData src = mask.LockBits(rect, ImageLockMode.ReadOnly,
+                    PixelFormat.Format32bppArgb);
+                try
+                {
+                    int bytes = dst.Stride * dst.Height;
+                    byte[] d = new byte[bytes];
+                    byte[] s = new byte[bytes];
+                    Marshal.Copy(dst.Scan0, d, 0, bytes);
+                    Marshal.Copy(src.Scan0, s, 0, bytes);
+                    for (int i = 0; i < bytes; i += 4)
+                        d[i + 3] = (byte)(d[i + 3] * s[i + 3] / 255);
+                    Marshal.Copy(d, 0, dst.Scan0, bytes);
+                }
+                finally
+                {
+                    bmp.UnlockBits(dst);
+                    mask.UnlockBits(src);
+                }
+            }
+        }
+
         private void PushLayered(Bitmap bmp)
         {
+            PushLayered(bmp, false);
+        }
+
+        /// <summary>``premultiplied`` = 位图已在预乘域（超采样降采样前已
+        /// 预乘），不可二次预乘。</summary>
+        private void PushLayered(Bitmap bmp, bool premultiplied)
+        {
+            if (!premultiplied) PremultiplyAlpha(bmp);
             IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
             IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
             IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
@@ -474,6 +603,214 @@ namespace DuoChrome
                 NativeMethods.DeleteDC(mem);
                 NativeMethods.ReleaseDC(IntPtr.Zero, screen);
             }
+        }
+
+        /// <summary>ULW with AC_SRC_ALPHA reads the bitmap as
+        /// PREMULTIPLIED alpha (BLENDFUNCTION docs); GDI+ bitmaps are
+        /// straight-alpha and GetHbitmap copies the bits raw, so every
+        /// semi-transparent pixel (capsule silhouette ramp, hairlines,
+        /// hover washes, dry glass) rendered over-bright with a crunchy
+        /// edge. rgb x a/255 in place before every push; opaque rows skip.
+        /// Root cause analysis: docs/window-experience.md §11 通透化修订.</summary>
+        internal static void PremultiplyAlpha(Bitmap bmp)
+        {
+            Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadWrite,
+                PixelFormat.Format32bppArgb);
+            try
+            {
+                int bytes = data.Stride * data.Height;
+                byte[] px = new byte[bytes];
+                Marshal.Copy(data.Scan0, px, 0, bytes);
+                for (int i = 0; i < bytes; i += 4)
+                {
+                    int a = px[i + 3];
+                    if (a == 255) continue;
+                    px[i] = (byte)(px[i] * a / 255);
+                    px[i + 1] = (byte)(px[i + 1] * a / 255);
+                    px[i + 2] = (byte)(px[i + 2] * a / 255);
+                }
+                Marshal.Copy(px, 0, data.Scan0, bytes);
+            }
+            finally { bmp.UnlockBits(data); }
+        }
+
+        /// <summary>共享 vibrancy 矩阵（毛玻璃化定稿，docs/window-experience.md
+        /// §11）：饱和 ×1.45 + scale/lift。GDI+ ColorMatrix 是行向量约定
+        /// （out = in·M）：平移在第 5 **行**（Matrix40/41/42）——初版误放
+        /// 第 5 列是死格子，lift 从未上屏（2026-09-10 暗底死板根因）。
+        /// 双态：暗态 0.90/+0.07（原配方）；亮态 0.92/+0.10——白底顶到
+        /// clamp、浅底玻璃比背景亮（用户反馈亮色模式发灰，暗色不动）。</summary>
+        protected static ColorMatrix NewVibrancyMatrix(float scale, float lift)
+        {
+            float k = scale / 0.90f;   // 饱和块按原配方 0.90 预乘，任意 scale 重标定
+            ColorMatrix cm = new ColorMatrix();
+            cm.Matrix00 = 1.2189f * k; cm.Matrix01 = -0.0861f * k; cm.Matrix02 = -0.0861f * k;
+            cm.Matrix10 = -0.2897f * k; cm.Matrix11 = 1.0153f * k; cm.Matrix12 = -0.2897f * k;
+            cm.Matrix20 = -0.0292f * k; cm.Matrix21 = -0.0292f * k; cm.Matrix22 = 1.2758f * k;
+            cm.Matrix40 = lift; cm.Matrix41 = lift; cm.Matrix42 = lift;
+            return cm;
+        }
+
+        protected static ColorMatrix NewVibrancyMatrix()
+        {
+            return NewVibrancyMatrix(0.90f, 0.07f);
+        }
+
+        // -- gaussian frost (docs/window-experience.md §11 纯粹毛玻璃) --------
+
+        /// <summary>3×box 高斯近似（Kovesi），边缘像素外推；A 通道置 255
+        /// （底板不透明度由 ColorMatrix.Matrix33 承担）。</summary>
+        internal static Bitmap GaussianBlur(Bitmap src, float sigma)
+        {
+            int w = src.Width, h = src.Height;
+            Bitmap dst = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            if (w <= 0 || h <= 0) return dst;
+            byte[] px = ReadPixels32(src, w, h);
+            int[] boxes = BoxesForGauss(sigma < 1f ? 1f : sigma, 3);
+            for (int i = 0; i < boxes.Length; i++)
+            {
+                int r = boxes[i] / 2;
+                if (r > 0)
+                {
+                    BoxBlurH(px, w, h, r);
+                    BoxBlurV(px, w, h, r);
+                }
+            }
+            for (int i = 3; i < px.Length; i += 4) px[i] = 255;
+            WritePixels32(dst, px, w, h);
+            return dst;
+        }
+
+        private static int[] BoxesForGauss(float sigma, int n)
+        {
+            float wIdeal = (float)Math.Sqrt((12.0 * sigma * sigma / n) + 1.0);
+            int wl = (int)Math.Floor(wIdeal);
+            if (wl % 2 == 0) wl--;
+            int wu = wl + 2;
+            float mIdeal = (float)((12.0 * sigma * sigma - n * (double)wl * wl
+                - 4.0 * n * wl - 3.0 * n) / (-4.0 * wl - 4.0 * n));
+            int m = (int)Math.Round(mIdeal);
+            int[] sizes = new int[n];
+            for (int i = 0; i < n; i++) sizes[i] = i < m ? wl : wu;
+            return sizes;
+        }
+
+        private static byte[] ReadPixels32(Bitmap bmp, int w, int h)
+        {
+            Rectangle rect = new Rectangle(0, 0, w, h);
+            BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly,
+                PixelFormat.Format32bppArgb);
+            byte[] tight = new byte[w * h * 4];
+            try
+            {
+                for (int y = 0; y < h; y++)
+                    Marshal.Copy(new IntPtr(data.Scan0.ToInt64() + y * data.Stride),
+                        tight, y * w * 4, w * 4);
+            }
+            finally { bmp.UnlockBits(data); }
+            return tight;
+        }
+
+        private static void WritePixels32(Bitmap bmp, byte[] px, int w, int h)
+        {
+            Rectangle rect = new Rectangle(0, 0, w, h);
+            BitmapData data = bmp.LockBits(rect, ImageLockMode.WriteOnly,
+                PixelFormat.Format32bppArgb);
+            try
+            {
+                for (int y = 0; y < h; y++)
+                    Marshal.Copy(px, y * w * 4,
+                        new IntPtr(data.Scan0.ToInt64() + y * data.Stride), w * 4);
+            }
+            finally { bmp.UnlockBits(data); }
+        }
+
+        private static void BoxBlurH(byte[] px, int w, int h, int r)
+        {
+            int win = 2 * r + 1;
+            int stride = w * 4;
+            byte[] o = new byte[px.Length];
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * stride;
+                for (int c = 0; c < 3; c++)
+                {
+                    int sum = 0;
+                    for (int k = -r; k <= r; k++)
+                        sum += px[row + Clamp(k, w) * 4 + c];
+                    for (int x = 0; x < w; x++)
+                    {
+                        o[row + x * 4 + c] = (byte)(sum / win);
+                        sum += px[row + Clamp(x + r + 1, w) * 4 + c]
+                             - px[row + Clamp(x - r, w) * 4 + c];
+                    }
+                }
+            }
+            Buffer.BlockCopy(o, 0, px, 0, px.Length);
+        }
+
+        private static void BoxBlurV(byte[] px, int w, int h, int r)
+        {
+            int win = 2 * r + 1;
+            int stride = w * 4;
+            byte[] o = new byte[px.Length];
+            for (int x = 0; x < w; x++)
+            {
+                int col = x * 4;
+                for (int c = 0; c < 3; c++)
+                {
+                    int sum = 0;
+                    for (int k = -r; k <= r; k++)
+                        sum += px[Clamp(k, h) * stride + col + c];
+                    for (int y = 0; y < h; y++)
+                    {
+                        o[y * stride + col + c] = (byte)(sum / win);
+                        sum += px[Clamp(y + r + 1, h) * stride + col + c]
+                             - px[Clamp(y - r, h) * stride + col + c];
+                    }
+                }
+            }
+            Buffer.BlockCopy(o, 0, px, 0, px.Length);
+        }
+
+        private static int Clamp(int v, int max)
+        {
+            return v < 0 ? 0 : (v >= max ? max - 1 : v);
+        }
+
+        /// <summary>在预乘域执行无振铃的整数倍盒降采样。</summary>
+        internal static Bitmap DownscaleNx(Bitmap hi, int n)
+        {
+            int w = hi.Width / n, h = hi.Height / n;
+            Bitmap dst = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            if (w <= 0 || h <= 0) return dst;
+            byte[] src = ReadPixels32(hi, hi.Width, hi.Height);
+            byte[] o = new byte[w * h * 4];
+            int sw = hi.Width * 4;
+            int half = n * n / 2;
+            int nn = n * n;
+            for (int y = 0; y < h; y++)
+            {
+                int dr = y * w * 4;
+                for (int x = 0; x < w; x++)
+                {
+                    int di = dr + x * 4;
+                    for (int c = 0; c < 4; c++)
+                    {
+                        int s = 0;
+                        for (int j = 0; j < n; j++)
+                        {
+                            int r = (y * n + j) * sw;
+                            for (int i = 0; i < n; i++)
+                                s += src[r + (x * n + i) * 4 + c];
+                        }
+                        o[di + c] = (byte)((s + half) / nn);
+                    }
+                }
+            }
+            WritePixels32(dst, o, w, h);
+            return dst;
         }
 
         /// <summary>The bar's paint + hit footprint: the union of shapes
@@ -519,7 +856,7 @@ namespace DuoChrome
 
 
 
-        protected void DrawHoverFill(Graphics g, NavButton b)
+        protected virtual void DrawHoverFill(Graphics g, NavButton b)
         {
             if (!b.Hover) return;
             // 浅玻璃上的 hover = hoverWash 4% 黑；关闭键 = Win11 红
@@ -530,6 +867,25 @@ namespace DuoChrome
                 : Color.FromArgb(10, 0, 0, 0);          // rgba(0,0,0,0.04)
             using (SolidBrush brush = new SolidBrush(fill))
                 g.FillEllipse(brush, b.Circle);
+        }
+
+        /// <summary>Glyph via GDI+ with grayscale anti-aliasing:
+        /// TextRenderer is GDI text and alpha-blind - on the layered
+        /// bitmap its anti-aliasing collapsed into hard jaggies. The
+        /// GenericTypographic measure keeps the optical centering
+        /// TextRenderer had. See docs/window-experience.md §11 通透化修订.</summary>
+        internal static void DrawGlyph(Graphics g, string glyph, Font font,
+            Rectangle box, Color color)
+        {
+            using (StringFormat sf = new StringFormat(StringFormat.GenericTypographic))
+            using (SolidBrush brush = new SolidBrush(color))
+            {
+                SizeF sz = g.MeasureString(glyph, font, new PointF(0, 0), sf);
+                float x = box.Left + (box.Width - sz.Width) / 2f;
+                float y = box.Top + (box.Height - sz.Height) / 2f;
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                g.DrawString(glyph, font, brush, new PointF(x, y), sf);
+            }
         }
 
         // -- input ------------------------------------------------------------
@@ -636,7 +992,12 @@ namespace DuoChrome
         // its bottom corners notch at the seam -> ears on.
         private readonly bool _videoRounded;
         private int _ear;                    // corner-ear height, physical px (0 = flush bar)
-        private bool _nativeDark = true;       // tinted bar bright -> dark pill
+        private bool _barDark = true;          // raw-sample luminance: dark bar -> white pill
+        private Bitmap _frost;                // baked frost plate (SetNativeSample 烘焙)
+        // 下巴毛玻璃统一配方（2026-09-12 Opus 裁决）：通栏远宽于胶囊，
+        // σ 提到 10 DIP 才达到胶囊 σ6 的“读不出内容”效果；双态矩阵/活底/
+        // 顶光/干底全部与胶囊同值。见 docs/window-experience.md §11。
+        private const float FrostSigma = 10.0f;
         private readonly Timer _hold;
         private readonly Timer _anim;          // ~60fps re-render while holding
         private readonly Timer _flash;         // 120ms white flash after HOME fires
@@ -702,6 +1063,13 @@ namespace DuoChrome
 
         /// <summary>Current corner-ear height in physical px (0 = off).</summary>
         public int Ear { get { return _ear; } }
+
+        /// <summary>Overscan 采样边距（物理 px）：≥ 3σ，模糊核永远采到
+        /// 条可见区之外的真实内容（glass-recipe.md 硬规则 2）。</summary>
+        internal int FrostMargin
+        {
+            get { return (int)Math.Ceiling(3f * FrostSigma * Dpi); }
+        }
 
         /// <summary>Corner ears (DWM round seam patch): without a G2
         /// region Repair keeps DWMWCP_ROUND on the video window, so its
@@ -909,33 +1277,34 @@ namespace DuoChrome
             return m != null && m.Equals("native");
         }
 
-        /// <summary>Store a native-mode screen sample and derive the pill
-        /// color from it: average luminance over the bar's center 50%
-        /// region, tinted with the same rgba(255,255,255,208) wash the paint
-        /// applies, compared against the 0.52 cut (agy v6: brighter bar -&gt;
-        /// dark pill, darker bar -&gt; white pill). The capture carries an 8px
-        /// margin around the bar; only the bar's own rows are measured.</summary>
+        /// <summary>存屏采样并烘焙下巴毛玻璃（2026-09-12 Opus 统一配方）：
+        /// 亮度判据与胶囊同源——原始采样（模糊前、邻带替换后）中心区 BT.709
+        /// 均值，0.50 ± 0.04 迟滞；矩阵双态/药丸/顶光渐变全部跟随同一状态。
+        /// capture 携带 FrostMargin 对称 margin（屏幕边缘被 VirtualScreen 裁剪
+        /// 时钳位），BuildChinFrost 完成坐标映射。</summary>
         public void SetNativeSample(Bitmap behind)
         {
             SetSample(behind);
             if (behind == null || behind.Width < 4 || behind.Height < 4)
             {
+                if (_frost != null) { _frost.Dispose(); _frost = null; }
                 Render();
                 return;
             }
             try
             {
+                int my = Math.Max(0, (behind.Height - Height) / 2);
+                int bandTop = Math.Min(my, Math.Max(0, behind.Height - 4));
+                int bandH = Math.Max(1, Math.Min(behind.Height - bandTop, Height));
+                int x0 = Math.Max(0, behind.Width / 4);
+                int w = Math.Max(1, behind.Width / 2);
                 using (Bitmap probe = new Bitmap(32, 4))
                 using (Graphics pg = Graphics.FromImage(probe))
                 {
                     pg.InterpolationMode = InterpolationMode.Low;
-                    int margin = Math.Min(8, behind.Height / 2);
-                    int x0 = behind.Width / 4;
-                    int w = Math.Max(1, behind.Width / 2);
+                    pg.PixelOffsetMode = PixelOffsetMode.Half;
                     pg.DrawImage(behind, new Rectangle(0, 0, 32, 4),
-                        new Rectangle(x0, margin, w,
-                            Math.Max(1, behind.Height - 2 * margin)),
-                        GraphicsUnit.Pixel);
+                        new Rectangle(x0, bandTop, w, bandH), GraphicsUnit.Pixel);
                     double sum = 0;
                     for (int y = 0; y < 4; y++)
                         for (int x = 0; x < 32; x++)
@@ -944,20 +1313,83 @@ namespace DuoChrome
                             sum += 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B;
                         }
                     double lum = sum / (32.0 * 4.0 * 255.0);
-                    double a = 208.0 / 255.0;
-                    double tinted = a * (248.0 / 255.0) + (1.0 - a) * lum;
-                    _nativeDark = tinted > 0.52;
+                    if (_barDark && lum > 0.54) _barDark = false;
+                    else if (!_barDark && lum < 0.46) _barDark = true;
                 }
+                BuildChinFrost(behind);
             }
             catch { }
             Render();
         }
 
-        /// <summary>Native chin material = menu glass (recipe:
-        /// docs/window-experience.md §11): sampled screen backdrop
-        /// (Controller.SampleNativeChin, bar rect + 8px), 1/8 down/up
-        /// blur, x1.15 saturation, 82% white tint, full 14% black
-        /// outline hairline along the bar body.</summary>
+        /// <summary>下巴毛玻璃烘焙（性能路径，Opus 裁决）：CopyFromScreen
+        /// 采样（条 + 3σ margin）→ 1:2 预降采样 → Kovesi 真高斯
+        /// （σ_down = σ/2，等效 σ10 DIP×DPI）→ 2× 双三次升采样同时过
+        /// 双态 vibrancy 矩阵。1:2 路径把核心像素循环压到 1/4（~4ms/帧），
+        /// 降采样等效预模糊对 σ10 贡献可忽略；全链路直通 alpha（预乘只在
+        /// PushLayered 上屏前一次完成，ColorMatrix 的 scale/lift 即非预乘
+        /// 语义——Opus 终审注记）；Matrix33 alpha（暗 0.90 / 亮 0.86）让
+        /// 真活底从屏幕物理透入。</summary>
+        private void BuildChinFrost(Bitmap capture)
+        {
+            Bitmap old = _frost;
+            _frost = null;
+            try
+            {
+                int mx = Math.Max(0, (capture.Width - Width) / 2);
+                int my = Math.Max(0, (capture.Height - Height) / 2);
+                int cw = Math.Min(Width, capture.Width - mx);
+                int ch = Math.Min(Height, capture.Height - my);
+                if (cw >= 4 && ch >= 4)
+                {
+                    int qw = Math.Max(1, capture.Width / 2);
+                    int qh = Math.Max(1, capture.Height / 2);
+                    using (Bitmap half = new Bitmap(qw, qh, PixelFormat.Format32bppArgb))
+                    {
+                        using (Graphics sg = Graphics.FromImage(half))
+                        {
+                            sg.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                            sg.PixelOffsetMode = PixelOffsetMode.Half;
+                            sg.DrawImage(capture, new Rectangle(0, 0, qw, qh));
+                        }
+                        using (Bitmap blur = GaussianBlur(half, FrostSigma * Dpi / 2f))
+                        {
+                            // 源矩形取整到半分辨率像素网格（Opus 终审）：分数
+                            // DPI 下 mx/2 落在 .5 像素上，bicubic 4x4 核会采到
+                            // 有效内容外的填充行，表现为底边 1px 暗带
+                            float srcX = (float)Math.Round(mx / 2.0);
+                            float srcY = (float)Math.Round(my / 2.0);
+                            float srcW = Math.Max(1f, (float)Math.Round(cw / 2.0));
+                            float srcH = Math.Max(1f, (float)Math.Round(ch / 2.0));
+                            Bitmap plate = new Bitmap(cw, ch, PixelFormat.Format32bppArgb);
+                            using (Graphics pg = Graphics.FromImage(plate))
+                            using (ImageAttributes ia = new ImageAttributes())
+                            {
+                                ColorMatrix cm = NewVibrancyMatrix(
+                                    _barDark ? 0.90f : 0.98f,
+                                    _barDark ? 0.02f : 0.10f);
+                                cm.Matrix33 = _barDark ? 0.90f : 0.86f;
+                                ia.SetColorMatrix(cm);
+                                pg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                pg.PixelOffsetMode = PixelOffsetMode.Half;
+                                pg.DrawImage(blur, new Rectangle(0, 0, cw, ch),
+                                    srcX, srcY, srcW, srcH,
+                                    GraphicsUnit.Pixel, ia);
+                            }
+                            _frost = plate;
+                        }
+                    }
+                }
+            }
+            catch { }
+            if (old != null) old.Dispose();
+        }
+
+        /// <summary>Native chin material（2026-09-12 Opus 统一配方）：玻璃
+        /// = frost 直铺 + 顶光渐变，静止态零描边（与胶囊同族，去旧常驻
+        /// hairline）；干底（采样不可用）= DryGlass 待命色。普通材质
+        /// （--glass 0）= Win11 系统面不透明色 + 常驻 hairline（对齐
+        /// SolidBackgroundFillColorBase，无采样无自适应，随面板主题）。</summary>
         protected override void DrawAcrylic(Graphics g)
         {
             if (!_native)
@@ -965,71 +1397,60 @@ namespace DuoChrome
                 base.DrawAcrylic(g);
                 return;
             }
-            if (_behind != null && _behind.Width > 10 && _behind.Height > 10)
+            if (!Ctrl.Glass)
             {
-                int qw = Math.Max(1, Width / 8);
-                int qh = Math.Max(1, Height / 8);
-                using (Bitmap small = new Bitmap(qw, qh))
+                using (SolidBrush fill = new SolidBrush(
+                    Ctrl.BarThemeDark ? Controller.PlainBarDark : Controller.PlainBarLight))
+                    g.FillRectangle(fill, 0, 0, Width, Height);
+                using (GraphicsPath body = RoundedPath(
+                    Width, Height - _ear, _radiusTop, _radiusBottom))
+                using (Matrix shift = new Matrix(1, 0, 0, 1, 0, _ear))
+                using (Pen hair = new Pen(Ctrl.BarThemeDark
+                        ? Color.FromArgb(26, 255, 255, 255)
+                        : Color.FromArgb(20, 0, 0, 0), 1f))
                 {
-                    using (Graphics sg = Graphics.FromImage(small))
-                    {
-                        sg.InterpolationMode = InterpolationMode.Low;
-                        sg.PixelOffsetMode = PixelOffsetMode.Half;
-                        // the capture carries an 8px margin around the bar:
-                        // map only the bar's own footprint onto the blur
-                        // source (Render's rounded-rect clip trims the rest).
-                        int sx = Math.Min(8, Math.Max(0, _behind.Width - 1));
-                        int sy = Math.Min(8, Math.Max(0, _behind.Height - 1));
-                        int sw = Math.Min(Width, _behind.Width - sx);
-                        int sh = Math.Min(Height, _behind.Height - sy);
-                        if (sw > 0 && sh > 0)
-                            sg.DrawImage(_behind, new Rectangle(0, 0, qw, qh),
-                                new Rectangle(sx, sy, sw, sh), GraphicsUnit.Pixel);
-                    }
-                    using (ImageAttributes ia = new ImageAttributes())
-                    {
-                        float sat = 1.15f;
-                        ColorMatrix cm = new ColorMatrix();
-                        cm.Matrix00 = sat;
-                        cm.Matrix11 = sat;
-                        cm.Matrix22 = sat;
-                        ia.SetColorMatrix(cm);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.PixelOffsetMode = PixelOffsetMode.Half;
-                        g.DrawImage(small, new Rectangle(0, 0, Width, Height),
-                            0, 0, qw, qh, GraphicsUnit.Pixel, ia);
-                    }
-                }
-            }
-            using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
-                g.FillRectangle(tint, 0, 0, Width, Height);
-            // 整圈 hairline 沿巴轮廓（含耳条时轮廓从 _ear 起）；外半被
-            // ClipRegion 裁掉，视觉为 1px 内描边
-            using (GraphicsPath body = RoundedPath(
-                Width, Height - _ear, _radiusTop, _radiusBottom))
-            using (Matrix shift = new Matrix(1, 0, 0, 1, 0, _ear))
-            {
-                body.Transform(shift);
-                using (Pen hair = new Pen(Color.FromArgb(36, 0, 0, 0), 1f))
+                    body.Transform(shift);
+                    hair.Alignment = PenAlignment.Inset;
                     g.DrawPath(hair, body);
+                }
+                return;
             }
+            // 毛玻璃：frost 直铺（BuildChinFrost 烘焙的真高斯 σ10）；无采样
+            // 时干底待命（#1C1C1E@92%，暗玻璃白药丸）
+            if (_frost != null)
+                g.DrawImage(_frost, 0, 0, Width, Height);
+            else
+                using (SolidBrush dry = new SolidBrush(DryGlass))
+                    g.FillRectangle(dry, 0, 0, Width, Height);
+            // 顶光渐变（与胶囊同值）：暗 2.4%→0.4% / 亮 8%→1.5%，跨 32DIP
+            // 矮条表现为顶缘受光
+            int topLit = _barDark ? 6 : 20;
+            int botLit = _barDark ? 1 : 4;
+            Rectangle lit = new Rectangle(0, _ear, Width, Math.Max(1, Height - _ear));
+            using (LinearGradientBrush backlight = new LinearGradientBrush(
+                lit,
+                Color.FromArgb(topLit, 255, 255, 255),
+                Color.FromArgb(botLit, 255, 255, 255),
+                LinearGradientMode.Vertical))
+                g.FillRectangle(backlight, lit);
         }
 
         /// <summary>agy v6 native chin pill. The acrylic surface comes from
         /// DrawAcrylic; this paints the ADAPTIVE pill: centered, bottom
-        /// margin 14px, dark-on-light / white-on-dark by tinted-bar
-        /// luminance. The press/hold/flash state machine is the immersive
-        /// one - only the color source is dual-mode (rest 0.40/0.61, hover
-        /// 0.65/0.80, pressed 28px, hold grows to 48px, flash white).</summary>
+        /// margin 14px, dark-on-light / white-on-dark. 玻璃态色源 = 采样
+        /// 亮度（_barDark）；普通材质色源 = 面板主题（不透明底无自适应，
+        /// 不透明度略提补偿对比度）。press/hold/flash 状态机同沉浸。</summary>
         private void PaintNativePill(Graphics g)
         {
             foreach (NavButton b in Buttons)
             {
                 float cx = b.Circle.Left + b.Circle.Width / 2f;
-                // pill floats 14px above the bar bottom; the bar is 32px, so
-                // the pill center lands on the bar's vertical center.
                 float cy = Height - 14f * Dpi - 2f * Dpi;
-                Color rgb = _nativeDark ? PillDark : PillLight;
+                bool darkState = Ctrl.Glass ? _barDark : Ctrl.BarThemeDark;
+                Color rgb = darkState ? PillLight : PillDark;
+                int restA = Ctrl.Glass ? (darkState ? 155 : 102) : (darkState ? 191 : 153);
+                int hoverA = Ctrl.Glass ? (darkState ? 204 : 166)
+                                        : Math.Min(255, restA + 50);
                 float alpha;
                 float widthL;
                 if (_flashing)
@@ -1041,13 +1462,12 @@ namespace DuoChrome
                 {
                     float t = Math.Min(1f, (float)
                         (DateTime.UtcNow - _pressStart).TotalMilliseconds / HoldMs);
-                    alpha = _nativeDark ? 170f - 30f * t : 215f - 30f * t;
+                    alpha = darkState ? 215f - 30f * t : 170f - 30f * t;
                     widthL = 28f + 20f * t;           // 28 -> 48 (HOME countdown)
                 }
                 else
                 {
-                    alpha = _nativeDark ? (b.Hover ? 166f : 102f)
-                                        : (b.Hover ? 204f : 155f);
+                    alpha = b.Hover ? hoverA : restA;
                     widthL = 36f;
                 }
                 float h = 4f * Dpi, w = widthL * Dpi, r = h / 2f;
@@ -1112,6 +1532,20 @@ namespace DuoChrome
         private readonly char _maxBase;             // slot-1 base glyph
         private readonly int _maxAction;            // TopAction id of slot 1
         private int _capBtnW, _capBtnH;             // caption metrics, physical
+        private bool _capsuleDark = true;           // 无采样干底为暗玻璃 → 白字形
+        private Bitmap _frost;                      // cached frosted plate (SetSample 烘焙)
+
+        // 纯粹毛玻璃配方（配方/裁决/迭代史见 docs/window-experience.md §11）
+        private const float FrostSigma = 6.0f;
+        private const float DarkGlassAlpha = 0.90f;
+        private const float BrightGlassAlpha = 0.86f;
+
+        /// <summary>Overscan 采样边距（物理 px）：≥ 3σ，模糊核永远采到胶囊
+        /// 可见区之外的真实内容（glass-recipe.md 硬规则 2）。</summary>
+        internal int FrostMargin
+        {
+            get { return (int)Math.Ceiling(3f * FrostSigma * Dpi); }
+        }
 
         public TopWindow(Controller owner, bool fillButton, string mode)
             : base(owner, 0, 0)   // ghost surfaces: no rounded-bar clip
@@ -1146,6 +1580,7 @@ namespace DuoChrome
             else
             {
                 GhostBackdrop = true;
+                Supersample = true;
                 int pad = (int)(LogicalPad * s);
                 // mirror/fixed windows must never be stretched off-ratio, so the
                 // "fill work area" button exists only in flex mode: min / fit / close.
@@ -1178,6 +1613,78 @@ namespace DuoChrome
             return m != null && m.Equals("native");
         }
 
+        /// <summary>毛玻璃底色自适应（Opus 裁决）：无白 tint 后字形/rim/
+        /// hover 随采样底亮度翻转，阈值 0.50 ± 0.04 迟滞。判原始采样亮度
+        /// （矩阵 +0.07 lift 之前）。见 window-experience.md §11 毛玻璃化。</summary>
+        public override void SetSample(Bitmap behind, Rectangle core)
+        {
+            base.SetSample(behind, core);
+            if (behind != null && behind.Width > 0 && behind.Height > 0
+                && core.Width > 0 && core.Height > 0)
+            {
+                double sum = 0;
+                int n = 0;
+                for (int y = core.Y; y < core.Bottom && y < behind.Height; y += 2)
+                    for (int x = core.X; x < core.Right && x < behind.Width; x += 2)
+                    {
+                        Color c = behind.GetPixel(x, y);
+                        sum += 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B;
+                        n++;
+                    }
+                if (n > 0)
+                {
+                    double lum = sum / (n * 255.0);
+                    if (_capsuleDark && lum > 0.54) _capsuleDark = false;
+                    else if (!_capsuleDark && lum < 0.46) _capsuleDark = true;
+                }
+                BuildFrost(behind, core);
+            }
+            else
+            {
+                if (_frost != null) _frost.Dispose();
+                _frost = null;
+            }
+            if (IsHandleCreated) Render();   // 采样落地即重绘，玻璃不再冻结
+        }
+
+        /// <summary>烘焙胶囊底板：采样（含 overscan margin）→ 高斯模糊 →
+        /// core 区 1:1 过 vibrancy 矩阵进缓存；可见内容零重采样。</summary>
+        private void BuildFrost(Bitmap behind, Rectangle core)
+        {
+            Bitmap old = _frost;
+            _frost = null;
+            try
+            {
+                Bitmap plate = new Bitmap(core.Width, core.Height,
+                    PixelFormat.Format32bppArgb);
+                try
+                {
+                    using (Bitmap blur = GaussianBlur(behind, FrostSigma * Dpi))
+                    using (Graphics pg = Graphics.FromImage(plate))
+                    using (ImageAttributes ia = new ImageAttributes())
+                    {
+                        ColorMatrix cm = NewVibrancyMatrix(
+                            _capsuleDark ? 0.90f : 0.98f,
+                            _capsuleDark ? 0.02f : 0.10f);
+                        cm.Matrix33 = _capsuleDark
+                            ? DarkGlassAlpha : BrightGlassAlpha;
+                        ia.SetColorMatrix(cm);
+                        pg.DrawImage(blur,
+                            new Rectangle(0, 0, core.Width, core.Height),
+                            core.X, core.Y, core.Width, core.Height,
+                            GraphicsUnit.Pixel, ia);
+                    }
+                    _frost = plate;
+                }
+                catch
+                {
+                    plate.Dispose();
+                }
+            }
+            catch { }
+            if (old != null) old.Dispose();
+        }
+
         /// <summary>右键胶囊任意处 = 固定/取消固定（docs/window-experience.md §11）。
         /// 右键只切固定、绝不触键（触键左键专属，见共享 WireInput 守卫——
         /// 字形圆占胶囊宽度约八成，无守卫时右键按左键同效触发 ─/⤢/✕）。
@@ -1194,6 +1701,25 @@ namespace DuoChrome
                     Render();   // hairline 立即反映固定态，不等下一个采样 tick
                 }
             };
+        }
+
+        /// <summary>Adaptive hover wash (Opus verdict): on the untinted
+        /// frost a black wash vanishes against dark video - light glass
+        /// keeps the 6% black wash, dark glass flips to 12% white. Close
+        /// stays the solid Win11 red (#E81123) in both states.</summary>
+        protected override void DrawHoverFill(Graphics g, NavButton b)
+        {
+            if (!b.Hover) return;
+            bool darkState = Ctrl.Glass ? _capsuleDark : Ctrl.BarThemeDark;
+            Color fill;
+            if (b.Danger)
+                fill = Color.FromArgb(255, 232, 17, 35);      // #E81123
+            else if (darkState)
+                fill = Color.FromArgb(31, 255, 255, 255);     // rgba(255,255,255,0.12)
+            else
+                fill = Color.FromArgb(15, 0, 0, 0);          // rgba(0,0,0,0.06)
+            using (SolidBrush brush = new SolidBrush(fill))
+                g.FillEllipse(brush, b.Circle);
         }
 
         /// <summary>System caption-button metrics, physical px. The 4th
@@ -1282,95 +1808,118 @@ namespace DuoChrome
                 PaintFourthButton(g);
                 return;
             }
-            // 胶囊底板 = 右键菜单同款浅玻璃（配方与决策见
-            // docs/window-experience.md §11）；墨色字形叠在玻璃上。
             float rad = Height / 2f;
+            bool darkState = Ctrl.Glass ? _capsuleDark : Ctrl.BarThemeDark;
             using (GraphicsPath capsule = RoundedPath(Width, Height, (int)rad, (int)rad))
             {
-                DrawCapsuleAcrylic(g, capsule);
-                int edge = Ctrl.TopPinned ? 70 : 36;   // 固定态 hairline 加深
-                using (Pen rim = new Pen(Color.FromArgb(edge, 0, 0, 0), 1f))
-                    g.DrawPath(rim, capsule);
+                if (Ctrl.Glass)
+                {
+                    // 胶囊底板 = 纯毛玻璃（无 tint，vibrancy 矩阵；配方与裁决见
+                    // docs/window-experience.md §11 毛玻璃化）；字形随底色自适应。
+                    // 轮廓由 MaskSurface 的 AA 覆盖蒙版雕刻；静止态零描边（用户拍板
+                    // "纯粹毛玻璃胶囊"）——描边只在固定态出现，作为 pin 指示器。
+                    DrawCapsuleAcrylic(g);
+                }
+                else
+                {
+                    // 普通材质（--glass 0，Opus 配方）：Win11 系统面不透明色 +
+                    // 常驻 hairline（不透明面无 frost 对比度，描边补分离）
+                    using (SolidBrush fill = new SolidBrush(
+                        Ctrl.BarThemeDark ? Controller.PlainBarDark : Controller.PlainBarLight))
+                        g.FillPath(fill, capsule);
+                    using (Pen hair = new Pen(Ctrl.BarThemeDark
+                            ? Color.FromArgb(26, 255, 255, 255)
+                            : Color.FromArgb(20, 0, 0, 0), 1f))
+                    {
+                        hair.Alignment = PenAlignment.Inset;
+                        g.DrawPath(hair, capsule);
+                    }
+                }
+                if (Ctrl.TopPinned)
+                {
+                    // 固定态：内描边点亮 = 锚定指示（亮 35% 黑 / 暗 50% 白，
+                    // 内缩不出玻璃；普通材质随主题同规则）
+                    int edge = darkState ? 128 : 89;
+                    using (Pen rim = new Pen(darkState
+                            ? Color.FromArgb(edge, 255, 255, 255)
+                            : Color.FromArgb(edge, 0, 0, 0), 1f))
+                    {
+                        rim.Alignment = PenAlignment.Inset;
+                        g.DrawPath(rim, capsule);
+                    }
+                }
             }
             Font font = GlyphFont(Dpi);
             foreach (NavButton b in Buttons)
             {
                 DrawHoverFill(g, b);
-                float opacity = b.Hover ? 1.0f : 0.78f;
-                Color color = Color.FromArgb((int)(255 * opacity), 0x1D, 0x1D, 0x1F);
-                TextRenderer.DrawText(g, _glyphs[b.Kind - 2], font, b.Circle, color,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-                    TextFormatFlags.NoPrefix);
+                Color color;
+                if (b.Danger && b.Hover)
+                    color = Color.FromArgb(255, 255, 255, 255);   // 红底恒白 ✕
+                else if (darkState)
+                    color = Color.FromArgb(b.Hover ? 255 : 230, 255, 255, 255);
+                else
+                    color = Color.FromArgb(b.Hover ? 255 : 217, 0x1D, 0x1D, 0x1F);
+                DrawGlyph(g, _glyphs[b.Kind - 2], font, b.Circle, color);
             }
         }
 
-        /// <summary>Menu-glass base plate for the hover capsule (recipe:
-        /// docs/window-experience.md §11) - the sampled video content
-        /// behind the capsule (_behind, fed by Controller.SampleTop on
-        /// reveal + a ~300ms refresh) is blurred by 1/8 down/up scaling,
-        /// saturated x1.15 via ColorMatrix, then washed 82% white; a dry
-        /// 88% white base covers the single frame before the reveal-time
-        /// capture lands. Everything is clipped to the capsule
-        /// GraphicsPath (alpha stays 0 outside it, so the ghost
-        /// hit-testing language is untouched).</summary>
-        private void DrawCapsuleAcrylic(Graphics g, GraphicsPath capsule)
+        /// <summary>胶囊轮廓（任意分辨率）：AA 覆盖蒙版的形状源。native
+        /// 模式（第 4 键）返回 null 保持矩形 ghost。</summary>
+        protected override GraphicsPath MaskPath(int w, int h)
         {
-            GraphicsState state = g.Save();
-            g.SetClip(capsule);
-            if (_behind != null && _behind.Width > 0 && _behind.Height > 0)
-            {
-                int qw = Math.Max(1, Width / 8);
-                int qh = Math.Max(1, Height / 8);
-                using (Bitmap small = new Bitmap(qw, qh))
-                {
-                    using (Graphics sg = Graphics.FromImage(small))
-                    {
-                        sg.InterpolationMode = InterpolationMode.Low;
-                        sg.PixelOffsetMode = PixelOffsetMode.Half;
-                        sg.DrawImage(_behind, new Rectangle(0, 0, qw, qh));
-                    }
-                    using (ImageAttributes ia = new ImageAttributes())
-                    {
-                        float sat = 1.15f;
-                        ColorMatrix cm = new ColorMatrix();
-                        cm.Matrix00 = sat;
-                        cm.Matrix11 = sat;
-                        cm.Matrix22 = sat;
-                        ia.SetColorMatrix(cm);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.PixelOffsetMode = PixelOffsetMode.Half;
-                        g.DrawImage(small, new Rectangle(0, 0, Width, Height),
-                            0, 0, qw, qh, GraphicsUnit.Pixel, ia);
-                    }
-                }
-                using (SolidBrush tint = new SolidBrush(Color.FromArgb(208, 255, 255, 255)))
-                    g.FillRectangle(tint, 0, 0, Width, Height);
-            }
+            if (_native) return null;
+            int rad = h / 2;
+            return RoundedPath(w, h, rad, rad);
+        }
+
+        /// <summary>胶囊底板直贴：BuildFrost 在采样落地时烘焙的高斯毛玻璃
+        /// 缓存（docs/window-experience.md §11 纯粹毛玻璃）。可见内容零重
+        /// 采样；干底（采样不可用）= DryGlass 待命色。轮廓由 MaskSurface
+        /// 的 AA 蒙版雕刻，此处整矩形绘制。</summary>
+        private void DrawCapsuleAcrylic(Graphics g)
+        {
+            // 有采样时 frost 直铺透明层；双通路配方见 docs/window-experience.md §11。
+            if (_frost != null)
+                g.DrawImage(_frost, 0, 0, Width, Height);
             else
-            {
-                using (SolidBrush dry = new SolidBrush(Color.FromArgb(222, 255, 255, 255)))
+                using (SolidBrush dry = new SolidBrush(DryGlass))
                     g.FillRectangle(dry, 0, 0, Width, Height);
-            }
-            g.Restore(state);
+            // 顶光渐变（Opus 裁决 A，docs/window-experience.md §11）：内容
+            // 无关的白色纵向 ramp。双态：亮态 8%→1.5%（+8% 被 clamp，
+            // 亮态几乎不可见）；暗态 2.4%→0.4%（用户拍板"往最暗了拉"——
+            // 深色玻璃只留一丝顶部受光）。千底同样适用。
+            int topLit = _capsuleDark ? 6 : 20;
+            int botLit = _capsuleDark ? 1 : 4;
+            using (LinearGradientBrush backlight = new LinearGradientBrush(
+                new Rectangle(0, 0, Width, Height),
+                Color.FromArgb(topLit, 255, 255, 255),
+                Color.FromArgb(botLit, 255, 255, 255),
+                LinearGradientMode.Vertical))
+                g.FillRectangle(backlight, 0, 0, Width, Height);
         }
 
         /// <summary>C2 4th caption button paint: one glass dot over the
-        /// real (system-drawn) caption - rgba(0,0,0,0.06) hover wash + dark
-        /// #1D1D1F glyph, quiet at rest (0.55) and fully present on hover
-        /// (hover 现形) - the capsule's drawing language on a light system
+        /// real (system-drawn) caption - rgba(0,0,0,0.06) hover wash + glyph
+        /// colored by the SYSTEM theme (dark caption would swallow the old
+        /// hardcoded dark ink) - quiet at rest (0.55) and fully present on
+        /// hover (hover 现形) - the capsule's drawing language on a system
         /// bar. The glyph is the aspect-fit arrows; SetMaximized swaps it
         /// to the restore glyph while the maximize is active.</summary>
         private void PaintFourthButton(Graphics g)
         {
             NavButton b = Buttons[0];
             if (b.Hover)
-                using (SolidBrush wash = new SolidBrush(Color.FromArgb(15, 0, 0, 0)))
+                using (SolidBrush wash = new SolidBrush(
+                    Ctrl.SystemThemeDark
+                        ? Color.FromArgb(20, 255, 255, 255)
+                        : Color.FromArgb(15, 0, 0, 0)))
                     g.FillEllipse(wash, b.Circle);
             int alpha = b.Hover ? 235 : 140;
-            TextRenderer.DrawText(g, _glyphs[0], GlyphFont(Dpi), b.Circle,
-                Color.FromArgb(alpha, 0x1D, 0x1D, 0x1F),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-                TextFormatFlags.NoPrefix);
+            Color ink = Ctrl.SystemThemeDark
+                ? Color.FromArgb(alpha, 0xF5, 0xF5, 0xF7)
+                : Color.FromArgb(alpha, 0x1D, 0x1D, 0x1F);
+            DrawGlyph(g, _glyphs[0], GlyphFont(Dpi), b.Circle, ink);
         }
 
         /// <summary>Caption button width (physical px) - the unit the
@@ -1771,6 +2320,7 @@ namespace DuoChrome
                 {
                     g.FillRectangle(ghost, 0, 0, Width, Height);
                 }
+                OverlayWindow.PremultiplyAlpha(bmp);
                 IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
                 IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
                 IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
@@ -1934,6 +2484,7 @@ namespace DuoChrome
 
         private void PushGhostBitmap(Bitmap bmp)
         {
+            OverlayWindow.PremultiplyAlpha(bmp);
             IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
             IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
             IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
@@ -1963,7 +2514,7 @@ namespace DuoChrome
     internal sealed class Controller : IDisposable
     {
         private const int TickMs = 50;
-        private const int SampleMs = 220;
+        private const int SampleMs = 300;
         private const int CapsuleSampleMs = 300;   // trio #1 acrylic refresh
         private const int FirstWaitMs = 12000;
         private const int LostWaitMs = 15000;
@@ -2101,9 +2652,68 @@ namespace DuoChrome
         private const int SettleMs = 350;
         private bool _chinInset;                    // taskbar-guard state (log once per flip)
 
+        // 玻璃材质总开关（--glass，2026-09-12）：false = 上巴胶囊与下巴
+        // native 渲染普通不透明材质（无采样无自适应）；面板右键菜单的
+        // 同开关在 QML 侧独立生效。
+        internal readonly bool Glass;
+        // 面板主题（--bar-theme，light|dark|system）：仅普通材质消费；
+        // system 经注册表 AppsUseLightTheme 解析（缓存一次）。
+        internal readonly string BarTheme;
+        // 普通材质色板（Opus 裁决，对齐 Win11 SolidBackgroundFillColorBase）
+        internal static readonly Color PlainBarLight = Color.FromArgb(243, 243, 243);
+        internal static readonly Color PlainBarDark = Color.FromArgb(32, 32, 32);
+        private bool? _barThemeDark;
+        private bool? _systemThemeDark;
+
+        internal bool BarThemeDark
+        {
+            get
+            {
+                if (!_barThemeDark.HasValue)
+                        _barThemeDark = ResolveThemeDark(BarTheme);
+                return _barThemeDark.Value;
+            }
+        }
+
+        /// <summary>系统主题暗色（注册表，缓存一次）：native 第 4 键骑在
+        /// 系统自绘 caption 上——底材是 Windows 自己画的，色源必须跟系统
+        /// 而非面板主题（面板暗 + 系统亮时 caption 仍是亮的，跟面板主题
+        /// 会出白字白底；终审对此点的相反意见基于"第 4 键在下巴上"的误读）。</summary>
+        internal bool SystemThemeDark
+        {
+            get
+            {
+                if (!_systemThemeDark.HasValue)
+                        _systemThemeDark = ResolveThemeDark("system");
+                return _systemThemeDark.Value;
+            }
+        }
+
+        private static bool ResolveThemeDark(string theme)
+        {
+            if (theme == "dark") return true;
+            if (theme == "light") return false;
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key =
+                    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"))
+                {
+                    if (key != null)
+                    {
+                        object v = key.GetValue("AppsUseLightTheme");
+                        if (v is int) return (int)v == 0;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public Controller(string title, string serial, string adb, bool home,
             string displayMode, int videoW, int videoH, string sessionLog, int cornerDip,
-            string topMode, string bottomMode, bool pinTop, string pinFile)
+            string topMode, string bottomMode, bool pinTop, string pinFile, bool glass,
+            string barTheme)
         {
             _title = title; _serial = serial; _adb = adb;
             _homeEnabled = home;
@@ -2112,6 +2722,8 @@ namespace DuoChrome
             _bottomMode = NormalizeBarMode(bottomMode);
             _topPinned = pinTop;
             _pinFile = pinFile;
+            Glass = glass;
+            BarTheme = barTheme == null ? "system" : barTheme;
             _dpi = ProbeDpi();
             _videoW = videoW; _videoH = videoH;
             _videoChangedAt = 0;
@@ -3125,7 +3737,11 @@ namespace DuoChrome
             bool foreground = NativeMethods.GetAncestor(
                 NativeMethods.GetForegroundWindow(), 2 /*GA_ROOT*/) == _hwnd;
             bool engaged = foreground || rootAtCursor == _hwnd
-                || overBars || overStrips || _resizing || _moving;
+                || overBars || overStrips || _resizing || _moving
+                // 固定 = 常驻（用户拍板 2026-09-10：失活不再隐藏；窗口可见
+                // 即露出——最小化/关闭由上方 IsIconic/IsWindow 门拦性；
+                // 被其他窗口盖住时三明治 z 序天然遮挡，不浮在别人上面）
+                || _topPinned;
             Rectangle wr = WindowRect();
             EnforceFlexPin(wr);   // window never follows display rotation
             // Window-state duties run regardless of engagement: the corner
@@ -3556,13 +4172,13 @@ namespace DuoChrome
         /// tint) is broken without any hide/blank flicker.</summary>
         private void SampleNativeChin()
         {
-            if (!BottomNative || !_chin.Visible) return;
+            if (!BottomNative || !_chin.Visible || !Glass) return;
             int now = Environment.TickCount;
             if (now - _lastSample < SampleMs) return;
             _lastSample = now;
             Rectangle r = _chin.Bounds;
-            const int Margin = 8;
-            Rectangle full = Rectangle.Inflate(r, Margin, Margin);
+            int margin = _chin.FrostMargin;
+            Rectangle full = Rectangle.Inflate(r, margin, margin);
             full.Intersect(SystemInformation.VirtualScreen);
             if (full.Width < 4 || full.Height < 4) return;
             Bitmap capture;
@@ -3606,18 +4222,17 @@ namespace DuoChrome
 
         /// <summary>User-feedback trio #1: feed the immersive top capsule
         /// its acrylic backdrop sample. PrintWindow grabs the video window
-        /// (into the reused full-size bitmap), the capsule's own bounds
-        /// are cropped out of it and handed to the bar, whose
-        /// DrawCapsuleAcrylic blurs / saturates / tints them into the base
-        /// plate. Sampled once when the capsule reveals (force, so the
-        /// very first frame is already acrylic) and refreshed on the
-        /// CapsuleSampleMs cadence (~300ms) while it stays visible -
-        /// never per frame. PrintWindow failures and all-black captures
-        /// (D3D quirks) keep the last good sample instead of flashing a
-        /// dry capsule.</summary>
+        /// (into the reused full-size bitmap); the capsule's bounds INFLATED
+        /// by FrostMargin (>= 3 sigma overscan) are cropped out and handed
+        /// to the bar with the core rect - the blur kernel never touches the
+        /// sample's texture border (glass-recipe.md 硬规则 2). Sampled on
+        /// reveal (force) and on the CapsuleSampleMs cadence (~300ms) while
+        /// visible; SetSample bakes the frost and re-renders, so the glass
+        /// never freezes. PrintWindow failures and all-black captures (D3D
+        /// quirks) keep the last good sample instead of flashing a dry one.</summary>
         private void SampleTop(bool force)
         {
-            if (TopNative) return;
+            if (TopNative || !Glass) return;
             if (!_top.Visible && !force) return;
             int now = Environment.TickCount;
             if (!force && now - _topSampleAt < CapsuleSampleMs) return;
@@ -3638,8 +4253,16 @@ namespace DuoChrome
             }
             if (ok) ok = !LooksBlack(_sample);
             if (!ok) return;                     // keep the last good sample
-            Bitmap topSample = Crop(_sample, _top.Bounds, wr);
-            if (topSample != null) _top.SetSample(topSample);
+            Rectangle want = Rectangle.Inflate(
+                _top.Bounds, _top.FrostMargin, _top.FrostMargin);
+            want.Intersect(wr);
+            Bitmap topSample = Crop(_sample, want, wr);
+            if (topSample != null)
+            {
+                Rectangle core = Rectangle.Intersect(_top.Bounds, want);
+                core.Offset(-want.X, -want.Y);
+                _top.SetSample(topSample, core);
+            }
         }
 
         private static bool LooksBlack(Bitmap bmp)
