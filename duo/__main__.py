@@ -417,7 +417,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         pin_top=read_top_pin(args.app) if args.app else False,
                         pin_file=pin_file,
                         glass=_resolve_glass(args.glass, settings.glass_enabled),
-                        bar_theme=settings.theme,
+                        bar_theme=args.bar_theme or settings.theme,
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
@@ -552,6 +552,13 @@ def _build_parser() -> argparse.ArgumentParser:
                 help="window bars material: 1 = frosted glass (default), "
                      "0 = plain opaque; follows the settings glass_enabled "
                      "when omitted",
+        )
+        mirror.add_argument(
+                "--bar-theme",
+                choices=["light", "dark", "system"],
+                default=None,
+                help="theme for plain (non-glass) bars; follows the settings "
+                     "theme when omitted",
         )
         mirror.add_argument(
                 "--corner-radius",
