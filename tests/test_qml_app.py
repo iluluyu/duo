@@ -302,6 +302,7 @@ def test_settings_api_roundtrip(settings_file, qapp):
                 "corner_mode": "g2",
                 "corner_size_dip": 64,
                 "glass_enabled": False,
+                "theme": "dark",
                 "audio_policy": "all",
                 "video_codec": "h265",
                 "turn_screen_off": True,
@@ -330,6 +331,7 @@ def test_settings_api_save_reports_problems(settings_file, qapp):
                 "corner_mode": "round",
                 "corner_size_dip": 48,
                 "glass_enabled": True,
+                "theme": "system",
         })
         assert any("fps" in p for p in problems)
         assert any("corner_mode" in p for p in problems)
@@ -352,8 +354,10 @@ def test_settings_api_folds_whole_js_doubles(settings_file, qapp):
                 "corner_mode": "system",
                 "corner_size_dip": 64.0,
                 "glass_enabled": True,
+                "theme": "dark",
         })
         assert problems == []
+        assert api.load()["theme"] == "dark"
         raw = json.loads(Path(settings_file).read_text(encoding="utf-8"))
         assert raw["fps"] == 120 and isinstance(raw["fps"], int)
         assert raw["corner_size_dip"] == 64
@@ -678,7 +682,7 @@ def test_search_clear_button_and_esc(qapp, no_adb, prefs_stub, settings_file):
                 search.setProperty("focus", False)
                 _pump(200)   # 140ms 颜色过渡
                 assert search.property("activeFocus") is False
-                assert capsule_hex() == "#b8ffffff"   # 常态 = cardFill
+                assert capsule_hex() == "#b8ffffff"   # 常态 = searchFill（亮=卡语言半透明）
 
                 # Esc 清空并失焦（输入中场景：焦点在搜索框）
                 search.setProperty("text", "wx")
@@ -1594,9 +1598,9 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "autoPaddingEnabled: false" in panel_src
 
         # ③ 双路径：GL 染色 menuTint / 软件回退不透明 menuFill；模糊层
-        #    随 glassBlur 门控（软件后端隐藏即免采样）；亮边 GL = 25% 白
-        #    menuBorder / 软件回退 = 深色 hairline
-        assert "visible: Style.glassBlur" in panel_src
+        #    随 menuGlass 双闸门（着色器能力 × 用户玻璃开关）门控（软件后端
+        #    隐藏即免采样）；描边 GL = menuBorder / 软件回退 = menuFillBorder
+        assert "visible: Style.menuGlass" in panel_src
         assert "Style.menuTint" in panel_src
         assert "Style.menuFill" in panel_src
         # 双路径 + elevated 阶梯（gemini 终审）：染色块按 glassBlur/elevated
@@ -1623,24 +1627,31 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
 
         # Style 令牌：软件回退色不透明 #F7F7F9（可读性锁定，审计 §3.7）+
         # 毛玻璃化（2026-09-10）：tint 0%（透明）+ 光学增益令牌阶梯 +
-        # 描边 12%/14% 黑；glassBlur 门控接 app.py 注入的 shadersUsable
+        # 描边 12%/14% 黑；menuGlass 双闸门（shadersUsable × 用户玻璃开关）
         style_src = (QML_MAIN.parent / "Style.qml").read_text(encoding="utf-8")
-        assert 'readonly property color menuFill: "#FFF7F7F9"' in style_src
+        # 2026-09-12 暗色模式：菜单家族令牌双值化（暗底描边翻白、光学增益
+        # 阶梯暗色微调）；light 分支保持毛玻璃化定稿值不变
+        assert 'readonly property color menuFill: root.dark ? "#2C2C2E" : "#F7F7F9"' in style_src
         assert 'readonly property color menuTint: "#00FFFFFF"' in style_src
-        assert 'readonly property color menuBorder: "#1F000000"' in style_src
+        assert ('readonly property color menuBorder: root.dark'
+                ' ? "#24FFFFFF" : "#1F000000"' in style_src.replace("  ", " "))
         assert 'readonly property color menuTintHi: "#00FFFFFF"' in style_src
-        assert 'readonly property color menuBorderHi: "#24000000"' in style_src
-        assert 'readonly property color menuFillBorder: "#1A000000"' in style_src
+        assert ('readonly property color menuBorderHi: root.dark'
+                ' ? "#2EFFFFFF" : "#24000000"' in style_src.replace("  ", " "))
+        assert ('readonly property color menuFillBorder: root.dark'
+                ' ? "#1AFFFFFF" : "#1A000000"' in style_src.replace("  ", " "))
         assert "readonly property real menuBlur: 0.75" in style_src
         assert "readonly property real menuBlurHi: 0.85" in style_src
         assert "readonly property real menuSat: 0.45" in style_src
         assert "readonly property real menuSatHi: 0.50" in style_src
-        assert "readonly property real menuBright: 0.02" in style_src
-        assert "readonly property real menuBrightHi: 0.04" in style_src
-        assert "readonly property real menuContrast: 0.06" in style_src
-        assert "readonly property real menuContrastHi: 0.10" in style_src
+        assert 'readonly property real menuBright: root.dark ? 0.05 : 0.02' in style_src
+        assert 'readonly property real menuBrightHi: root.dark ? 0.07 : 0.04' in style_src
+        assert 'readonly property real menuContrast: root.dark ? 0.08 : 0.06' in style_src
+        assert 'readonly property real menuContrastHi: root.dark ? 0.10 : 0.10' in style_src
         assert "readonly property bool glassBlur" in style_src
         assert "shadersUsable" in style_src
+        assert "readonly property bool glassWanted" in style_src
+        assert "readonly property bool menuGlass: glassBlur && glassWanted" in style_src
         assert "MultiEffect" not in style_src
 
         # ---- 运行时（软件后端 = 回退路径在跑）----
@@ -1983,6 +1994,7 @@ def test_settings_page_dpi_roundtrip_and_corner_passthrough(settings_page,
                 "dpi": 400, "render_scale": 1.0, "corner_mode": "g2",
                 "corner_size_dip": 72,
                 "glass_enabled": True,
+                "theme": "light",
         }) == []
         meta = settings_page.metaObject()
         assert meta.indexOfMethod("reloadFromApi()") >= 0

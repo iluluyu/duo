@@ -7,7 +7,8 @@
 //   - 上下文属性 settingsApi（duo.ui.app.SettingsApi）：
 //       load() -> QVariantMap             键同 duo/core/settings.py 的 Settings 字段：
 //                                         scrcpy_path / adb_path / fps / bitrate_mbps /
-//                                         dpi / corner_mode / corner_size_dip / glass_enabled
+//                                         dpi / corner_mode / corner_size_dip / glass_enabled /
+//                                         theme（light|dark|system）/ 其余质量与窗口栏键
 //       loadProblems() -> QVariantList    读取 settings.json 的问题清单（空 = 正常）；
 //                                         页面打开时经 problemBar 红条展示（同 widgets 版）
 //       save(QVariantMap) -> QVariantList 问题清单（空数组 = 已保存）
@@ -49,7 +50,8 @@ Item {
     // 引擎锁：Main.qml 绑 ctrl.engineLocked；true 时引擎路径行禁用 + 提示条
     property bool engineLocked: false
     property var problems: []          // save()/loadProblems() 的问题清单（红条内容）
-    property bool glassOn: true            // 液态玻璃
+    property bool glassOn: true            // 玻璃材质总开关（上巴/下巴/右键菜单）
+    property string themeMode: "light"     // light | dark | system
     // 投屏质量（docs/mirroring-quality.md）：键同 Settings 字段
     property string videoCodec: "auto"     // auto | h264 | h265 | av1
     property string audioPolicy: "latest"  // latest | all | off
@@ -94,6 +96,7 @@ Item {
         fpsCell.box.value = (m.fps == null) ? 60 : m.fps          // null 也算缺省（60：120Hz 面板整除节拍）
         bitrateCell.box.value = (m.bitrate_mbps == null) ? 30 : m.bitrate_mbps
         root.glassOn = (m.glass_enabled == null) ? true : m.glass_enabled
+        root.themeMode = (m.theme == null) ? "light" : m.theme
         root.videoCodec = (m.video_codec == null) ? "auto" : m.video_codec
         root.audioPolicy = (m.audio_policy == null) ? "latest" : m.audio_policy
         root.turnScreenOff = (m.turn_screen_off == null) ? false : m.turn_screen_off
@@ -117,6 +120,7 @@ Item {
             "fps": fpsCell.box.value,
             "bitrate_mbps": bitrateCell.box.value,
             "glass_enabled": root.glassOn,
+            "theme": root.themeMode,
             "video_codec": root.videoCodec,
             "audio_policy": root.audioPolicy,
             "turn_screen_off": root.turnScreenOff,
@@ -238,7 +242,7 @@ Item {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.margins: 8
-                        text: "镜像会话运行中，引擎路径暂不可改（先关闭会话）"
+                        text: "会话运行中，不可修改引擎路径"
                         wrapMode: Text.Wrap
                         font.family: Style.fontDefault
                         font.pixelSize: 12
@@ -376,7 +380,7 @@ Item {
                 }
                 CaptionText {
                     width: parent.width
-                    text: "黑屏防误触；主要对整机镜像有意义——虚拟屏会话本就与物理屏无关"
+                    text: "黑屏防误触；仅整机镜像有效"
                     wrapMode: Text.Wrap
                 }
 
@@ -417,7 +421,7 @@ Item {
                 }
                 CaptionText {
                     width: parent.width
-                    text: "默认 160 桌面密度（1dp≈1px，同屏内容最多）；跟随设备则元素尺寸同手机/平板"
+                    text: "默认 160（同屏内容最多）；跟随则与设备一致"
                     wrapMode: Text.Wrap
                 }
 
@@ -486,7 +490,7 @@ Item {
                 }
                 CaptionText {
                     width: parent.width
-                    text: "窗口 ÷ 倍率 = 安卓渲染分辨率（4K 窗口 2 倍即 1K），减轻设备端渲染压力；1× = 原生跟随窗口"
+                    text: "窗口 ÷ 倍率 = 实际渲染分辨率；1× = 原生"
                     wrapMode: Text.Wrap
                 }
             }
@@ -520,6 +524,7 @@ Item {
                         objectName: "topBarImmersive"
                         width: (parent.width - 8) / 2
                         text: "沉浸"
+                        hint: "无边框悬浮控件"
                         selected: root.topBarMode === "immersive"
                         Accessible.name: "上巴：沉浸"
                         onClicked: root.topBarMode = "immersive"
@@ -528,6 +533,7 @@ Item {
                         objectName: "topBarNative"
                         width: (parent.width - 8) / 2
                         text: "系统"
+                        hint: "保留系统原生栏"
                         selected: root.topBarMode === "native"
                         Accessible.name: "上巴：系统"
                         onClicked: root.topBarMode = "native"
@@ -552,6 +558,7 @@ Item {
                         objectName: "bottomBarImmersive"
                         width: (parent.width - 16) / 3
                         text: "沉浸"
+                        hint: "无边框悬浮控件"
                         selected: root.bottomBarMode === "immersive"
                         Accessible.name: "下巴：沉浸"
                         onClicked: root.bottomBarMode = "immersive"
@@ -560,6 +567,7 @@ Item {
                         objectName: "bottomBarNative"
                         width: (parent.width - 16) / 3
                         text: "系统"
+                        hint: "保留系统原生栏"
                         selected: root.bottomBarMode === "native"
                         Accessible.name: "下巴：系统"
                         onClicked: root.bottomBarMode = "native"
@@ -568,6 +576,7 @@ Item {
                         objectName: "bottomBarNone"
                         width: (parent.width - 16) / 3
                         text: "不显示"
+                        hint: "不建栏"
                         selected: root.bottomBarMode === "none"
                         Accessible.name: "下巴：不显示"
                         onClicked: root.bottomBarMode = "none"
@@ -575,8 +584,7 @@ Item {
                 }
                 CaptionText {
                     width: parent.width
-                    text: "应用未单独设置时生效；沉浸 = 无边框悬浮控件，系统 = 保留系统原生栏，" +
-                          "不显示 = 该边不建栏（scrcpy 右键已是返回，下巴常显冗余）"
+                    text: "应用未单独设置时生效"
                     wrapMode: Text.Wrap
                 }
             }
@@ -587,14 +595,56 @@ Item {
                 objectName: "appearanceCard"
                 title: "外观"
 
-                // 液态玻璃开关
+                // 主题：亮色 / 暗色 / 跟随系统（选项名自解释，不配说明——
+                // Opus KISS 裁决；保存后即时生效，system 随系统实时切换）
+                Item {
+                    width: parent.width
+                    height: 20
+                    CaptionText {
+                        objectName: "themeRowLabel"
+                        text: "主题"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    ModeButton {
+                        objectName: "themeLight"
+                        width: (parent.width - 16) / 3
+                        text: "亮色"
+                        selected: root.themeMode === "light"
+                        Accessible.name: "主题：亮色"
+                        onClicked: root.themeMode = "light"
+                    }
+                    ModeButton {
+                        objectName: "themeDark"
+                        width: (parent.width - 16) / 3
+                        text: "暗色"
+                        selected: root.themeMode === "dark"
+                        Accessible.name: "主题：暗色"
+                        onClicked: root.themeMode = "dark"
+                    }
+                    ModeButton {
+                        objectName: "themeSystem"
+                        width: (parent.width - 16) / 3
+                        text: "跟随系统"
+                        selected: root.themeMode === "system"
+                        Accessible.name: "主题：跟随系统"
+                        onClicked: root.themeMode = "system"
+                    }
+                }
+
+                // 玻璃材质总开关：会话窗上巴/下巴与右键菜单统一毛玻璃或
+                // 普通不透明材质（开关名自解释，不配说明——Opus KISS 裁决）
                 Item {
                     width: parent.width
                     height: 32
                     Text {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "液态玻璃"
+                        text: "玻璃材质"
                         font.family: Style.fontDefault
                         font.pixelSize: 13
                         color: Style.ink
@@ -604,7 +654,7 @@ Item {
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         checked: root.glassOn
-                        Accessible.name: "液态玻璃风格"
+                        Accessible.name: "玻璃材质"
                         onToggled: root.glassOn = checked
                     }
                 }
@@ -710,11 +760,11 @@ Item {
         }
         background: Rectangle {
             radius: 10
-            color: !sbtn.enabled ? Qt.rgba(0, 0, 0, 0.03)
-                                 : (sbtn.down ? Qt.rgba(0, 0, 0, 0.08)
-                                              : (sbtn.hovered ? Style.hoverWash : "#FFFFFF"))
+            color: !sbtn.enabled ? Style.controlFillDisabled
+                                 : (sbtn.down ? Style.pressWash
+                                              : (sbtn.hovered ? Style.hoverWash : Style.controlFill))
             border.width: 1
-            border.color: sbtn.enabled ? Style.hairline : Qt.rgba(0, 0, 0, 0.06)
+            border.color: sbtn.enabled ? Style.hairline : Style.controlFillDisabled
             Behavior on color { ColorAnimation { duration: 140 } }
         }
     }
@@ -743,10 +793,11 @@ Item {
         }
     }
 
-    // 圆角模式单选按钮（分段样式）
+    // 圆角模式单选按钮（分段样式）；hint 非空时 hover 出 tooltip
     component ModeButton: AbstractButton {
         id: mbtn
         property bool selected: false
+        property string hint: ""
         implicitHeight: 32
         Accessible.role: Accessible.RadioButton
         Accessible.checked: mbtn.selected
@@ -768,6 +819,11 @@ Item {
             border.color: mbtn.selected ? Qt.alpha(Style.accent, 0.45) : "transparent"
             Behavior on color { ColorAnimation { duration: 140 } }
         }
+        ToolTip {
+            visible: mbtn.hint !== "" && mbtn.hovered
+            text: mbtn.hint
+            delay: 350
+        }
     }
 
     // 纯开关（无文字）：轨道贴右；文字由调用方自行放在轨道左侧
@@ -787,7 +843,7 @@ Item {
             x: gsw.availableWidth - width          // 轨道恒贴右缘
             y: (gsw.availableHeight - height) / 2
             radius: height / 2
-            color: gsw.checked ? Style.accent : Qt.rgba(0, 0, 0, 0.16)
+            color: gsw.checked ? Style.accent : (Style.dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(0, 0, 0, 0.16))
             Behavior on color { ColorAnimation { duration: 140 } }
             Rectangle {
                 x: gsw.checked ? parent.width - width - 2 : 2
@@ -837,7 +893,7 @@ Item {
         }
         background: Rectangle {
             radius: 10
-            color: nbox.enabled ? "#FFFFFF" : Qt.rgba(0, 0, 0, 0.03)
+            color: nbox.enabled ? Style.controlFill : Style.controlFillDisabled
             border.width: 1
             border.color: nbox.activeFocus ? Style.accent : Style.hairline
             Behavior on border.color { ColorAnimation { duration: 140 } }
@@ -852,7 +908,7 @@ Item {
                 anchors.centerIn: parent
                 text: "+"
                 font.pixelSize: 14
-                color: nbox.enabled ? Style.ink2 : Qt.rgba(0, 0, 0, 0.15)
+                color: nbox.enabled ? Style.ink2 : (Style.dark ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(0, 0, 0, 0.15))
             }
         }
         down.indicator: Rectangle {
@@ -865,7 +921,7 @@ Item {
                 anchors.centerIn: parent
                 text: "−"
                 font.pixelSize: 14
-                color: nbox.enabled ? Style.ink2 : Qt.rgba(0, 0, 0, 0.15)
+                color: nbox.enabled ? Style.ink2 : (Style.dark ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(0, 0, 0, 0.15))
             }
         }
     }
@@ -926,7 +982,7 @@ Item {
                 width: statusLabel.implicitWidth + 20
                 height: 26
                 radius: 14
-                color: "#E61D1D1F"   // 深底胶囊，白字；成败只靠 ✓/✗ 区分
+                color: Style.pillFill   // 深底胶囊，白字；成败只靠 ✓/✗ 区分
                 visible: statusLabel.text.length > 0
                 opacity: prow.statusOpacity
                 Behavior on opacity { NumberAnimation { duration: Style.durFast } }
@@ -968,7 +1024,7 @@ Item {
                 Accessible.name: prow.tool + " 路径"
                 background: Rectangle {
                     radius: 10
-                    color: field.enabled ? "#FFFFFF" : Qt.rgba(0, 0, 0, 0.03)
+                    color: field.enabled ? Style.controlFill : Style.controlFillDisabled
                     border.width: 1
                     border.color: field.activeFocus ? Style.accent : Style.hairline
                     Behavior on border.color { ColorAnimation { duration: 140 } }

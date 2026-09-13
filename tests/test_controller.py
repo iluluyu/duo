@@ -2746,3 +2746,35 @@ def test_build_launch_argv_injects_density_and_scale(no_adb, prefs_stub):
         prefs_stub.payload = None
         argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
         assert "--render-scale" not in argv      # 默认 1.0 = 原生，不注入
+
+
+def test_theme_state_and_apply_theme_wiring(no_adb, prefs_stub, qapp, settings_file):
+        """外观态（2026-09-12）：默认亮色 + 玻璃开；applyTheme 即时切换
+        dark/light/system；system 模式接 colorSchemeChanged 实时跟随，
+        固定模式拆线（Opus 终审 MUST-FIX #7a 的回归测试）。"""
+        from PyQt6.QtCore import QCoreApplication, Qt  # noqa: F401
+        from PyQt6.QtGui import QGuiApplication
+
+        controller = PanelController("/fake/adb.exe")
+        assert controller.effectiveDark is False
+        assert controller.glassMaterial is True
+
+        settings_file.write_text('{"theme": "dark", "glass_enabled": false}',
+                                 encoding="utf-8")
+        controller.applyTheme()
+        assert controller.effectiveDark is True
+        assert controller.glassMaterial is False
+
+        # system 模式：接线 + 立即解析一次（offscreen 后端 Unknown → 亮）
+        settings_file.write_text('{"theme": "system"}', encoding="utf-8")
+        controller.applyTheme()
+        assert controller.effectiveDark is False
+        app = QCoreApplication.instance()
+        hints = app.styleHints() if isinstance(app, QGuiApplication) else None
+        if hints is not None:
+                # 固定模式回切后不再跟随系统信号（拆线不抛错即过）
+                settings_file.write_text('{"theme": "light"}', encoding="utf-8")
+                controller.applyTheme()
+                assert controller.effectiveDark is False
+                hints.colorSchemeChanged.emit(Qt.ColorScheme.Dark)   # 拆线后空发不翻转
+                assert controller.effectiveDark is False

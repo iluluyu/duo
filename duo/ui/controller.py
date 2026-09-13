@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6 import QtCore
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QCoreApplication, QObject, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QGuiApplication
 
 from duo.core.adb import MEDIA_VOLUME_MAX, media_volume
 from duo.core.apps import (
@@ -439,6 +440,19 @@ def _pin_chrome_bars(argv: list[str], package: str | None = None) -> None:
         ]
 
 
+def _pin_glass(argv: list[str]) -> None:
+        """Inject the material switch onto a mirror argv (in place).
+
+        玻璃材质总开关（settings glass_enabled，2026-09-12 实装）：False =
+        会话窗上巴/下巴渲染普通不透明材质（面板右键菜单同步走不透明
+        回退）。与 _pin_chrome_bars 同一的 fresh-read 纪律——两次面板启动
+        之间的保存必须到达下一个窗口。
+        """
+        settings, _problems = load_settings()
+        argv += ["--glass", "1" if settings.glass_enabled else "0",
+                 "--bar-theme", settings.theme]
+
+
 def _pin_density(argv: list[str], package: str | None = None) -> None:
         """Inject a per-app display-density override onto a mirror argv.
 
@@ -584,6 +598,7 @@ def build_launch_argv(
         # 见 _pin_chrome_bars），断开保留画面紧随其后，音频的 --no-audio
         # 仍恒居末位。
         _pin_chrome_bars(argv, package)
+        _pin_glass(argv)
         if keep_vd:
                 argv.append("--no-vd-destroy-content")
         if muted:
@@ -612,6 +627,7 @@ def build_device_mirror_argv(serial: str, muted: bool = False) -> list[str]:
                 "平板镜像",
         ]
         _pin_chrome_bars(argv)
+        _pin_glass(argv)
         if muted:
                 argv.append("--no-audio")
         return argv
@@ -704,6 +720,9 @@ class PanelController(QObject):
         scalePrefsChanged = pyqtSignal(str)
         engineLockedChanged = pyqtSignal(bool)
         turnScreenOffChanged = pyqtSignal()
+        # 主题（light/dark/system 的解析结果）或玻璃材质总开关变化：
+        # Style 单例绑定 effectiveDark / glassMaterial，两级底色即时切换。
+        themeChanged = pyqtSignal()
         # The device media volume index changed (-1 = unknown; the slider
         # is the only writer after the first drag).
         mediaVolumeChanged = pyqtSignal()
@@ -781,6 +800,16 @@ class PanelController(QObject):
                 # Mirror-screen-off seed (§3.5 右键镜像卡勾选项)：与设置页
                 # 共用 settings.json，切一次写一次（toggleTurnScreenOff）。
                 self._turn_screen_off = load_settings()[0].turn_screen_off
+                # 外观：theme（light/dark/system）+ 玻璃材质总开关（上巴/
+                # 下巴/右键菜单）。启动即解析一次；system 的后续系统切换经
+                # colorSchemeChanged 实时跟随；保存设置后 applyTheme() 重读。
+                self._theme_mode = load_settings()[0].theme
+                self._glass_material = load_settings()[0].glass_enabled
+                self._dark = self._theme_mode == "dark"
+                self._scheme_wired = False
+                if self._theme_mode == "system":
+                        self._dark = self._system_prefers_dark()
+                        self._wire_system_scheme(True)
 
                 # Hops deliver on this object's thread: queued when raised on
                 # a worker/monitor thread, synchronous when a test raises the
@@ -840,6 +869,77 @@ class PanelController(QObject):
                 self._emit_sessions()
 
         # ------------------------------------------------------ properties
+
+        @pyqtProperty(bool, notify=themeChanged)
+        def effectiveDark(self) -> bool:
+                """解析后的暗色开关（system 已折叠为具体亮/暗）。"""
+                return self._dark
+
+        @pyqtProperty(bool, notify=themeChanged)
+        def glassMaterial(self) -> bool:
+                """玻璃材质总开关（上巴/下巴/右键菜单；False = 普通材质）。"""
+                return self._glass_material
+
+        @staticmethod
+        def _system_prefers_dark() -> bool:
+                """Windows 系统色是否为暗（Qt 色调；Unknown 折叠为亮）。"""
+                app = QCoreApplication.instance()
+                if not isinstance(app, QGuiApplication):
+                        return False
+                hints = app.styleHints()
+                if hints is None:
+                        return False
+                return hints.colorScheme() == Qt.ColorScheme.Dark
+
+        def _on_system_scheme(self) -> None:
+                # 双保险之一：非 system 模式下回调直接空转（接线由
+                # _wire_system_scheme 在模式切换时拆装）
+                if self._theme_mode != "system":
+                        return
+                dark = self._system_prefers_dark()
+                if dark != self._dark:
+                        self._dark = dark
+                        self.themeChanged.emit()
+
+        def _wire_system_scheme(self, on: bool) -> None:
+                """system 模式下接 colorSchemeChanged 实时跟随，离开即拆
+                （Opus 终审：中途切回 system 必须重新接线，固定模式不残留
+                监听）。"""
+                if on == self._scheme_wired:
+                        return
+                app = QCoreApplication.instance()
+                if not isinstance(app, QGuiApplication):
+                        return
+                hints = app.styleHints()
+                if hints is None:
+                        return
+                if on:
+                        hints.colorSchemeChanged.connect(self._on_system_scheme)
+                        self._scheme_wired = True
+                else:
+                        with contextlib.suppress(TypeError):
+                                hints.colorSchemeChanged.disconnect(self._on_system_scheme)
+                        self._scheme_wired = False
+
+        @pyqtSlot()
+        def applyTheme(self) -> None:
+                """设置保存后重读 theme/glass（即时生效，不重启）。"""
+                settings, _problems = load_settings()
+                changed = False
+                if settings.theme != self._theme_mode:
+                        self._theme_mode = settings.theme
+                        changed = True
+                if settings.glass_enabled != self._glass_material:
+                        self._glass_material = settings.glass_enabled
+                        changed = True
+                self._wire_system_scheme(self._theme_mode == "system")
+                dark = self._theme_mode == "dark" or (
+                        self._theme_mode == "system" and self._system_prefers_dark())
+                if dark != self._dark:
+                        self._dark = dark
+                        changed = True
+                if changed:
+                        self.themeChanged.emit()
 
         @pyqtProperty(list, notify=devicesChanged)
         def devices(self) -> list[dict[str, object]]:

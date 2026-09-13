@@ -48,7 +48,7 @@ SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 SETTINGS_KEYS = {
         "scrcpy_path", "adb_path", "fps", "bitrate_mbps", "dpi",
         "render_scale",
-        "corner_mode", "corner_size_dip", "glass_enabled",
+        "corner_mode", "corner_size_dip", "glass_enabled", "theme",
         "audio_policy", "video_codec", "turn_screen_off",
         "top_bar_mode", "bottom_bar_mode",
 }
@@ -419,3 +419,42 @@ def test_window_bar_group_is_defaults_semantics(settings_page):
     ]
     assert any("窗口栏（默认）" in t for t in texts)
     assert any("应用未单独设置时生效" in t for t in texts)
+
+
+def test_appearance_group_theme_and_glass(settings_page):
+        """外观组（2026-09-12）：主题三选一（亮色/暗色/跟随系统）+
+        玻璃材质总开关（上巴/下巴/右键菜单统一）。默认亮色 + 玻璃开。"""
+        assert settings_page.findChild(QObject, "appearanceCard") is not None
+        assert settings_page.findChild(QObject, "themeRowLabel") is not None
+        for name in ("themeLight", "themeDark", "themeSystem"):
+                assert settings_page.findChild(QObject, name) is not None, name
+        glass = settings_page.findChild(QObject, "glassSwitch")
+        assert glass is not None
+        assert settings_page.property("themeMode") == "light"
+        assert settings_page.property("glassOn") is True
+
+
+def test_theme_buttons_switch_mode(settings_page, make_page):
+        """主题按钮切换页面状态；collect 经 save 带回 theme。"""
+        api = _RecordingApi({
+                "scrcpy_path": "", "adb_path": "", "fps": 60, "bitrate_mbps": 30,
+                "dpi": None, "corner_mode": "system", "corner_size_dip": 48,
+                "glass_enabled": True, "audio_policy": "latest",
+                "video_codec": "auto", "turn_screen_off": False,
+        })
+        page = make_page(api)
+        page.findChild(QObject, "themeDark").click()
+        assert page.property("themeMode") == "dark"
+        page.findChild(QObject, "themeSystem").click()
+        assert page.property("themeMode") == "system"
+        _save_changes(page)
+        assert api.saved[0]["theme"] == "system"
+
+
+def test_theme_roundtrip_via_real_api(settings_page, settings_file):
+        """theme 经 SettingsApi 落盘再读回（dark → system 保存后重载）。"""
+        settings_page.findChild(QObject, "themeDark").click()
+        settings_page.saveChanges()
+        assert json.loads(Path(settings_file).read_text(encoding="utf-8"))["theme"] == "dark"
+        settings_page.reloadFromApi()
+        assert settings_page.property("themeMode") == "dark"

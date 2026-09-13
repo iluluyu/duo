@@ -118,33 +118,58 @@ def test_native_sandwich_flags_and_parsing():
 
 
 def test_native_sandwich_paint_markers():
-        """C1 native CHIN spec values stay (screen-sampled acrylic, adaptive
+        """C1 native CHIN spec values stay (screen-sampled frost, adaptive
         pill, 32px bar) while the TOP went real-system in C2 (see the
         caption test below); immersive branches keep their markers.
-        2026-09-09 玻璃换装（用户对齐面板右键菜单）：tint 82% 白
-        （#D0FFFFFF，glass-recipe.md menuTintHi 档）、饱和 ×1.15、
-        1/8 上下采样模糊、沿巴轮廓整圈 14% 黑 hairline（#24000000）；
-        旧 rgba(248,248,248,184) 洗色与内 45% 白亮边退役（见
-        docs/window-experience.md §11）。"""
+        2026-09-12 Opus 统一配方（docs/window-experience.md §11 下巴统一）：
+        真高斯 σ10 DIP + 1:2 预降采样路径；双态矩阵/活底/顶光/干底全部
+        与胶囊同值；亮度判据改原始采样（与胶囊同源）0.50±0.04 迟滞；
+        静止态零描边（去旧常驻 hairline）。"""
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # Menu-glass chin: 82% white tint over the screen backdrop,
-        # saturation x1.15 (ColorMatrix), blur via 1/8 downscale,
-        # full-outline 14% black hairline along the bar body, 32px tall.
-        assert "FromArgb(208, 255, 255, 255)" in text
-        assert "FromArgb(36, 0, 0, 0)" in text
-        assert "g.DrawPath(hair, body)" in text
-        assert "1.15f" in text and "ColorMatrix" in text
+        # Frost chin: BuildChinFrost (1:2 downsample -> Kovesi gaussian ->
+        # 2x bicubic upsample fused with the dual-state vibrancy matrix),
+        # NO flat tint; rest state has NO hairline (capsule family).
+        assert "NewVibrancyMatrix" in text
+        assert "BuildChinFrost" in text
+        assert "private const float FrostSigma = 10.0f;" in text   # chin sigma
+        assert "GaussianBlur(half, FrostSigma * Dpi / 2f)" in text  # 1:2 path
+        assert "FrostSigma * Dpi / 2f" in text
+        assert "_barDark ? 0.90f : 0.98f" in text          # dual-state matrix
+        assert "_barDark ? 0.02f : 0.10f" in text
+        assert "cm.Matrix33 = _barDark ? 0.90f : 0.86f" in text  # true live-bed
+        assert "int topLit = _barDark ? 6 : 20;" in text   # backlight gradient
+        assert "1.2189f" in text and "ColorMatrix" in text
         assert "CopyFromScreen" in text
         assert "LogicalHeightNative = 32" in text
-        # The retired agy-v6 recipe must not return.
+        # The retired milk tiers must not return: 82%/55% tints, the
+        # tinted-luminance pill cut, and the flat 14% black seam.
         assert "FromArgb(184, 248, 248, 248)" not in text
         assert "FromArgb(115, 255, 255, 255)" not in text
-        # Adaptive pill: dark rgba(29,29,31,102) / white rgba(255,255,255,
-        # 155), luminance cut 0.52 on the tinted bar, seated 14px above the
-        # bar bottom (centered in the 32px band).
-        assert "FromArgb(102, 29, 29, 31)" in text
-        assert "FromArgb(155, 255, 255, 255)" in text
-        assert "0.52" in text
+        assert "FromArgb(208, 255, 255, 255)" not in text
+        assert "FromArgb(140, 255, 255, 255)" not in text
+        assert "208.0 / 255.0" not in text
+        assert "FromArgb(36, 0, 0, 0)" not in text
+        # Pill judgment: RAW-sample luminance (capsule-aligned),
+        # 0.50 ± 0.04 hysteresis; the old matrix-output probe is gone.
+        assert "1.2189 * r" not in text
+        assert "_barDark && lum > 0.54" in text
+        assert "!_barDark && lum < 0.46" in text
+        # Rest state: no seam hairline on the glass chin anymore.
+        assert "FromArgb(26, 0, 0, 0)" not in text
+        assert "FromArgb(56, 255, 255, 255)" not in text
+        # 2026-09-10 渲染修复：ULW 要预乘 alpha（GDI+ 直通 alpha 被抬亮
+        # = "灰线锯齿"元凶），三处上屏（PushLayered/PushGhost/
+        # PushGhostBitmap）必经 PremultiplyAlpha；字形走 GDI+ DrawGlyph
+        # （AntiAliasGridFit），GDI 文本 alpha 盲不得回流。
+        assert text.count("PremultiplyAlpha(bmp)") == 3
+        assert "AntiAliasGridFit" in text
+        assert "TextRenderer.DrawText" not in text
+        # Adaptive pill: dark rgba(29,29,31,.40) / white rgba(255,255,255,
+        # .61) constants, seated 14px above the bar bottom (centered in the
+        # 32px band); paint alphas computed per state, plain material theme-sourced.
+        assert "PillDark = Color.FromArgb(102, 29, 29, 31)" in text
+        assert "PillLight = Color.FromArgb(155, 255, 255, 255)" in text
+        assert "Ctrl.Glass ? _barDark : Ctrl.BarThemeDark" in text
         assert "Height - 14f * Dpi" in text
         # Native plumbing reuses the existing tracking/resize engines.
         assert "SyncTop" in text and "SampleNativeChin" in text
@@ -294,28 +319,86 @@ def test_corner_round_matrix_and_chin_corner_ears():
 
 def test_immersive_capsule_acrylic_full_band_and_hold_move():
         """用户反馈三件套 (immersive path only - the native C2 caption is
-        untouched) + 2026-09-09 玻璃换装：
+        untouched) + 2026-09-10 毛玻璃化（gemini-3.8-flash 设计 ×
+        claude-opus 裁决，docs/window-experience.md §11 毛玻璃化）：
 
-        1. the hover capsule gets REAL sampled menu-glass: video content
-           behind the pill, 1/8 down/up blur, saturation x1.15, 82% white
-           tint (#D0FFFFFF) with a 14% black hairline rim (glass-recipe.md
-           elevated tier - the panel right-click menu material); glyphs
-           ink #1D1D1F; pre-sample dry base = 88% white;
-        2. the caption move band spans the FULL top band (the old
+        1. the hover capsule is TRUE frosted glass: overscanned backdrop
+           sample (capsule + 3-sigma margin) -> Gaussian frost (3x box,
+           sigma 8 DIP) -> 1:1 core blit through the vibrancy ColorMatrix
+           (sat x1.45, scale 0.90, lift +0.07, BT.709) - NO flat white tint
+           (user verdict: 55% 白仍判"很白、不是毛玻璃")；dry base = neutral
+           dark glass #1C1C1E @92% (opus: "glass at rest", never milk);
+           ink/rim/hover adaptive by sampled luminance (0.50 ± 0.04
+           hysteresis); close hover keeps #E81123 + 白 ✕；
+           2026-09-10 矩形伪影根因：1/8 重采样模糊仅 ~9px 坡，采样内
+           容的直边（等比适配视频的 letterbox 边界）以近乎全锐度存活
+           = "矩形色阶断层"；且采样落地不重绘 = 边框冻结波似 UI。修复
+           = 真高斯 + overscan + 1:1 直贴 + 采样即重绘。
+2. the caption move band spans the FULL top band (the old
            central-half split is gone) - press+drag anywhere moves;
         3. press-and-hold 250ms on the band (non-button area) enters
            move-follow via the EXISTING move engine (BeginMoveAt).
         """
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # 1) capsule menu-glass base plate: sampled backdrop -> 1/8 blur ->
-        #    saturation -> 82% white tint, clipped to the capsule path.
+        # 1) capsule true-frost base plate: overscanned sample -> 3x box
+        #    Gaussian (sigma 8 DIP) -> 1:1 core blit through the vibrancy
+        #    matrix. The GDI+ lift lives in the FIFTH COLUMN
+        #    (Matrix04/14/24) - the Android fifth-row convention is wrong
+        #    here (Opus delivered it row-wise; transposed on adoption).
         assert "DrawCapsuleAcrylic" in text
-        assert "FromArgb(208, 255, 255, 255)" in text      # 82% white tint
-        assert "FromArgb(222, 255, 255, 255)" in text      # pre-sample dry base
-        assert "SetClip" in text                          # pill-shaped clip
-        assert "sat = 1.15f" in text and "ColorMatrix" in text
-        # ink glyphs on the light glass (rest 0.78 / hover 1.0)
-        assert "Color.FromArgb((int)(255 * opacity), 0x1D, 0x1D, 0x1F)" in text
+        assert "cm.Matrix40 = lift; cm.Matrix41 = lift; cm.Matrix42 = lift" in text
+        assert "_capsuleDark ? 0.90f : 0.98f" in text   # bright near-white stays clean
+        assert "_capsuleDark ? 0.02f : 0.10f" in text   # bright readability without milkiness
+        assert "_capsuleDark ? 6 : 20;" in text         # backlight gradient dual-state
+        assert "FrostSigma = 6.0f" in text                   # visible blur, same in both states
+        assert "GaussianBlur(behind, FrostSigma * Dpi)" in text
+        assert "DarkGlassAlpha = 0.90f" in text
+        assert "BrightGlassAlpha = 0.86f" in text            # bright = 14% live bleed
+        assert "if (_frost != null)\n                g.DrawImage(_frost" in text
+        assert "Bitmap box = DownscaleNx(hi, Ss)" in text  # N-box: kills ringing; Ss=3
+        assert "PushLayered(bmp, true);" in text   # premultiplied path (no double-premultiply)
+        assert "|| _topPinned;" in text            # pin = 常驻: engaged while window visible
+        assert "1.2189f" in text                      # s=1.45 x k=0.90
+        # 2026-09-10 矩形伪影修复：真高斯（Kovesi 3x box，sigma 8 DIP）
+        #   + overscan（capsule + 3σ，模糊核永不触采样纹理边界）+
+        #   可见内容零重采样（core 1:1 直贴）+ 采样落地即重绘。
+        assert "GaussianBlur" in text and "BoxesForGauss" in text
+        assert "FrostSigma = 6.0f" in text  # visual balance, same radius in both states
+        assert "FrostMargin" in text
+        assert "_top.FrostMargin, _top.FrostMargin" in text   # overscan crop
+        assert "DarkGlassAlpha = 0.90f" in text
+        assert "BrightGlassAlpha = 0.86f" in text  # 14% live bleed
+        assert "Supersample = true;" in text     # 2x supersampled ghost render: pin-rim AA
+        assert "MaskSurface(hi);" in text  # mask at supersampled res
+        assert "LinearGradientBrush" in text     # 顶光渐变: dark-backdrop glass luminance structure
+        assert "if (IsHandleCreated) Render();" in text   # re-render on every sample
+        assert "FromArgb(235, 28, 28, 30)" in text     # dry: dark glass @92% (opus)
+        # 2026-09-10 边缘净化（真机反馈"边缘一层灰影"）：① rim 内缩只画在
+        # 玻璃上（PenAlignment.Inset，旧骑边描边的外半圈 = 浮在视频上的
+        # 半透明灰环）；② SetClip(1 位硬台阶)退役，MaskSurface 把 AA 填充
+        # 的形状作为覆盖率蒙版乘进 alpha = 真正的抗锯齿轮廓。
+        assert "PenAlignment.Inset" in text
+        assert "MaskSurface" in text and "ApplyShapeMask" in text
+        assert "g.SetClip(capsule)" not in text
+        # adaptive state: raw-sample BT.709 luminance, 0.50 ± 0.04
+        # hysteresis (TopWindow.SetSample override).
+        assert "_capsuleDark" in text
+        assert "lum > 0.54" in text and "lum < 0.46" in text
+        # glyphs: light #1D1D1F a0.85 / dark #FFFFFF a0.90, hover 1.0,
+        # close-hover stays solid red with an always-white ✕.
+        assert "Color.FromArgb(b.Hover ? 255 : 217, 0x1D, 0x1D, 0x1F)" in text
+        assert "Color.FromArgb(b.Hover ? 255 : 230, 255, 255, 255)" in text
+        assert "Color.FromArgb(255, 255, 255, 255)" in text  # 红底恒白 ✕
+        # 2026-09-10 定稿（用户拍板"纯粹毛玻璃胶囊"）：静止态零描边，
+        # 描边只在固定态出现作为 pin 指示器（亮 35% 黑 / 暗 65% 白，内缩）。
+        assert "int edge = darkState ? 128 : 89;" in text  # rim（普通材质随主题）
+        assert "if (Ctrl.TopPinned)" in text
+        # adaptive hover wash: 6% black on light frost, 12% white on dark.
+        assert "FromArgb(31, 255, 255, 255)" in text
+        assert "FromArgb(15, 0, 0, 0)" in text
+        # glyphs stay GDI+ (alpha-aware); GDI text must not return.
+        assert "TextRenderingHint.AntiAliasGridFit" in text
+        assert "TextRenderer.DrawText" not in text
         # sampled on reveal + ~300ms cadence refresh, never per frame.
         assert "SampleTop" in text
         assert "CapsuleSampleMs = 300" in text
@@ -576,7 +659,7 @@ def test_capsule_right_click_pin():
           - 固定只作用于 immersive 胶囊；native 顶（真系统标题栏恒在）
             与 none 顶不适用；
           - 固定时 showTop 恒真（engaged 期间常驻露出，不再依赖顶缘
-            近距）；disengage（视频窗被盖/失活/最小化）仍照旧隐藏；
+            近距）；窗口可见即常驻（2026-09-10 拍板：失活不隐藏）；
           - 采样心跳照跑（SampleTop ~300ms，胶囊可见即采样，零额外
             成本）；
           - 固定态视觉仅 hairline 36→70 加深（无新增动效），切换后
@@ -624,8 +707,10 @@ def test_capsule_right_click_pin():
             ": (_cursorMoved && (_topPinned"
             " || ComputeTopVisibility(client, wr, cursor))));" in text
         )
-        # Pinned visual: deeper capsule hairline, nothing else moves.
-        assert "int edge = Ctrl.TopPinned ? 70 : 36;" in text
+        # Pinned visual: rest state has NO rim at all (pure frost); pinning
+        # lights the inset rim up (35% black / 65% white) - the pin indicator.
+        assert "int edge = darkState ? 128 : 89;" in text  # rim（普通材质随主题）
+        assert "if (Ctrl.TopPinned)" in text
         # Per-app persistence: argv carries the initial state + the flag
         # file path; every toggle rewrites it (write failure never kills
         # the toggle - session pin still works).
@@ -804,6 +889,7 @@ def test_compile_command_shape():
         assert "-nologo" in argv
         assert "-target:winexe" in argv
         assert "-optimize+" in argv
+        assert "-codepage:65001" in argv   # UTF-8 源码，防 GBK 误读 CS1056
         assert any(a.startswith("-out:") for a in argv)
         refs = [a for a in argv if a.startswith("-r:")]
         assert "-r:System.Windows.Forms.dll" in refs
@@ -820,6 +906,40 @@ def test_overlay_command_plain_argv():
         assert argv[argv.index("--adb") + 1] == "C:\\a.exe"
         assert argv[argv.index("--home") + 1] == "1"
         assert "TitleB64" not in " ".join(argv)
+
+
+def test_overlay_command_carries_glass_and_bar_theme():
+        """2026-09-12 玻璃材质总开关 + 面板主题随 argv 下发：--glass 默认 1
+        （毛玻璃），关 = 0（上巴/下巴普通不透明材质）；--bar-theme 默认
+        system（普通材质经注册表解析系统色）。"""
+        argv = overlay_command("/x.exe", "t", "s", "a", False)
+        assert argv[argv.index("--glass") + 1] == "1"
+        assert argv[argv.index("--bar-theme") + 1] == "system"
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False,
+                top_bar_mode="native", bottom_bar_mode="native",
+                glass=False, bar_theme="dark",
+        )
+        assert argv[argv.index("--glass") + 1] == "0"
+        assert argv[argv.index("--bar-theme") + 1] == "dark"
+
+
+def test_overlay_plain_material_markers():
+        """普通材质（--glass 0，Opus 配方）：Win11 系统面不透明色
+        （亮 #F3F3F3 / 暗 #202020）+ 常驻 hairline（8% 黑 / 10% 白）；
+        采样门控（!Glass 直接返回）；主题经注册表 AppsUseLightTheme 解析。"""
+        text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
+        assert "PlainBarLight = Color.FromArgb(243, 243, 243)" in text
+        assert "PlainBarDark = Color.FromArgb(32, 32, 32)" in text
+        assert "AppsUseLightTheme" in text
+        # 采样门控：关玻璃时上巴/下巴都不再采样
+        assert "if (TopNative || !Glass) return;" in text
+        assert "if (!BottomNative || !_chin.Visible || !Glass) return;" in text
+        # 胶囊与下巴的普通材质都走 Ctrl.BarThemeDark 色源
+        assert text.count("Ctrl.BarThemeDark") >= 4
+        # 玻璃态的胶囊/下巴 frost 路径仍存在
+        assert "DrawCapsuleAcrylic" in text
+        assert "BuildChinFrost" in text
 
 
 def test_overlay_command_carries_display_mode_and_log():

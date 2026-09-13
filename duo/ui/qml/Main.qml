@@ -169,12 +169,12 @@ ApplicationWindow {
                 Rectangle { anchors.fill: parent; color: Style.bg }
 
                 // 装饰色斑（同心三层逼近径向衰减，参数依据见 glass-recipe.md §3）
-                Rectangle { x: -272; y: -212; width: 504; height: 504; radius: 252; color: "#09007AFF" }
-                Rectangle { x: -180; y: -120; width: 320; height: 320; radius: 160; color: "#0E007AFF" }
-                Rectangle { x: -132; y: -72; width: 224; height: 224; radius: 112; color: "#16007AFF" }
-                Rectangle { x: 205; y: 385; width: 570; height: 570; radius: 285; color: "#0734C759" }
-                Rectangle { x: 310; y: 490; width: 360; height: 360; radius: 180; color: "#0C34C759" }
-                Rectangle { x: 370; y: 550; width: 240; height: 240; radius: 120; color: "#1434C759" }
+                Rectangle { x: -272; y: -212; width: 504; height: 504; radius: 252; color: Style.spotBlueOut }
+                Rectangle { x: -180; y: -120; width: 320; height: 320; radius: 160; color: Style.spotBlueMid }
+                Rectangle { x: -132; y: -72; width: 224; height: 224; radius: 112; color: Style.spotBlueCore }
+                Rectangle { x: 205; y: 385; width: 570; height: 570; radius: 285; color: Style.spotGreenOut }
+                Rectangle { x: 310; y: 490; width: 360; height: 360; radius: 180; color: Style.spotGreenMid }
+                Rectangle { x: 370; y: 550; width: 240; height: 240; radius: 120; color: Style.spotGreenCore }
             }
 
             StackView {
@@ -729,7 +729,7 @@ ApplicationWindow {
                         width: parent.width - 42 - 24
                         height: 28
                         radius: 8
-                        color: "#FFFFFF"
+                        color: Style.controlFill
                         border.width: 1
                         border.color: densityInput.activeFocus ? Style.accent : Style.hairline
                         TextInput {
@@ -940,7 +940,7 @@ ApplicationWindow {
                         width: parent.width - 42 - 24
                         height: 28
                         radius: 8
-                        color: "#FFFFFF"
+                        color: Style.controlFill
                         border.width: 1
                         border.color: scaleHover.hovered ? Style.accent : Style.hairline
                         Text {
@@ -1187,6 +1187,7 @@ ApplicationWindow {
             engineLocked: ctrl.engineLocked
             onAccepted: {
                 ctrl.resolveAdb()   // 重解析 adb；变了则 controller 切监控+刷新列表
+                ctrl.applyTheme()   // theme/玻璃材质即时生效（重读 settings.json）
                 stack.pop()
             }
             onCancelled: stack.pop()
@@ -1486,7 +1487,7 @@ ApplicationWindow {
 
         // open(px, py)：登记菜单位置（驱动模糊层对位与蒙版白块）
         function open(px, py) {
-            if (!Style.glassBlur)
+            if (!Style.menuGlass)
                 return
             plate.menuX = px
             plate.menuY = py
@@ -1497,7 +1498,7 @@ ApplicationWindow {
         // 蒙版 = 整窗透明底上与菜单同位的圆角白块（threshold 0.5 开裁 +
         // spread 0.4 亚像素坡）
         MultiEffect {
-            visible: Style.glassBlur
+            visible: Style.menuGlass
             source: canvasRoot
             x: -plate.menuX
             y: -plate.menuY
@@ -1540,13 +1541,13 @@ ApplicationWindow {
             anchors.fill: parent
             radius: Style.flyoutRadius
             color: {
-                if (!Style.glassBlur)
+                if (!Style.menuGlass)
                     return Style.menuFill
                 return plate.elevated ? Style.menuTintHi : Style.menuTint
             }
             border.width: 1
             border.color: {
-                if (!Style.glassBlur)
+                if (!Style.menuGlass)
                     return Style.menuFillBorder
                 return plate.elevated ? Style.menuBorderHi : Style.menuBorder
             }
@@ -2235,8 +2236,9 @@ ApplicationWindow {
                 width: parent.width - 40
                 height: 36
                 radius: 18
-                // 常态与卡一致；聚焦 = 亚克力浮层感（DESIGN.md §3.4）
-                color: searchField.activeFocus ? Style.flyoutFill : Style.cardFill
+                // 常态 = 画布级搜索胶囊（亮=卡语言半透明 / 暗=输入底沉一档，
+                // Style.searchFill）；聚焦 = 亚克力浮层感（DESIGN.md §3.4）
+                color: searchField.activeFocus ? Style.flyoutFill : Style.searchFill
                 Behavior on color { ColorAnimation { duration: Style.durFast } }
                 border.width: 1
                 border.color: Style.cardBorder
@@ -2461,7 +2463,7 @@ ApplicationWindow {
                 width: toastLabel.implicitWidth + 32
                 height: 36
                 radius: 18
-                color: "#E61D1D1F"
+                color: Style.pillFill
 
                 // 仅 statusText 非空时显示，2.5s 自动淡出；140ms 过渡与全局一致
                 opacity: hasMessage && !expired ? 1.0 : 0.0
