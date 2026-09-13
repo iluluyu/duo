@@ -17,6 +17,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6.QtCore")
 
+from duo.__main__ import _build_parser  # noqa: E402
 from duo.core.settings import Settings  # noqa: E402
 from duo.ui.controller import (  # noqa: E402
         DEFAULT_PORTRAIT,
@@ -96,6 +97,29 @@ def test_launch_argv_frozen_routes_through_exe(monkeypatch):
         argv = build_launch_argv("tv.danmaku.bili", "S1", portrait=False)
         assert argv[0] == sys.executable
         assert "-m" not in argv
+
+
+def test_panel_argv_round_trips_through_cli_parser(monkeypatch):
+        """面板构造的每条 mirror argv 必须能被 CLI parser 完整消化。
+
+        回归护栏（2026-09-13 面板启动全部应用秒死）：控制器 _pin_glass 注入
+        --bar-theme 而 mirror 子命令未注册该参数——两端分属两文件，只有
+        往返测试能拦住单侧加参。
+        """
+        monkeypatch.setattr(
+                "duo.ui.controller._prefs_path", lambda: _StubFile(None))
+        argvs = [
+                build_launch_argv("com.coolapk.market", "S1", portrait=False),
+                build_launch_argv("tv.danmaku.bili", "S1", portrait=True, muted=True),
+                build_launch_argv(
+                        "tv.danmaku.bili", "S1", portrait=False,
+                        width=1920, height=1080),
+                build_device_mirror_argv("S1"),
+        ]
+        for argv in argvs:
+                args = _build_parser().parse_args(argv[argv.index("mirror"):])
+                assert args.command == "mirror"
+                assert args.bar_theme == "light"
 
 
 def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
