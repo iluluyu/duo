@@ -36,6 +36,7 @@ const USAGE: &str = "usage: duo-core <command> [options]
   volume   --adb <path> --serial <serial> --index <n>
   apps     --adb <path> --serial <serial>
   audio-lock --data-dir <dir> acquire|release|status
+  mirror [mirror flags]                 branded app session (duo mirror 对译)
   host --spec <json> --title <title> [--embed-style immersive|native] [--serial <s>]";
 
 fn main() {
@@ -57,7 +58,13 @@ fn main() {
         "volume" => cmd_volume(&flag("--adb"), &flag("--serial"), &flag("--index")),
         "apps" => cmd_apps(&flag("--adb"), &flag("--serial")),
         "audio-lock" => cmd_audio_lock(&flag("--data-dir"), &argv[1..]),
-        "host" => cmd_host(&flag("--spec"), &flag("--title"), &flag("--embed-style"), &flag("--serial")),
+        "mirror" => exit(duo_core::mirror::run(&argv[1..])),
+        "host" => cmd_host(
+            &flag("--spec"),
+            &flag("--title"),
+            &flag("--embed-style"),
+            &flag("--serial"),
+        ),
         _ => {
             eprintln!("{USAGE}");
             exit(2);

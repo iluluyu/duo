@@ -16,16 +16,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HWND, HMODULE, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    COLORREF, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
-    BLENDFUNCTION, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
-    CreateFontW, DeleteDC, DeleteObject, DIB_RGB_COLORS, GdiFlush, GetDC, GetTextExtentPoint32W,
-    GetTextFaceW, HDC, HFONT, HGDIOBJ, OPAQUE, ReleaseDC, ScreenToClient, SelectObject, SetBkColor,
-    SetBkMode, SetTextColor, TextOutW, AC_SRC_ALPHA, AC_SRC_OVER,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GdiFlush, GetDC,
+    GetTextExtentPoint32W, GetTextFaceW, ReleaseDC, ScreenToClient, SelectObject, SetBkColor,
+    SetBkMode, SetTextColor, TextOutW, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HDC, HFONT, HGDIOBJ, OPAQUE,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -199,7 +199,10 @@ impl HostWin<'_> {
         {
             return;
         }
-        let mut org = POINT { x: wr.left, y: wr.top };
+        let mut org = POINT {
+            x: wr.left,
+            y: wr.top,
+        };
         let _ = ScreenToClient(self.hwnd, &mut org);
         if glue_drifted(
             cr.right,
@@ -223,7 +226,15 @@ impl HostWin<'_> {
         if GetClientRect(self.hwnd, &mut cr).is_err() || cr.right <= 0 || cr.bottom <= 0 {
             return;
         }
-        let _ = SetWindowPos(self.child, None, 0, 0, cr.right, cr.bottom, SWP_NOZORDER | extra);
+        let _ = SetWindowPos(
+            self.child,
+            None,
+            0,
+            0,
+            cr.right,
+            cr.bottom,
+            SWP_NOZORDER | extra,
+        );
     }
 
     /// 焦点转发：跨进程 SetFocus 必被拒 → AttachThreadInput 合并队列后转发。
@@ -246,8 +257,7 @@ impl HostWin<'_> {
             return;
         }
         self.closing = true;
-        self.close_deadline =
-            Some(Instant::now() + Duration::from_millis(CLOSE_GRACE_MS as u64));
+        self.close_deadline = Some(Instant::now() + Duration::from_millis(CLOSE_GRACE_MS as u64));
         if self.has_child() && IsWindow(self.child).as_bool() {
             let _ = PostMessageW(self.child, WM_CLOSE, WPARAM(0), LPARAM(0));
         }
@@ -341,7 +351,9 @@ impl LayeredDib {
 
     fn blit(&self, buf: &[u8]) {
         let len = (self.width * self.height * 4) as usize;
-        unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, len.min(buf.len())) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), self.bits as *mut u8, len.min(buf.len()))
+        };
     }
 }
 
@@ -475,7 +487,11 @@ impl BandWin {
             return;
         }
         let zoomed = IsZoomed(self.host).as_bool();
-        let mid = if zoomed { &self.masks[2] } else { &self.masks[1] };
+        let mid = if zoomed {
+            &self.masks[2]
+        } else {
+            &self.masks[1]
+        };
         let buf = paint_band(
             self.width,
             self.height,
@@ -494,7 +510,10 @@ impl BandWin {
         let Some(dib) = &self.dib else { return };
         dib.blit(&buf);
         let screen = GetDC(None);
-        let size = SIZE { cx: self.width, cy: self.height };
+        let size = SIZE {
+            cx: self.width,
+            cy: self.height,
+        };
         let src = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
@@ -581,7 +600,12 @@ impl BandWin {
         self.last_click_pos = (x, y);
         // 真系统拖动：ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION)。
         let _ = ReleaseCapture();
-        let _ = SendMessageW(self.host, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+        let _ = SendMessageW(
+            self.host,
+            WM_NCLBUTTONDOWN,
+            WPARAM(HTCAPTION as usize),
+            LPARAM(0),
+        );
     }
 
     unsafe fn on_left_up(&mut self, x: i32, y: i32) {
@@ -646,11 +670,7 @@ unsafe extern "system" fn band_wndproc(
 }
 
 /// 字形覆盖掩码：白字黑底光栅化后取 max(B,G,R) 为覆盖率（灰度/子像素皆宜）。
-unsafe fn rasterize_glyph(
-    dc: HDC,
-    font: HFONT,
-    ch: u16,
-) -> GlyphMask {
+unsafe fn rasterize_glyph(dc: HDC, font: HFONT, ch: u16) -> GlyphMask {
     let empty = || GlyphMask {
         width: 0,
         height: 0,
@@ -676,7 +696,10 @@ unsafe fn rasterize_glyph(
     let _ = TextOutW(dc, 0, 0, &text);
     GdiFlush();
     let px = std::slice::from_raw_parts(bits as *const u8, n * 4);
-    let coverage = px.chunks_exact(4).map(|c| c[0].max(c[1]).max(c[2])).collect();
+    let coverage = px
+        .chunks_exact(4)
+        .map(|c| c[0].max(c[1]).max(c[2]))
+        .collect();
     SelectObject(dc, old_bmp);
     SelectObject(dc, old_font);
     let _ = DeleteObject(bmp);
@@ -692,7 +715,20 @@ unsafe fn rasterize_glyph(
 unsafe fn rasterize_glyphs(dpi: f32) -> [GlyphMask; 4] {
     let make_font = |face: &HSTRING, height: i32| {
         CreateFontW(
-            height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, PCWSTR(face.as_ptr()),
+            height,
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            4,
+            0,
+            PCWSTR(face.as_ptr()),
         )
     };
     let screen = GetDC(None);

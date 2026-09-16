@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use duo_core::settings::{
-    load_settings, save_settings, Settings, VALID_AUDIO_POLICIES, VALID_BAR_MODES,
-    VALID_THEMES, VALID_VIDEO_CODECS,
+    load_settings, save_settings, Settings, VALID_AUDIO_POLICIES, VALID_BAR_MODES, VALID_THEMES,
+    VALID_VIDEO_CODECS,
 };
 
 /// 三态控件（上下巴）与枚举下拉共用的选项值。
@@ -70,17 +70,18 @@ impl SettingsPageModel {
     // ------------------------------------------------ 编辑入口（渲染层调）
 
     pub fn set_fps(&mut self, fps: i64) {
-        self.draft.fps = Some(fps.clamp(duo_core::settings::FPS_RANGE.0, duo_core::settings::FPS_RANGE.1));
+        self.draft.fps = Some(fps.clamp(
+            duo_core::settings::FPS_RANGE.0,
+            duo_core::settings::FPS_RANGE.1,
+        ));
         self.touch();
     }
 
     pub fn set_bitrate(&mut self, mbps: i64) {
-        self.draft.bitrate_mbps = Some(
-            mbps.clamp(
-                duo_core::settings::BITRATE_RANGE.0,
-                duo_core::settings::BITRATE_RANGE.1,
-            ),
-        );
+        self.draft.bitrate_mbps = Some(mbps.clamp(
+            duo_core::settings::BITRATE_RANGE.0,
+            duo_core::settings::BITRATE_RANGE.1,
+        ));
         self.touch();
     }
 
@@ -131,10 +132,8 @@ mod tests {
     use super::*;
 
     fn base(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "duo-panel-settings-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("duo-panel-settings-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

@@ -16,6 +16,7 @@ pub mod engine;
 pub mod host;
 pub mod icongen;
 pub mod icons;
+pub mod mirror;
 pub mod monitor;
 pub mod paths;
 pub mod session;

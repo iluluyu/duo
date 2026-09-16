@@ -8,10 +8,10 @@
 pub fn cjk_font_candidates() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
         vec![
-            r"C:\Windows\Fonts\msyh.ttc",      // 微软雅黑（Segoe UI 同源的
-                                                // Windows 中文正装）
+            r"C:\Windows\Fonts\msyh.ttc", // 微软雅黑（Segoe UI 同源的
+            // Windows 中文正装）
             r"C:\Windows\Fonts\msyhbd.ttc",
-            r"C:\Windows\Fonts\Deng.ttf",      // 等线
+            r"C:\Windows\Fonts\Deng.ttf", // 等线
         ]
     } else if cfg!(target_os = "macos") {
         vec![
@@ -44,11 +44,16 @@ pub fn install_cjk_font(ctx: &egui::Context) {
         return;
     };
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("duo-cjk".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    fonts.font_data.insert(
+        "duo-cjk".into(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push("duo-cjk".into());
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("duo-cjk".into());
     }
     ctx.set_fonts(fonts);
 }

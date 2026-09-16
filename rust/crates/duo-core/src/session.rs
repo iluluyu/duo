@@ -379,7 +379,10 @@ mod tests {
         });
         let t0 = std::time::Instant::now();
         let code = run_session_abortable(&spec, &abort, &mut |_| {});
-        assert!(t0.elapsed().as_secs() < 5, "abort must not wait the full sleep");
+        assert!(
+            t0.elapsed().as_secs() < 5,
+            "abort must not wait the full sleep"
+        );
         assert_ne!(code, 0);
         // 预置 abort：spawn 后第一轮轮询即杀，同样不得挂满整个 sleep。
         let t1 = std::time::Instant::now();
