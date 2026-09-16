@@ -9,7 +9,9 @@ use eframe::egui::{Color32, Sense, Vec2};
 
 use crate::blur;
 use crate::launch::{self, LaunchRequest};
-use crate::settings_view::{SettingsPageModel, AUDIO_CHOICES, BAR_CHOICES, CODEC_CHOICES, THEME_CHOICES};
+use crate::settings_view::{
+    SettingsPageModel, AUDIO_CHOICES, BAR_CHOICES, CODEC_CHOICES, THEME_CHOICES,
+};
 use crate::theme::{rounding, ThemeKind, Tokens, PAGE_MARGIN};
 use crate::tiles::{tiles, TileData};
 
@@ -93,17 +95,47 @@ impl PanelApp {
         let height = 32.0;
         let row = ui.available_rect_before_wrap();
         let pill = egui::Rect::from_min_size(row.left_top(), Vec2::new(row.width(), height));
-        ui.painter().rect_filled(pill, egui::CornerRadius::same((height/2.0) as u8), t.flyout_fill);
+        ui.painter().rect_filled(
+            pill,
+            egui::CornerRadius::same((height / 2.0) as u8),
+            t.flyout_fill,
+        );
         for (page, label) in [(Page::Home, "首页"), (Page::Settings, "设置")] {
-            let left = pill.left() + if page == Page::Home { 0.0 } else { pill.width() / 2.0 };
-            let seg = egui::Rect::from_min_size(egui::pos2(left, pill.top()), Vec2::new(pill.width() / 2.0, height));
+            let left = pill.left()
+                + if page == Page::Home {
+                    0.0
+                } else {
+                    pill.width() / 2.0
+                };
+            let seg = egui::Rect::from_min_size(
+                egui::pos2(left, pill.top()),
+                Vec2::new(pill.width() / 2.0, height),
+            );
             let response = ui.allocate_rect(seg, Sense::click());
             let selected = self.page == page;
             if selected {
-                let fill = if t.kind == ThemeKind::Light { Color32::WHITE } else { t.segment_fill };
-                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(seg.left(), seg.top()+2.0), egui::pos2(seg.right(), seg.bottom()-2.0)), rounding::FLYOUT, fill);
+                let fill = if t.kind == ThemeKind::Light {
+                    Color32::WHITE
+                } else {
+                    t.segment_fill
+                };
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(seg.left(), seg.top() + 2.0),
+                        egui::pos2(seg.right(), seg.bottom() - 2.0),
+                    ),
+                    rounding::FLYOUT,
+                    fill,
+                );
             } else if response.hovered() {
-                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(seg.left(), seg.top()+2.0), egui::pos2(seg.right(), seg.bottom()-2.0)), rounding::FLYOUT, t.hover_wash);
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(seg.left(), seg.top() + 2.0),
+                        egui::pos2(seg.right(), seg.bottom() - 2.0),
+                    ),
+                    rounding::FLYOUT,
+                    t.hover_wash,
+                );
             }
             let ink = if selected { t.ink } else { t.ink2 };
             ui.painter().text(
@@ -159,9 +191,19 @@ impl PanelApp {
         let t = self.tokens;
         let size = Vec2::new(92.0, 102.0);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-        let fill = if response.hovered() { t.card_hover() } else { t.card_fill };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(rounding::CARD as u8), fill);
-        ui.painter().rect_stroke(rect, egui::CornerRadius::same(rounding::CARD as u8), egui::Stroke::new(1.0_f32, t.card_border), egui::StrokeKind::Outside);
+        let fill = if response.hovered() {
+            t.card_hover()
+        } else {
+            t.card_fill
+        };
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(rounding::CARD as u8), fill);
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(rounding::CARD as u8),
+            egui::Stroke::new(1.0_f32, t.card_border),
+            egui::StrokeKind::Outside,
+        );
         if response.clicked() {
             self.launch(tile);
         }
@@ -173,7 +215,9 @@ impl PanelApp {
         );
         let mut svg_ready = false;
         if let Some(uri) = &tile.icon_uri {
-            let result = ui.ctx().try_load_image(uri, egui::load::SizeHint::Width(120));
+            let result = ui
+                .ctx()
+                .try_load_image(uri, egui::load::SizeHint::Width(120));
             if matches!(result, Ok(egui::load::ImagePoll::Ready { .. })) {
                 svg_ready = true;
                 ui.put(
@@ -186,7 +230,11 @@ impl PanelApp {
         }
         if !svg_ready {
             let color = crate::theme::hex(&tile.color_hex);
-            ui.painter().rect_filled(icon_rect, egui::CornerRadius::same(rounding::ICON as u8), color);
+            ui.painter().rect_filled(
+                icon_rect,
+                egui::CornerRadius::same(rounding::ICON as u8),
+                color,
+            );
         }
         // 单字（SVG 文本层无系统字体，恒由 egui 叠画，保证字形一致）。
         let ink = if tile.glyph_ink {
@@ -232,7 +280,9 @@ impl PanelApp {
                 let t = app.tokens;
                 let codec_now = app.settings.draft.video_codec.clone();
                 ui.label(egui::RichText::new("视频编码").size(13.0).color(t.ink2));
-                let codec = combo(ui, "duo-codec", &codec_now, &CODEC_CHOICES, |v| v.to_string());
+                let codec = combo(ui, "duo-codec", &codec_now, &CODEC_CHOICES, |v| {
+                    v.to_string()
+                });
                 if codec != codec_now {
                     app.settings.set_video_codec(&codec);
                 }
@@ -253,13 +303,7 @@ impl PanelApp {
             // —— 音频（三态）
             self.settings_group(ui, "音频", |ui, app| {
                 let policy_now = app.settings.draft.audio_policy.clone();
-                let policy = combo(
-                    ui,
-                    "duo-audio",
-                    &policy_now,
-                    &AUDIO_CHOICES,
-                    audio_label,
-                );
+                let policy = combo(ui, "duo-audio", &policy_now, &AUDIO_CHOICES, audio_label);
                 if policy != policy_now {
                     app.settings.set_audio_policy(&policy);
                 }
@@ -284,16 +328,27 @@ impl PanelApp {
                     app.settings.set_glass(glass);
                 }
                 let theme_now = app.settings.draft.theme.clone();
-                let theme = combo(ui, "duo-theme", &theme_now, &THEME_CHOICES, |v| v.to_string());
+                let theme = combo(ui, "duo-theme", &theme_now, &THEME_CHOICES, |v| {
+                    v.to_string()
+                });
                 if theme != theme_now {
                     app.settings.set_theme(&theme);
                 }
             });
             // 单保存钮（强调色 = 唯一主操作）。
             let t = self.tokens;
-            let label = if self.settings.dirty { "保存" } else { "已保存" };
-            let button = egui::Button::new(egui::RichText::new(label).size(13.0))
-                .fill(if self.settings.dirty { t.accent } else { t.segment_fill });
+            let label = if self.settings.dirty {
+                "保存"
+            } else {
+                "已保存"
+            };
+            let button = egui::Button::new(egui::RichText::new(label).size(13.0)).fill(
+                if self.settings.dirty {
+                    t.accent
+                } else {
+                    t.segment_fill
+                },
+            );
             if ui.add_sized([ui.available_width(), 28.0], button).clicked() {
                 self.settings.save();
             }

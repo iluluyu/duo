@@ -25,12 +25,9 @@ impl ThemeKind {
 /// #RRGGBB → Color32；RGBA(R,G,B,A)。手写解析避免拉依赖。
 pub fn hex(s: &str) -> Color32 {
     let b = s.as_bytes();
-    let ch = |i: usize| u32::from_str_radix(std::str::from_utf8(&b[i..i + 2]).unwrap(), 16).unwrap();
-    Color32::from_rgb(
-        ch(1) as u8,
-        ch(3) as u8,
-        ch(5) as u8,
-    )
+    let ch =
+        |i: usize| u32::from_str_radix(std::str::from_utf8(&b[i..i + 2]).unwrap(), 16).unwrap();
+    Color32::from_rgb(ch(1) as u8, ch(3) as u8, ch(5) as u8)
 }
 
 fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color32 {
@@ -41,19 +38,19 @@ fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color32 {
 #[derive(Debug, Clone, Copy)]
 pub struct Tokens {
     pub kind: ThemeKind,
-    pub bg: Color32,         // 画布（不含玻璃 alpha；玻璃版见 canvas）
-    pub ink: Color32,        // 主文字
-    pub ink2: Color32,       // 次文字
-    pub accent: Color32,     // 唯一强调色
+    pub bg: Color32,     // 画布（不含玻璃 alpha；玻璃版见 canvas）
+    pub ink: Color32,    // 主文字
+    pub ink2: Color32,   // 次文字
+    pub accent: Color32, // 唯一强调色
     pub accent_hover: Color32,
     pub accent_press: Color32,
-    pub running: Color32,    // 在线绿
+    pub running: Color32, // 在线绿
     pub warn: Color32,
     pub danger: Color32,
-    pub card_fill: Color32,  // 轻玻璃卡填充
-    pub card_border: Color32, // 卡 1px 亮边
+    pub card_fill: Color32,    // 轻玻璃卡填充
+    pub card_border: Color32,  // 卡 1px 亮边
     pub segment_fill: Color32, // 选中段
-    pub flyout_fill: Color32, // 胶囊浮层
+    pub flyout_fill: Color32,  // 胶囊浮层
     pub pill_fill: Color32,
     pub hover_wash: Color32, // hover 提亮
     pub press_wash: Color32,
@@ -166,7 +163,10 @@ mod tests {
         assert_eq!(t.bg, hex("#1C1C1E"));
         assert_eq!(t.ink, hex("#F5F5F7"));
         assert_eq!(t.accent, hex("#0A84FF"));
-        assert_eq!(t.card_fill, Color32::from_rgba_unmultiplied(255, 255, 255, 25));
+        assert_eq!(
+            t.card_fill,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+        );
     }
 
     #[test]

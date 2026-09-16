@@ -32,8 +32,7 @@ pub fn tile_icon_uri(base: Option<&Path>, package: &str) -> Option<String> {
             &owned
         }
     };
-    preset_icon_path_cached(dir, package)
-        .map(|p| format!("file://{}", p.display()))
+    preset_icon_path_cached(dir, package).map(|p| format!("file://{}", p.display()))
 }
 
 fn preset_icon_path_cached(base: &Path, package: &str) -> Option<PathBuf> {

@@ -452,7 +452,11 @@ fn engine_thread(spec: SessionSpec, st: Arc<EngineState>) {
 /// 同进程编排：引擎监督线程 + 宿主窗口主线程。返回引擎最终退出码
 /// （透传）。宿主退出后置 abort 收编引擎，不留孤儿。
 #[cfg(windows)]
-pub fn run_host(spec: &SessionSpec, opts: &HostOptions, on_event: &mut dyn FnMut(&HostEvent)) -> i32 {
+pub fn run_host(
+    spec: &SessionSpec,
+    opts: &HostOptions,
+    on_event: &mut dyn FnMut(&HostEvent),
+) -> i32 {
     let st = Arc::new(EngineState::default());
     let engine = {
         let st = st.clone();
@@ -463,10 +467,7 @@ pub fn run_host(spec: &SessionSpec, opts: &HostOptions, on_event: &mut dyn FnMut
     unsafe { win::window_main(opts, &st, on_event) };
     st.abort.store(true, Ordering::Release);
     let _ = engine.join();
-    st.code
-        .lock()
-        .expect("host code lock")
-        .unwrap_or(1)
+    st.code.lock().expect("host code lock").unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -528,7 +529,10 @@ mod tests {
         let tiny = embed_host_outer(rect(0, 0, 10, 10), -8, -31, 8, 8);
         assert_eq!(tiny, rect(-8, -31, 200 + 8, 160 + 8));
         // adjust_rect 纯增量语义。
-        assert_eq!(adjust_rect(rect(0, 0, 100, 50), -1, -2, 3, 4), rect(-1, -2, 103, 54));
+        assert_eq!(
+            adjust_rect(rect(0, 0, 100, 50), -1, -2, 3, 4),
+            rect(-1, -2, 103, 54)
+        );
     }
 
     #[test]
@@ -565,14 +569,17 @@ mod tests {
     #[test]
     fn band_layout_from_dpi_truncates_like_csharp() {
         let l = BandLayout::from_dpi(1.0);
+        assert_eq!((l.band_h, l.btn, l.pad, l.gap, l.margin), (40, 30, 5, 6, 8));
+        let l = BandLayout::from_dpi(1.5);
         assert_eq!(
             (l.band_h, l.btn, l.pad, l.gap, l.margin),
-            (40, 30, 5, 6, 8)
+            (60, 45, 7, 9, 12)
         );
-        let l = BandLayout::from_dpi(1.5);
-        assert_eq!((l.band_h, l.btn, l.pad, l.gap, l.margin), (60, 45, 7, 9, 12));
         let l = BandLayout::from_dpi(2.0);
-        assert_eq!((l.band_h, l.btn, l.pad, l.gap, l.margin), (80, 60, 10, 12, 16));
+        assert_eq!(
+            (l.band_h, l.btn, l.pad, l.gap, l.margin),
+            (80, 60, 10, 12, 16)
+        );
     }
 
     #[test]
@@ -602,9 +609,18 @@ mod tests {
         let last = (1_000i64, (100, 10));
         assert!(is_double_click(1_500, (102, 12), last.0, last.1, 500, 4, 4));
         assert!(is_double_click(1_500, (100, 10), last.0, last.1, 500, 4, 4));
-        assert!(!is_double_click(1_501, (100, 10), last.0, last.1, 500, 4, 4), "时间窗含端点");
-        assert!(!is_double_click(1_000, (104, 10), last.0, last.1, 500, 4, 4), "dx=4 严格小于");
-        assert!(!is_double_click(1_000, (100, 14), last.0, last.1, 500, 4, 4), "dy=4 严格小于");
+        assert!(
+            !is_double_click(1_501, (100, 10), last.0, last.1, 500, 4, 4),
+            "时间窗含端点"
+        );
+        assert!(
+            !is_double_click(1_000, (104, 10), last.0, last.1, 500, 4, 4),
+            "dx=4 严格小于"
+        );
+        assert!(
+            !is_double_click(1_000, (100, 14), last.0, last.1, 500, 4, 4),
+            "dy=4 严格小于"
+        );
         assert!(is_double_click(1_000, (103, 13), last.0, last.1, 500, 4, 4));
     }
 
@@ -616,7 +632,11 @@ mod tests {
     #[test]
     fn paint_band_rest_state_is_invisible_hotzone() {
         let l = BandLayout::from_dpi(1.0);
-        let glyphs = [GlyphMask::solid(8, 8), GlyphMask::solid(8, 8), GlyphMask::solid(8, 8)];
+        let glyphs = [
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+        ];
         let buf = paint_band(900, 40, false, -1, [&glyphs[0], &glyphs[1], &glyphs[2]], &l);
         assert_eq!(buf.len(), 900 * 40 * 4);
         for px in buf.chunks_exact(4) {
@@ -628,7 +648,11 @@ mod tests {
     #[test]
     fn paint_band_hover_reveals_glass_capsule() {
         let l = BandLayout::from_dpi(1.0);
-        let glyphs = [GlyphMask::solid(8, 8), GlyphMask::solid(8, 8), GlyphMask::solid(8, 8)];
+        let glyphs = [
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+        ];
         let buf = paint_band(900, 40, true, -1, [&glyphs[0], &glyphs[1], &glyphs[2]], &l);
         // 胶囊中心：玻璃底 alpha 接近 235、RGB 预乘近似 (28,28,30)。
         let (_, _, _, a) = dot(&buf, 900, 841, 20);
@@ -646,20 +670,30 @@ mod tests {
         let b = button_rect(0, cap, &l);
         let (bl, gr, rd, a) = dot(&buf, 900, (b.left + b.right) / 2, (b.top + b.bottom) / 2);
         assert!(a > 220);
-        assert!(rd == gr && gr == bl, "ink is neutral white, got {bl},{gr},{rd}");
+        assert!(
+            rd == gr && gr == bl,
+            "ink is neutral white, got {bl},{gr},{rd}"
+        );
         assert!(rd > 215, "premultiplied white at 230 alpha, got {rd}");
     }
 
     #[test]
     fn paint_band_close_hover_washes_red() {
         let l = BandLayout::from_dpi(1.0);
-        let glyphs = [GlyphMask::solid(8, 8), GlyphMask::solid(8, 8), GlyphMask::solid(8, 8)];
+        let glyphs = [
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+            GlyphMask::solid(8, 8),
+        ];
         let buf = paint_band(900, 40, true, 2, [&glyphs[0], &glyphs[1], &glyphs[2]], &l);
         let cap = capsule_rect(900, 40, &l);
         let b = button_rect(2, cap, &l);
         let cy = (b.top + b.bottom) / 2;
         let (bl, gr, rd, _) = dot(&buf, 900, (b.left + b.right) / 2, cy);
-        assert!(rd > 250 && gr > 250, "glyph center over wash is white, got {bl},{gr},{rd}");
+        assert!(
+            rd > 250 && gr > 250,
+            "glyph center over wash is white, got {bl},{gr},{rd}"
+        );
         // 悬停洗在字形外：红色圆洗主导（预乘后 r 远大于 g/b）。
         let (blw, grw, rdw, _) = dot(&buf, 900, b.left + 3, cy);
         assert!(
@@ -689,7 +723,10 @@ mod tests {
         st.drain_into(&mut |e| seen.push(e.clone()));
         assert_eq!(
             seen,
-            vec![HostEvent::Embedded, HostEvent::Session(SessionEvent::Started)]
+            vec![
+                HostEvent::Embedded,
+                HostEvent::Session(SessionEvent::Started)
+            ]
         );
         st.drain_into(&mut |e| seen.push(e.clone()));
         assert_eq!(seen.len(), 2, "drain 清空队列");

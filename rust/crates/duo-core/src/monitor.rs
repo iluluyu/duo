@@ -38,6 +38,47 @@ pub struct DisplayRecommendation {
     pub window: Option<WindowGeometry>,
 }
 
+/// 主显示器工作区（物理像素）。Windows：SetProcessDPIAware 后
+/// SPI_GETWORKAREA（真机物理像素，对译 monitor.py 的 PowerShell 探测
+/// 意图）；其余平台/探测失败回退 4K 减任务栏常量。
+#[cfg(windows)]
+pub fn primary_work_area() -> WorkArea {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDPIAware();
+        let mut rect = RECT::default();
+        let probed = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut rect as *mut RECT as *mut core::ffi::c_void),
+            Default::default(),
+        )
+        .is_ok();
+        if probed {
+            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+            if w >= 640 && h >= 480 {
+                return WorkArea {
+                    width: i64::from(w),
+                    height: i64::from(h),
+                };
+            }
+        }
+    }
+    WorkArea {
+        width: FALLBACK_WORK_AREA.0,
+        height: FALLBACK_WORK_AREA.1,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn primary_work_area() -> WorkArea {
+    WorkArea {
+        width: FALLBACK_WORK_AREA.0,
+        height: FALLBACK_WORK_AREA.1,
+    }
+}
+
 /// 固定 16:9 横屏预设：flex 跟随窗口，无窗口几何（初始窗=显示预设）。
 ///
 /// 密度不再由显示器推导（2026-09-06 定稿）：CLI 注入设备自身有效密度

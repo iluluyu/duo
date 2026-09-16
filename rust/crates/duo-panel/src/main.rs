@@ -1,1 +1,3 @@
-fn main() { duo_panel::run(); }
+fn main() {
+    duo_panel::run();
+}

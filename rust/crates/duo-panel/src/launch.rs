@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use duo_core::engine::{DisplaySpec, DisplayMode, EngineArgs, VideoSpec};
+use duo_core::engine::{DisplayMode, DisplaySpec, EngineArgs, VideoSpec};
 use duo_core::session::SessionSpec;
 use duo_core::settings::Settings;
 
@@ -98,11 +98,7 @@ pub fn duo_core_binary() -> String {
 
 /// spawn 子进程的 argv：`duo-core session --spec <json>`。
 pub fn spawn_argv(spec: &SessionSpec) -> Vec<String> {
-    vec![
-        "session".into(),
-        "--spec".into(),
-        spec.to_json(),
-    ]
+    vec!["session".into(), "--spec".into(), spec.to_json()]
 }
 
 /// 真正起子进程（detached：日志归 duo-core 追加，不接管道防 SIGPIPE）。
@@ -136,10 +132,8 @@ mod tests {
     }
 
     fn base(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "duo-panel-launch-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("duo-panel-launch-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -156,7 +150,10 @@ mod tests {
         assert!(joined.contains("--start-app=+com.tencent.mm"));
         assert!(joined.contains("--window-title=微信"));
         assert!(joined.contains("--window-borderless"));
-        assert!(!joined.contains("--turn-screen-off"), "设置默认关屏 = false");
+        assert!(
+            !joined.contains("--turn-screen-off"),
+            "设置默认关屏 = false"
+        );
     }
 
     #[test]

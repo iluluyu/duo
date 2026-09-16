@@ -201,6 +201,19 @@ pub fn merge_catalog(packages: &[String]) -> Vec<AppRow> {
     rows
 }
 
+/// 一次 ``wm density`` 查询：生效密度（Override 优先）。失败/无数字回
+/// None（调用方回退 160，对译 device_density 的容错语义）。
+pub fn run_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
+    let output = std::process::Command::new(adb_binary)
+        .args(["-s", serial, "shell", "wm", "density"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_device_density(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// 一次 ``pm list packages -3`` 查询 + 目录合并。失败（rc≠0/超时/无法
 /// 启动）返回 Err——查询失败与"无应用"必须可区分（devices.rs 同合同）。
 pub fn run_apps_query(adb_binary: &str, serial: &str) -> Result<Vec<AppRow>, String> {
