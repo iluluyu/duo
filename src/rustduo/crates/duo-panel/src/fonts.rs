@@ -35,26 +35,66 @@ pub fn first_existing_cjk_font() -> Option<&'static str> {
         .find(|p| std::path::Path::new(p).exists())
 }
 
-/// 把系统 CJK 字体注入 egui 字体表（proportional/monospace 的兜底位）。
-pub fn install_cjk_font(ctx: &egui::Context) {
-    let Some(path) = first_existing_cjk_font() else {
-        return;
-    };
-    let Ok(bytes) = std::fs::read(path) else {
-        return;
-    };
+/// Segoe UI 候选（Windows；QML Style.fontDefault）。
+pub fn segoe_candidates() -> Vec<&'static str> {
+    vec![
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\SegUIVar.ttf",
+    ]
+}
+
+/// 字体栈注入（QML fontDefault = "Segoe UI"，CJK 走系统回退）：
+/// Proportional = [Segoe, CJK]，中文由 CJK 字体兜底，拉丁走 Segoe。
+pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "duo-cjk".into(),
-        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("duo-cjk".into());
+    let mut stack: Vec<String> = Vec::new();
+    if let Some(path) = segoe_candidates()
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+    {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "duo-segoe".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            stack.push("duo-segoe".into());
+        }
     }
+    if let Some(path) = first_existing_cjk_font() {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "duo-cjk".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            stack.push("duo-cjk".into());
+        }
+    }
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let list = fonts.families.entry(family).or_default();
+        for name in &stack {
+            list.push(name.clone());
+        }
+    }
+    // DemiBold 档：独立 family（QML Font.DemiBold 的近似，Segoe/雅黑粗体）
+    let bold_stack = ["duo-bold-segoe", "duo-bold-cjk"];
+    let segoe_b = r"C:\Windows\Fonts\segoeuib.ttf";
+    if let Ok(bytes) = std::fs::read(segoe_b) {
+        fonts.font_data.insert(
+            bold_stack[0].into(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+    }
+    let cjk_b = r"C:\Windows\Fonts\msyhbd.ttc";
+    if let Ok(bytes) = std::fs::read(cjk_b) {
+        fonts.font_data.insert(
+            bold_stack[1].into(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+    }
+    fonts.families.insert(
+        egui::FontFamily::Name("duo-bold".into()),
+        bold_stack.iter().map(|s| s.to_string()).collect(),
+    );
     ctx.set_fonts(fonts);
 }
 

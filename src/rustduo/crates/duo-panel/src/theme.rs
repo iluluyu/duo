@@ -31,7 +31,7 @@ pub fn hex(s: &str) -> Color32 {
 }
 
 fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color32 {
-    Color32::from_rgba_unmultiplied(r, g, b, (a * 255.0) as u8)
+    Color32::from_rgba_unmultiplied(r, g, b, (a * 255.0).round() as u8)
 }
 
 /// 一套主题令牌（DESIGN.md §2 表格逐行对译）。
@@ -55,6 +55,17 @@ pub struct Tokens {
     pub hover_wash: Color32, // hover 提亮
     pub press_wash: Color32,
     pub hairline: Color32,
+    /// 菜单浮层不透明回退底（Style.menuFill）。
+    pub menu_fill: Color32,
+    /// 输入框/次按钮实底槽（Style.controlFill）。
+    pub control_fill: Color32,
+    /// 画布级搜索胶囊（Style.searchFill）。
+    pub search_fill: Color32,
+    /// 危险动作 hover 洗底（Style.dangerWash）。
+    pub danger_wash: Color32,
+    /// 画布色斑：蓝/绿各三层同心衰减（几何见 SPOTS_BLUE/GREEN）。
+    pub spot_blue: [Color32; 3],
+    pub spot_green: [Color32; 3],
 }
 
 impl Tokens {
@@ -78,6 +89,20 @@ impl Tokens {
             hover_wash: rgba(255, 255, 255, 0.06),
             press_wash: rgba(255, 255, 255, 0.12),
             hairline: rgba(255, 255, 255, 0.14),
+            menu_fill: hex("#2C2C2E"),
+            control_fill: hex("#28282A"),
+            search_fill: hex("#28282A"),
+            danger_wash: rgba(255, 59, 48, 0.08),
+            spot_blue: [
+                rgba(0, 122, 255, 0.028),
+                rgba(0, 122, 255, 0.039),
+                rgba(0, 122, 255, 0.047),
+            ],
+            spot_green: [
+                rgba(52, 199, 89, 0.020),
+                rgba(52, 199, 89, 0.035),
+                rgba(52, 199, 89, 0.063),
+            ],
         }
     }
 
@@ -101,6 +126,20 @@ impl Tokens {
             hover_wash: rgba(0, 0, 0, 0.04),
             press_wash: rgba(0, 0, 0, 0.08),
             hairline: rgba(0, 0, 0, 0.12),
+            menu_fill: hex("#F7F7F9"),
+            control_fill: hex("#FFFFFF"),
+            search_fill: rgba(255, 255, 255, 0.72),
+            danger_wash: rgba(255, 59, 48, 0.08),
+            spot_blue: [
+                rgba(0, 122, 255, 0.035),
+                rgba(0, 122, 255, 0.055),
+                rgba(0, 122, 255, 0.086),
+            ],
+            spot_green: [
+                rgba(52, 199, 89, 0.027),
+                rgba(52, 199, 89, 0.047),
+                rgba(52, 199, 89, 0.078),
+            ],
         }
     }
 
@@ -143,6 +182,41 @@ impl Tokens {
     }
 }
 
+/// 画布色斑几何（Main.qml bgLayer 逐行照抄）：(x, y, 直径)。
+pub const SPOTS_BLUE: [(f32, f32, f32); 3] = [
+    (-272.0, -212.0, 504.0),
+    (-180.0, -120.0, 320.0),
+    (-132.0, -72.0, 224.0),
+];
+pub const SPOTS_GREEN: [(f32, f32, f32); 3] = [
+    (205.0, 385.0, 570.0),
+    (310.0, 490.0, 360.0),
+    (370.0, 550.0, 240.0),
+];
+
+/// 未知应用 fallback 色板（Style.fallbackPalette 顺序照抄；取色 =
+/// 包名 charCode 和 % 12）。
+pub const FALLBACK_PALETTE: [Color32; 12] = [
+    Color32::from_rgb(0x5F, 0x72, 0x92),
+    Color32::from_rgb(0x6F, 0x84, 0x68),
+    Color32::from_rgb(0x96, 0x72, 0x5D),
+    Color32::from_rgb(0x7D, 0x6B, 0x94),
+    Color32::from_rgb(0x62, 0x8C, 0x87),
+    Color32::from_rgb(0x94, 0x63, 0x63),
+    Color32::from_rgb(0x6C, 0x7F, 0xA3),
+    Color32::from_rgb(0x82, 0x94, 0x62),
+    Color32::from_rgb(0x93, 0x62, 0x80),
+    Color32::from_rgb(0x62, 0x81, 0x92),
+    Color32::from_rgb(0x8C, 0x71, 0x63),
+    Color32::from_rgb(0x74, 0x6A, 0x92),
+];
+
+/// 包名 → fallback 色（Main.qml fallbackColor 同构）。
+pub fn fallback_color(package: &str) -> Color32 {
+    let sum: u32 = package.chars().map(|c| u32::from(c as u32 as u16)).sum();
+    FALLBACK_PALETTE[(sum % 12) as usize]
+}
+
 /// DESIGN.md §2 圆角（dip）：卡 16 / 控件 10 / 浮层 12；胶囊 = 高度/2。
 pub mod rounding {
     pub const CARD: f32 = 16.0;
@@ -174,9 +248,24 @@ mod tests {
         assert_eq!(t.ink2, hex("#98989D"));
         assert_eq!(
             t.card_fill,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+            Color32::from_rgba_unmultiplied(255, 255, 255, 26)
         );
         assert_eq!(t.segment_fill, hex("#48484A"));
+        // Style.qml 控件底材/搜索/菜单回退（像素对齐，禁发明数值）
+        assert_eq!(t.control_fill, hex("#28282A"));
+        assert_eq!(t.search_fill, hex("#28282A"));
+        assert_eq!(t.menu_fill, hex("#2C2C2E"));
+    }
+
+    #[test]
+    fn light_tokens_match_style_qml() {
+        let t = Tokens::light();
+        assert_eq!(t.control_fill, hex("#FFFFFF"));
+        assert_eq!(t.menu_fill, hex("#F7F7F9"));
+        assert_eq!(
+            t.search_fill,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 184)
+        );
     }
 
     #[test]

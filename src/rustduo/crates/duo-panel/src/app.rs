@@ -88,7 +88,7 @@ pub struct PanelApp {
 impl PanelApp {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        crate::fonts::install_cjk_font(&cc.egui_ctx);
+        crate::fonts::install_fonts(&cc.egui_ctx);
         let settings = SettingsPageModel::load(None);
         let tokens = Tokens::of(ThemeKind::from_settings(&settings.draft.theme));
         let adb = resolve_adb_path(&settings.draft, None, "adb");
