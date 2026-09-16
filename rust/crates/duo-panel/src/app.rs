@@ -299,9 +299,7 @@ impl PanelApp {
                 return self.body_preset.clone();
             }
         }
-        let Some(serial) = self.serial() else {
-            return None;
-        };
+        let serial = self.serial()?;
         let output = std::process::Command::new(&self.adb)
             .args(["-s", &serial, "shell", "wm", "size"])
             .output()
@@ -612,10 +610,8 @@ impl PanelApp {
                     let dot = if online { t.accent } else { t.ink2 };
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), Sense::hover());
                     ui.painter().circle_filled(rect.center(), 4.0, dot);
-                    if online {
-                        if ui.button(RichText::new("设备镜像").size(12.0)).clicked() {
-                            self.start_mirror();
-                        }
+                    if online && ui.button(RichText::new("设备镜像").size(12.0)).clicked() {
+                        self.start_mirror();
                     }
                 });
             });
@@ -943,11 +939,9 @@ impl PanelApp {
                 ui.close_menu();
             }
         }
-        if remember {
-            if ui.button("自适应窗口").clicked() {
-                self.set_display_flex(package);
-                ui.close_menu();
-            }
+        if remember && ui.button("自适应窗口").clicked() {
+            self.set_display_flex(package);
+            ui.close_menu();
         }
     }
 

@@ -384,7 +384,7 @@ fn cmd_sweep(
         exit(2);
     };
     let packages: Vec<String> = match packages {
-        Some(json) => match serde_json::from_str(&json) {
+        Some(json) => match serde_json::from_str(json) {
             Ok(list) => list,
             Err(err) => {
                 eprintln!("bad packages json: {err}");
