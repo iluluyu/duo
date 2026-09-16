@@ -1577,9 +1577,12 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "layer.enabled: true" in panel_src
         assert "width: canvasRoot.width" in panel_src
         assert "sourceItem: stack" not in panel_src
-        assert "sourceRect" not in panel_src
         assert "snapW" not in panel_src
         assert "plateBackdrop" not in panel_src
+        # 菜单板本身不得回退到 sourceRect 采样几何（文字光晕的 layer.sourceRect
+        # 是另一回事，只取字形周围 8px）
+        plate_src = panel_src.split("component MenuGlassPlate")[1].split("component ")[0]
+        assert "sourceRect" not in plate_src
 
         # ② 高斯模糊 + 圆角 alpha 蒙版（直角 bug 根治的关鍵）+ 审计 §3.2/3.5
         #    参数（方案 A：核直径 48px ≈ 菜单宽 30–37%，保折射辨识度；
@@ -1617,9 +1620,16 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "MenuGlassPlate { id: barPlate; elevated: true }" in panel_src
         # 设备像素网格吸附（菜单位置落网格，文字光栅化清晰）+ 整窗单纹理
         # 架构（v3：对齐由构造保证，见 glass-recipe.md §2-6）
-        assert "function snapGrid(v)" in panel_src
-        assert "x = snapGrid(Math.max(4, Math.min(px" in panel_src
-        assert "x: -plate.menuX" in panel_src
+        # 文字保底光晕（2026-09-14，见 glass-recipe.md §7）：软光晕 = 字形
+        # 模糊剪影垫在清晰文字后面。硬描边（Text.Outline）已弃——它把墨迹量
+        # 抬 +18%（与 alpha 无关），用户回报"变粗 + 廉价"。
+        assert "component MenuLabel: Item" in panel_src
+        assert "Text.Outline" not in panel_src
+        assert "color: Style.menuInkHalo" in panel_src
+        assert "layer.effect: MultiEffect" in panel_src
+        assert "blurMax: Style.menuHaloBlurMax" in panel_src
+        assert "blur: Style.menuHaloBlur" in panel_src
+        assert panel_src.count("MenuLabel {") >= 10
 
         # 旧方形采样层遗迹仍不得回流（卡片/胶囊永不做采样模糊）
         for gone in ("bgSource", "GlassFill"):
@@ -1656,6 +1666,12 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
         assert "shadersUsable" in style_src
         assert "readonly property bool glassWanted" in style_src
         assert "readonly property bool menuGlass: glassBlur && glassWanted" in style_src
+        # 文字保底光晕令牌（2026-09-14 软光晕版）：亮 38% 白 / 暗 50% 黑
+        # （黑晕在暗玻璃上实测不可见，故额度更高）；模糊半径 = blur×blurMax
+        assert ('readonly property color menuInkHalo: root.dark'
+                ' ? "#80000000" : "#61FFFFFF"' in style_src)
+        assert "readonly property real menuHaloBlur: 0.35" in style_src
+        assert "readonly property int menuHaloBlurMax: 16" in style_src
         assert "MultiEffect" not in style_src
 
         # ---- 运行时（软件后端 = 回退路径在跑）----
@@ -1678,8 +1694,15 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
                                     if i.objectName() == name)
                         multis = [i for i in walk(menu)
                                   if i.metaObject().className() == "QQuickMultiEffect"]
-                        assert len(multis) == 1, name
-                        me = multis[0]
+                        plates = [m for m in multis if m.property("maskEnabled") is True]
+                        assert len(plates) == 1, name
+                        # 其余 MultiEffect = 文字光晕（只模糊，不蒙版/不模糊背景）
+                        for halo_me in [m for m in multis if m not in plates]:
+                                assert halo_me.property("maskEnabled") is False
+                                assert halo_me.property("blurEnabled") is True
+                                assert halo_me.property("blurMax") == 16
+                                assert halo_me.property("autoPaddingEnabled") is False
+                        me = plates[0]
                         assert me.property("maskEnabled") is True
                         assert float(me.property("maskThresholdMin")) == 0.5
                         assert me.property("blurEnabled") is True
@@ -1717,6 +1740,40 @@ def test_menu_glass_blur_is_masked_and_dual_path(qapp, no_adb, prefs_stub,
                                 chain.append(node.objectName())
                                 node = node.parentItem()
                         assert "canvasRoot" not in chain
+
+                # 文字保底光晕（glass-recipe.md §7）：玻璃会透出与墨色同调的
+                # 底景（亮色菜单盖深色图标 / 暗色菜单盖白底图标时 ink:glass
+                # ~1.0），每枚菜单里的玻璃文字都配一层同向低 alpha 的模糊剪影
+                # （清晰文字本身零改动）；软件后端/关玻璃时剪影层不跑
+                # （visible = false，不建 FBO）——回退路径像素与改动前一致。
+                halo = QColor(style_src.split('menuInkHalo: root.dark ? ')[1]
+                              .split(' : ')[1].split('"')[1])
+                for name in ("appContextMenu", "aspectSubmenu", "barSubmenu",
+                             "densitySubmenu", "scaleSubmenu",
+                             "mirrorContextMenu"):
+                        menu = next(i for i in walk(scene)
+                                    if i.objectName() == name)
+                        glows = [i for i in walk(menu)
+                                 if i.property("color") is not None
+                                 and i.property("color").name(
+                                         QColor.NameFormat.HexArgb)
+                                 == halo.name(QColor.NameFormat.HexArgb)]
+                        assert glows, name
+                        for glow in glows:
+                                assert glow.property("visible") is False
+                        # 每个剪影层背后都得有一模一样文字的清晰层（光晕不吃文字）
+                        crisp = {t.property("text") for t in walk(menu)
+                                 if t.property("text") is not None
+                                 and t.property("color") is not None
+                                 and t.property("color").name() != halo.name()}
+                        for glow in glows:
+                                assert glow.property("text") in crisp
+                # 不透明 controlFill 底板上的读数/占位不进光晕集
+                # （自身已有不透明底，光晕只是噪音）
+                for opaque_name in ("scaleValueText", "densityPlaceholder"):
+                        opaque_text = next(i for i in walk(scene)
+                                           if i.objectName() == opaque_name)
+                        assert opaque_text.property("color").name() != halo.name()
         finally:
                 controller.shutdown()
                 engine.deleteLater()
@@ -1747,7 +1804,8 @@ def test_menu_glass_snapshot_source_is_canvas_wrapper(qapp, no_adb, prefs_stub,
         # ③ 整窗几何：模糊层/蒙版与源同大小同原点（x = -menuX 对位）
         assert "x: -plate.menuX" in panel_src
         assert "width: canvasRoot.width" in panel_src
-        assert "sourceRect" not in panel_src
+        plate_src = panel_src.split("component MenuGlassPlate")[1].split("component ")[0]
+        assert "sourceRect" not in plate_src
 
         controller = PanelController("/nonexistent/adb-for-tests")
         engine = _make_engine(controller, SettingsApi())
@@ -1782,7 +1840,8 @@ def test_menu_glass_snapshot_source_is_canvas_wrapper(qapp, no_adb, prefs_stub,
                                     if i.objectName() == name)
                         me = next(
                                 i for i in _walk(menu)
-                                if "MultiEffect" in i.metaObject().className())
+                                if "MultiEffect" in i.metaObject().className()
+                                and i.property("maskEnabled") is True)
                         me_src = me.property("source")
                         assert me_src is not None and me_src.objectName() == "canvasRoot"
                         assert me.property("autoPaddingEnabled") is False
