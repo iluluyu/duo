@@ -15,36 +15,32 @@
       宿主**（无边框 + 原生可缩放 + 隐形拖动带/悬停胶囊）；
       `--embed-style native` 为系统标题栏变体。设计与验收存档：
       docs/window-experience.md §14。
-- [ ] **0.2 Rust 第一档（当前任务）**：core 下沉。产物 = 单一 Rust 进程
-      `duo-core`（面板经 stdio JSON-lines 调用，对齐现有进程模型；0.3 的
-      宿主窗口直接住进同一进程，不再另起炉灶）。分三步：
-  - [ ] 0.2.1 纯逻辑层（机械劳动）：engine argv 装配 / aspects / catalog /
-        icon_presets / settings / paths 入 Rust workspace，pytest 逐条对译
-        cargo test（rust/ 目录，零外部依赖）
-        **进度（2026-09-16）**：engine / aspects / catalog / icon_presets
-        （含 apps.py 的 g2_outline 纯数学部分）已对译，43 条 cargo test
-        过；对拍机制落地——`rust/scripts/parity_check.sh` 同输入 Python/Rust
-        逐字节比对，315/315 行一致（含全部 27 张 SVG）。剩 settings/paths
-        （filesystem/JSON，随 0.2.2 serde/IPC 一起进）。
-  - [x] **0.2.2 进程层 ✅（2026-09-16，部分范围）**：devices（解析 + 守约
-        状态机，含查询超时）/ session 监督（spawn+崩溃重启+日志 append+
-        display-id 解析）/ paths 入 Rust；`duo-core` 二进制落地
-        （devices / watch / session 三子命令，JSON-lines 协议，真机烟测
-        过）；Python 客户端 shim duo/core/duocore.py（11 测试）；Windows
-        构建脚本 rust/scripts/build_windows.ps1（需 Windows 侧 rustup）。
-        **未下沉**（暂留 Python）：codec 探测、apps 枚举（2190 行，随需
-        求评估）、chrome overlay 启动器（0.3 一并处理）。
-  - [ ] 0.2.3 面板切换：**第一刀已落**——`duo mirror --duo-core` 把
-        会话监督下沉到 Rust 二进制（语义对齐 Session.run，默认关，
-        待 Windows 实测后转默认）。剩余：面板全面改调 duo-core（设备
-        监控走 watch、会话 spawn 走 session）、Python core 退役。
-- [ ] **0.3 1.5 完成**：沉浸式宿主窗口（win32 crate）住进 duo-core 进程，
-      C# overlay 退役——停在这里就是完整、可长期维护的产品形态。
-- [ ] **0.4 Rust 第二档（条件启动）**：自接视频流（libmpv 喂裸 H.264/H.265
-      + 最小控制协议实现）**只在真的撞到 scrcpy 呈现天花板时**再启动；
-      启动时 pin 住 server 版本，协议跟不跟新完全由自己节奏决定——QtScrcpy
-      一个 part-time 维护的 C++ 客户端跟了 scrcpy 协议好几年，证明这个
-      维护面是博士生兼职扛得动的。
+- [x] **0.2 Rust 第一档 ✅（2026-09-16 完成代码层，真机验收待跑）**：
+      core 下沉 + 面板重写全部落地，产物 = 两个 Rust 进程：
+  - [x] 0.2.1 纯逻辑层：engine / aspects / catalog / icon_presets /
+        settings / paths 全部对译；parity_check.sh 315/315 逐字节一致。
+  - [x] 0.2.2 进程层：devices / watch / session / mirror / apps（含
+        像素级图标渲染 devicon+sweep+duo_icons.dex 内嵌）/ set-volume /
+        audio-lock 子命令，JSON-lines 协议；duocore.py shim 保留作
+        Python 参考栈兼容层。
+  - [x] 0.2.3 面板切换：duo-panel（egui）全量替代 PyQt6-QML——
+        model/sessions/prefs/pinyin/backend 无 UI 依赖模块 + app.rs
+        渲染层（设备卡/固定卡/搜索/网格右键全菜单/运行卡/Toast/设置页）；
+        gui_prefs.json 同文件兼容；单实例互斥体；会话 spawn 全走
+        duo-core mirror（argv 等价 build_launch_argv）。cargo test
+        247 绿（core 214 + panel 33），clippy 零警告，pytest 488 绿。
+- [x] **0.3 1.5 完成 ✅（2026-09-16，代码层）**：沉浸式宿主窗口
+      （win32 crate）住进 duo-core 进程（--chrome/--embed 同一进程内
+      run_host），C# overlay 对应路径已不需要；真机行为待 Windows 验收
+      清单回填。
+- [x] **0.4 前置打包 ✅**：WSL mingw 交叉构建双 exe（duo-core.exe
+      console + Duo.exe GUI 子系统/duo.ico 资源图标/单实例）；
+      build_wsl.sh --deploy / build_windows.ps1 -Deploy / install 脚本；
+      自接视频流（libmpv）仍按原条件：撞到 scrcpy 呈现天花板再启动。
+
+> **Rust 栈现状**：代码/测试/交叉构建全绿，但未在 Windows 真机跑过——
+> 下列声明到真机验收前都视为未决：面板渲染效果、宿主窗交互、图标渲染
+> 实效、音频仲裁行为。Python 栈保留为参考与对照（duo/ 目录未删）。
 
 ## 边界
 
@@ -63,6 +59,10 @@
 
 ## 待 Windows 实测（收尾清单）
 
+- [ ] **Rust 栈验收（新，优先）**：deploy 双 exe 后真机跑：面板渲染（设备卡/
+      固定卡/搜索/网格/右键全菜单/运行卡/Toast/设置页）、会话 spawn（mirror
+      argv 与 Python 版一致）、图标 sweep、音频仲裁、单实例提示、退出拖树。
+      rust\scripts\accept_windows.ps1 回填 Duo.exe 路径后复用。
 - [ ] 按 docs/windows-setup.md 清单正式回填打包版行为（onefile → `C:\Tools\Duo.exe`）
 - [ ] 空 flex 会话（无 `--app`）decorations 开启下的无帧降级体验
 - [ ] 中文输入：uhid 候选窗落物理屏是否复现 → 决定 `--display-ime-policy=local`
