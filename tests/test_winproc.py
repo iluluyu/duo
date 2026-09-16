@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from duo.core.winproc import ChildJob, creation_flags, notify_already_running
+from pyduo.core.winproc import ChildJob, creation_flags, notify_already_running
 
 
 class _FakeProc:
@@ -38,7 +38,7 @@ def test_creation_flags_zero_off_windows():
 @pytest.mark.skipif(sys.platform == "win32", reason="posix branch")
 def test_terminate_tree_falls_back_to_terminate():
         """Off Windows the tree kill IS the graceful terminate."""
-        from duo.core.winproc import terminate_tree
+        from pyduo.core.winproc import terminate_tree
 
         proc = _FakeProc()
         terminate_tree(proc)
@@ -48,7 +48,7 @@ def test_terminate_tree_falls_back_to_terminate():
 @pytest.mark.skipif(sys.platform == "win32", reason="posix branch")
 def test_terminate_tree_swallows_dead_process_race(capsys):
         """A pid that died a beat ago must not break the shutdown path."""
-        from duo.core.winproc import terminate_tree
+        from pyduo.core.winproc import terminate_tree
 
         class _Dying:
                 pid = 0

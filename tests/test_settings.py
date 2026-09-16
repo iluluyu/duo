@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-import duo.core.settings as settings_mod
-from duo.core.settings import (
+import pyduo.core.settings as settings_mod
+from pyduo.core.settings import (
         Settings,
         corner_radius_dip,
         load_settings,

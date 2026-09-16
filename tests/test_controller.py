@@ -23,11 +23,11 @@ pytest.importorskip("PyQt6.QtCore")
 from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-import duo.core.settings as settings_mod
-import duo.ui.controller as controller_mod
-from duo.core.apps import AdbError, label_sort_key
-from duo.core.settings import Settings
-from duo.ui.controller import (  # noqa: E402
+import pyduo.core.settings as settings_mod
+import pyduo.ui.controller as controller_mod
+from pyduo.core.apps import AdbError, label_sort_key
+from pyduo.core.settings import Settings
+from pyduo.ui.controller import (  # noqa: E402
         MIRROR_KEY,
         PanelController,
         build_device_mirror_argv,

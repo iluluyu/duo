@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from duo.core.engine import DisplaySpec, WindowGeometry
-from duo.core.monitor import (
+from pyduo.core.engine import DisplaySpec, WindowGeometry
+from pyduo.core.monitor import (
         WorkArea,
         apply_render_scale,
         recommend_landscape,

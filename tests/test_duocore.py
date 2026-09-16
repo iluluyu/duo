@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import duo.core.duocore as duocore
-from duo.core.duocore import (
+import pyduo.core.duocore as duocore
+from pyduo.core.duocore import (
         DeviceWatch,
         DuoCoreError,
         SessionProcess,

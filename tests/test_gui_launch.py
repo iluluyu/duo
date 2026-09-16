@@ -17,9 +17,9 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6.QtCore")
 
-from duo.__main__ import _build_parser  # noqa: E402
-from duo.core.settings import Settings  # noqa: E402
-from duo.ui.controller import (  # noqa: E402
+from pyduo.__main__ import _build_parser  # noqa: E402
+from pyduo.core.settings import Settings  # noqa: E402
+from pyduo.ui.controller import (  # noqa: E402
         DEFAULT_PORTRAIT,
         build_device_mirror_argv,
         build_launch_argv,
@@ -37,7 +37,7 @@ def _pin_settings(monkeypatch):
         on the host machine's settings.json.
         """
         monkeypatch.setattr(
-                "duo.ui.controller.load_settings", lambda: (Settings(), []))
+                "pyduo.ui.controller.load_settings", lambda: (Settings(), []))
 
 
 class _StubFile:
@@ -107,7 +107,7 @@ def test_panel_argv_round_trips_through_cli_parser(monkeypatch):
         往返测试能拦住单侧加参。
         """
         monkeypatch.setattr(
-                "duo.ui.controller._prefs_path", lambda: _StubFile(None))
+                "pyduo.ui.controller._prefs_path", lambda: _StubFile(None))
         argvs = [
                 build_launch_argv("com.coolapk.market", "S1", portrait=False),
                 build_launch_argv("tv.danmaku.bili", "S1", portrait=True, muted=True),
@@ -124,7 +124,7 @@ def test_panel_argv_round_trips_through_cli_parser(monkeypatch):
 
 def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
         """Prefs persist as JSON; defaults come back when the file is absent."""
-        from duo.ui import controller  # prefs logic was migrated here
+        from pyduo.ui import controller  # prefs logic was migrated here
 
         stub = _StubFile(None)
         monkeypatch.setattr(controller, "_prefs_path", lambda: stub)
@@ -140,7 +140,7 @@ def test_portrait_prefs_roundtrip(tmp_path, monkeypatch):
 
 def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
         """A corrupt prefs file must not take the panel down."""
-        from duo.ui import controller  # prefs logic was migrated here
+        from pyduo.ui import controller  # prefs logic was migrated here
 
         monkeypatch.setattr(controller, "_prefs_path", lambda: _StubFile("{not json"))
         assert load_portrait_prefs() == dict(DEFAULT_PORTRAIT)
@@ -148,7 +148,7 @@ def test_portrait_prefs_corrupt_file_falls_back_to_defaults(monkeypatch):
 
 def test_gui_importable_without_display():
         """The QML front end imports cleanly headless (Qt lazy-loaded)."""
-        import duo.ui.app  # noqa: F401
+        import pyduo.ui.app  # noqa: F401
 
 
 def test_panel_single_instance_lock(tmp_path, monkeypatch):
@@ -161,7 +161,7 @@ def test_panel_single_instance_lock(tmp_path, monkeypatch):
         exe, console script, source tree - enforces the same rule.
         """
         pytest.importorskip("PyQt6.QtCore")
-        import duo.ui.app as app_mod
+        import pyduo.ui.app as app_mod
 
         monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
         lock = app_mod._acquire_panel_lock()

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from duo.core.catalog import APP_CATALOG, catalog_by_package
+from pyduo.core.catalog import APP_CATALOG, catalog_by_package
 
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 

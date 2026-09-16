@@ -25,7 +25,7 @@ jobs:
       - run: pip install -e .[dev,gui]
       # Same gates as local development (scripts + tests included).
       - run: ruff check .
-      - run: mypy duo
+      - run: mypy src/pyduo
 
   test:
     runs-on: ubuntu-latest

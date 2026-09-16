@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 
-from duo.core import audio_lock
-from duo.core.audio_lock import AudioLock, _pid_alive, _read_owner
+from pyduo.core import audio_lock
+from pyduo.core.audio_lock import AudioLock, _pid_alive, _read_owner
 
 
 def test_acquire_and_release_roundtrip(tmp_path, monkeypatch):

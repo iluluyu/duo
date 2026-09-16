@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from duo.core.engine import DisplaySpec, EngineArgs, VideoSpec
+from pyduo.core.engine import DisplaySpec, EngineArgs, VideoSpec
 
 
 def _argv(**kwargs) -> list[str]:
