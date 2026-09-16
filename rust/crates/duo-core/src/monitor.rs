@@ -44,9 +44,11 @@ pub struct DisplayRecommendation {
 #[cfg(windows)]
 pub fn primary_work_area() -> WorkArea {
     use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetProcessDPIAware, SystemParametersInfoW, SPI_GETWORKAREA,
+    };
     unsafe {
-        let _ = windows::Win32::UI::HiDpi::SetProcessDPIAware();
+        let _ = SetProcessDPIAware();
         let mut rect = RECT::default();
         let probed = SystemParametersInfoW(
             SPI_GETWORKAREA,

@@ -119,7 +119,7 @@ pub fn display_size(choice: Option<&DisplayChoice>) -> Option<(i64, i64)> {
     let choice = choice?;
     if let DisplayChoice::Fixed { aspect } = choice {
         if let Some(preset) = preset_by_id(aspect) {
-            return Some((i64::from(preset.width), i64::from(preset.height)));
+            return Some((preset.width, preset.height));
         }
     }
     None
@@ -419,10 +419,6 @@ impl Default for Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
 
     #[test]
     fn session_label_catalog_mirror_fallback() {

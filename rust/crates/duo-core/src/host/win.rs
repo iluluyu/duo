@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    COLORREF, HANDLE, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -336,8 +336,16 @@ impl LayeredDib {
         let info = dib_info(width, height);
         let mut bits = std::ptr::null_mut();
         let screen = GetDC(None);
-        let bmp = CreateDIBSection(Some(screen), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-        let dc = CreateCompatibleDC(Some(screen));
+        let bmp = CreateDIBSection(
+            screen,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            HANDLE::default(),
+            0,
+        )
+        .ok()?;
+        let dc = CreateCompatibleDC(screen);
         SelectObject(dc, bmp);
         ReleaseDC(None, screen);
         Some(Self {
@@ -415,9 +423,9 @@ impl BandWin {
             0,
             cr.right,
             layout.band_h,
-            Some(host),
-            None,
-            Some(HINSTANCE(instance.0)),
+            host,
+            HMENU::default(),
+            HINSTANCE(instance.0),
             None,
         )
         .ok()?;
@@ -440,7 +448,7 @@ impl BandWin {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut win as *mut BandWin as isize);
         let _ = SetWindowPos(
             hwnd,
-            Some(HWND_TOP),
+            HWND_TOP,
             0,
             0,
             cr.right,
@@ -455,7 +463,7 @@ impl BandWin {
     unsafe fn assert_above(&self) {
         let _ = SetWindowPos(
             self.hwnd,
-            Some(HWND_TOP),
+            HWND_TOP,
             0,
             0,
             0,
@@ -523,10 +531,10 @@ impl BandWin {
         };
         let _ = UpdateLayeredWindow(
             self.hwnd,
-            Some(screen),
+            screen,
             None,
             Some(&size),
-            Some(dib.dc),
+            dib.dc,
             Some(&src),
             COLORREF(0),
             Some(&blend),
@@ -563,7 +571,7 @@ impl BandWin {
         }
         let cursor = if hit >= 0 { IDC_HAND } else { IDC_SIZEALL };
         if let Ok(c) = LoadCursorW(None, cursor) {
-            SetCursor(Some(c));
+            SetCursor(c);
         }
     }
 
@@ -683,7 +691,8 @@ unsafe fn rasterize_glyph(dc: HDC, font: HFONT, ch: u16) -> GlyphMask {
     }
     let info = dib_info(size.cx, size.cy);
     let mut bits = std::ptr::null_mut();
-    let Ok(bmp) = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) else {
+    let Ok(bmp) = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0)
+    else {
         return empty();
     };
     let n = (size.cx * size.cy) as usize;
@@ -732,7 +741,7 @@ unsafe fn rasterize_glyphs(dpi: f32) -> [GlyphMask; 4] {
         )
     };
     let screen = GetDC(None);
-    let dc = CreateCompatibleDC(Some(screen));
+    let dc = CreateCompatibleDC(screen);
     ReleaseDC(None, screen);
     let height = (12.0 * dpi) as i32;
     let fluent = HSTRING::from("Segoe Fluent Icons");
@@ -813,15 +822,15 @@ pub(crate) unsafe fn window_main(
     let Ok(hwnd) = CreateWindowExW(
         WS_EX_WINDOWEDGE,
         HOST_CLASS,
-        Some(&title),
+        &title,
         style,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         900,
         640,
-        None,
-        None,
-        Some(HINSTANCE(instance.0)),
+        HWND::default(),
+        HMENU::default(),
+        HINSTANCE(instance.0),
         None,
     ) else {
         log("CreateWindow failed");
@@ -829,7 +838,7 @@ pub(crate) unsafe fn window_main(
     };
     state.hwnd = hwnd;
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut *state as *mut HostWin as isize);
-    if SetTimer(Some(hwnd), TIMER_ID, TICK_MS as u32, None) == 0 {
+    if SetTimer(hwnd, TIMER_ID, TICK_MS as u32, None) == 0 {
         log("SetTimer failed");
         let _ = DestroyWindow(hwnd);
     }

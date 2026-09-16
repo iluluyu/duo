@@ -6,13 +6,13 @@
 
 use std::process::{Child, Command};
 
-#[cfg(windows)]
-use std::sync::Mutex;
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+use windows::Win32::Foundation::HANDLE;
 
 /// Windows：CREATE_NO_WINDOW（面板是窗口进程，adb 轮询不得闪控制台）。
 pub fn creation_flags() -> u32 {
@@ -28,10 +28,7 @@ pub fn silent_command(program: &str, args: &[String]) -> Command {
     let mut command = Command::new(program);
     command.args(args);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    command.creation_flags(CREATE_NO_WINDOW);
     command
 }
 
@@ -41,7 +38,7 @@ pub fn silent_command(program: &str, args: &[String]) -> Command {
 pub fn terminate_tree(child: &mut Child) {
     #[cfg(windows)]
     {
-        if child.try_wait().map(|w| w.is_none()).unwrap_or(false) {
+        if matches!(child.try_wait(), Ok(None)) {
             let _ = Command::new("taskkill")
                 .args(["/T", "/F", "/PID", &child.id().to_string()])
                 .status();
@@ -60,14 +57,14 @@ pub fn terminate_tree(child: &mut Child) {
 #[derive(Default)]
 pub struct ChildJob {
     #[cfg(windows)]
-    handle: Mutex<Option<isize>>,
+    handle: std::sync::Mutex<Option<HANDLE>>,
 }
 
 #[cfg(windows)]
 impl ChildJob {
     pub fn new() -> Self {
         Self {
-            handle: Mutex::new(create_job().ok()),
+            handle: std::sync::Mutex::new(create_job().ok()),
         }
     }
 
@@ -76,61 +73,39 @@ impl ChildJob {
     }
 
     pub fn add(&self, child: &Child) {
-        let guard = self.handle.lock().ok();
-        let Some(handle) = guard.as_ref().and_then(|h| *h) else {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+        let Ok(guard) = self.handle.lock() else {
             return;
         };
+        let Some(handle) = guard.as_ref() else {
+            return;
+        };
+        let job = HANDLE(handle.0);
         unsafe {
-            let process = windows::Win32::System::Threading::OpenProcess(
-                windows::Win32::Foundation::PROCESS_SET_QUOTA
-                    | windows::Win32::Foundation::PROCESS_TERMINATE,
-                false,
+            let Ok(process) = OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                windows::Win32::Foundation::BOOL::default(),
                 child.id(),
-            );
-            if process.is_ok() {
-                let _ = windows::Win32::System::JobObjects::AssignProcessToJobObject(
-                    windows::Win32::Foundation::HANDLE(handle),
-                    process.unwrap(),
-                );
-                let _ = windows::Win32::Foundation::CloseHandle(process.unwrap());
-            }
+            ) else {
+                return;
+            };
+            let _ = AssignProcessToJobObject(job, process);
+            let _ = CloseHandle(process);
         }
     }
 
     pub fn close(&self) {
+        use windows::Win32::Foundation::CloseHandle;
         if let Ok(mut guard) = self.handle.lock() {
             if let Some(handle) = guard.take() {
                 unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(
-                        windows::Win32::Foundation::HANDLE(handle),
-                    );
+                    let _ = CloseHandle(handle);
                 }
             }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn create_job() -> Result<isize, ()> {
-    unsafe {
-        use windows::Win32::System::JobObjects::*;
-        let job = CreateJobObjectW(None, None);
-        if job.is_invalid() {
-            return Err(());
-        }
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const core::ffi::c_void,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        if ok.is_ok() {
-            Ok(job.0 as isize)
-        } else {
-            let _ = windows::Win32::Foundation::CloseHandle(job);
-            Err(())
         }
     }
 }
@@ -156,21 +131,48 @@ impl Drop for ChildJob {
     }
 }
 
+#[cfg(windows)]
+fn create_job() -> Result<HANDLE, ()> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let Ok(job) = CreateJobObjectW(None, None) else {
+            return Err(());
+        };
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok.is_ok() {
+            Ok(job)
+        } else {
+            let _ = CloseHandle(job);
+            Err(())
+        }
+    }
+}
+
 /// 单实例：Windows 命名互斥体；已占用弹原生提示框后由调用方退出。
 pub fn single_instance(key: &str) -> bool {
     #[cfg(windows)]
     {
         use windows::core::w;
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+        let _ = key;
         unsafe {
-            let created = windows::Win32::System::Threading::CreateMutexW(
-                None,
-                false,
-                w!("Local\\DuoPanelSingleInstance"),
-            );
-            let _ = key;
-            windows::Win32::Foundation::GetLastError()
-                != windows::Win32::Foundation::ERROR_ALREADY_EXISTS
-                && created.is_invalid() == false
+            let Ok(handle) = CreateMutexW(None, false, w!("Local\\DuoPanelSingleInstance")) else {
+                return false;
+            };
+            std::mem::forget(handle);
+            GetLastError() != ERROR_ALREADY_EXISTS
         }
     }
     #[cfg(not(windows))]
@@ -185,15 +187,17 @@ pub fn notify_already_running(message: &str) {
     #[cfg(windows)]
     {
         use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONINFORMATION, MB_TOPMOST,
+        };
         let wide: Vec<u16> = message.encode_utf16().chain([0]).collect();
         let title: Vec<u16> = "Duo".encode_utf16().chain([0]).collect();
         unsafe {
-            windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            MessageBoxW(
                 None,
                 PCWSTR(wide.as_ptr()),
                 PCWSTR(title.as_ptr()),
-                windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION
-                    | windows::Win32::UI::WindowsAndMessaging::MB_TOPMOST,
+                MB_ICONINFORMATION | MB_TOPMOST,
             );
         }
     }

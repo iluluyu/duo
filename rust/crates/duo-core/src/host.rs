@@ -13,9 +13,11 @@ use crate::session::SessionEvent;
 #[cfg(windows)]
 use crate::session::{run_session_abortable, SessionSpec};
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
 #[cfg(windows)]
-use std::sync::{Arc, Ordering};
+use std::sync::atomic::Ordering;
+#[cfg(windows)]
+use std::sync::Arc;
+use std::sync::Mutex;
 #[cfg(windows)]
 use std::thread;
 
@@ -353,8 +355,7 @@ pub fn paint_band(
             }
         }
     }
-    for i in 0..3usize {
-        let m = glyphs[i];
+    for (i, m) in glyphs.iter().enumerate() {
         let b = button_rect(i as i32, cap, l);
         let gx = b.left + (b.width() - m.width as i32) / 2;
         let gy = b.top + (b.height() - m.height as i32) / 2;
@@ -467,7 +468,8 @@ pub fn run_host(
     unsafe { win::window_main(opts, &st, on_event) };
     st.abort.store(true, Ordering::Release);
     let _ = engine.join();
-    st.code.lock().expect("host code lock").unwrap_or(1)
+    let code = st.code.lock().expect("host code lock").unwrap_or(1);
+    code
 }
 
 #[cfg(test)]
