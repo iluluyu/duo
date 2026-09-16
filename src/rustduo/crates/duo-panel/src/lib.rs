@@ -10,6 +10,7 @@ pub mod backend;
 pub mod blur;
 pub mod fonts;
 pub mod model;
+pub mod paint;
 pub mod pinyin;
 pub mod prefs;
 pub mod sessions;

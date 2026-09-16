@@ -59,20 +59,20 @@ duo/                       # 仓库根（不变）
 - [x] 全套件绿：pytest 488 / ruff / mypy(src/pyduo) / cargo 247 /
       parity 315；交叉构建 + exe 图标完好；qml_shots 基线重出
 
-### P1 渲染基建（未开始）
+### P1 渲染基建（✅ 2026-09-16）
 
-- [ ] fonts.rs：Segoe UI + CJK 双字体栈（Proportional = [Segoe, CJK]；
-      QML fontDefault = "Segoe UI"）
-- [ ] theme.rs：对齐 Style.qml 全量令牌（含 searchFill/controlFill/
-      menuFill/spotBlue*/spotGreen*/dangerWash/fallbackPalette 12 色）
-- [ ] paint.rs painter 助手：card（fill+1px 边 r16）、dot（点核+白环）、
-      centered text（px 字号+粗细）、g2 squircle 路径（复用
-      duo-core icons::g2_outline）、elide 6 字
-- [ ] 图标纹理缓存：HashMap<package, TextureHandle>（.r20.png / 预设
-      SVG → try_load_image），fallback = squircle + 首字白字
-      （包名 charCode 和 % 12 取色）
-- [ ] 画布色斑：六枚同心圆斑（坐标/半径照抄 Main.qml bgLayer）
-- [ ] 单测：令牌表对拍 Style.qml 值；fallback 取色确定性；elide
+- [x] fonts.rs：Segoe UI + CJK 双字体栈 + "duo-bold" 粗体 family
+      （QML DemiBold 档）；Linux 回退 Noto CJK
+- [x] theme.rs：全量令牌 + SPOTS 几何 + FALLBACK_PALETTE 12 色 +
+      fallback_color；rgba 改四舍五入对齐 QML #hex ARGB（0.72→184 非 183）
+- [x] paint.rs：card/rounded_fill/dot/text_centered/text_left/
+      canvas_spots/g2_squircle（duo-core g2_outline）/elide_6/x_mark/
+      magnifier/speaker（QML Canvas 直译）
+- [x] 图标渲染决策：不建自有缓存——egui Context 纹理管理器按 URI
+      自带缓存（Image::from_uri）；fallback = g2_squircle + 首字白字
+- [x] 画布色斑：SPOTS_BLUE/GREEN 常量 + paint::canvas_spots
+- [x] 单测：令牌对拍（暗/亮 control/search/menu fill）、fallback
+      确定性、elide 6 字规则
 
 ### P2 主面板骨架像素移植（未开始）
 
