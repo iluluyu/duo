@@ -35,6 +35,13 @@ pub fn logs_dir(base: Option<&std::path::Path>) -> PathBuf {
     dir
 }
 
+/// data_dir()/icons，恒创建（设备渲染图标缓存 + device_meta.json）。
+pub fn icons_dir(base: Option<&std::path::Path>) -> PathBuf {
+    let dir = data_dir(base).join("icons");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +71,17 @@ mod tests {
         let logs = logs_dir(Some(&base));
         assert_eq!(logs, base.join("logs"));
         assert!(logs.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn icons_dir_lives_under_data_dir() {
+        let base =
+            std::env::temp_dir().join(format!("duo-core-paths-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let icons = icons_dir(Some(&base));
+        assert_eq!(icons, base.join("icons"));
+        assert!(icons.is_dir());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

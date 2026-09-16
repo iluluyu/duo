@@ -35,6 +35,7 @@ const USAGE: &str = "usage: duo-core <command> [options]
   settings --data-dir <dir> set <json>
   volume   --adb <path> --serial <serial> --index <n>
   apps     --adb <path> --serial <serial>
+  sweep    --adb <path> --serial <serial> [--data-dir <dir>] [--packages <json>]
   audio-lock --data-dir <dir> acquire|release|status
   mirror [mirror flags]                 branded app session (duo mirror 对译)
   host --spec <json> --title <title> [--embed-style immersive|native] [--serial <s>]";
@@ -57,6 +58,12 @@ fn main() {
         "settings" => cmd_settings(&flag("--data-dir"), &argv[1..]),
         "volume" => cmd_volume(&flag("--adb"), &flag("--serial"), &flag("--index")),
         "apps" => cmd_apps(&flag("--adb"), &flag("--serial")),
+        "sweep" => cmd_sweep(
+            &flag("--adb"),
+            &flag("--serial"),
+            &flag("--data-dir"),
+            &flag("--packages"),
+        ),
         "audio-lock" => cmd_audio_lock(&flag("--data-dir"), &argv[1..]),
         "mirror" => exit(duo_core::mirror::run(&argv[1..])),
         "host" => cmd_host(
@@ -174,6 +181,7 @@ fn session_event_json(event: &SessionEvent) -> serde_json::Value {
     }
 }
 
+#[cfg(windows)]
 fn host_event_json(event: &duo_core::host::HostEvent) -> serde_json::Value {
     use duo_core::host::HostEvent;
     match event {
@@ -358,6 +366,54 @@ fn app_row_json(row: &AppRow) -> serde_json::Value {
         "label": row.label,
         "catalog": row.catalog,
     })
+}
+
+/// sweep --adb <path> --serial <s> [--packages <json>]：设备端渲染图标 +
+/// 标签 sweep（apps.py render_device_icons 合同）。stdout 一个 JSON 对象
+/// {"rendered": bool, "labels": {pkg: label}}；渲染失败 rendered=false
+/// （面板回退预设，不拦启动）。
+fn cmd_sweep(
+    adb: &Option<String>,
+    serial: &Option<String>,
+    data_dir: &Option<String>,
+    packages: &Option<String>,
+) {
+    let adb = adb_required(adb);
+    let Some(serial) = serial.clone() else {
+        eprintln!("{USAGE}: --serial required");
+        exit(2);
+    };
+    let packages: Vec<String> = match packages {
+        Some(json) => match serde_json::from_str(&json) {
+            Ok(list) => list,
+            Err(err) => {
+                eprintln!("bad packages json: {err}");
+                exit(2);
+            }
+        },
+        None => {
+            // 未显式给包清单 → 设备已装第三方包全量。
+            match run_apps_query(&adb, &serial) {
+                Ok(rows) => rows.into_iter().map(|row| row.package).collect(),
+                Err(err) => {
+                    eprintln!("{err}");
+                    exit(2);
+                }
+            }
+        }
+    };
+    let base = data_dir.as_deref().map(PathBuf::from);
+    let mut transport = duo_core::sweep::AdbTransport::new(&adb, &serial);
+    let outcome = duo_core::sweep::render_device_icons(&mut transport, &packages, base.as_deref());
+    let labels: serde_json::Map<String, serde_json::Value> = outcome
+        .labels
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::String(v)))
+        .collect();
+    emit_json(&serde_json::json!({
+        "rendered": outcome.rendered,
+        "labels": labels,
+    }));
 }
 
 /// audio-lock --data-dir <dir> acquire|release|status
