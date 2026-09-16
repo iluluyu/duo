@@ -6,27 +6,25 @@
 //! overlay 的手采样亚克力路线。
 
 pub mod app;
+pub mod backend;
 pub mod blur;
 pub mod fonts;
-pub mod launch;
+pub mod model;
+pub mod pinyin;
+pub mod prefs;
+pub mod sessions;
 pub mod settings_view;
 pub mod theme;
-pub mod tiles;
+pub mod winproc;
 
 use eframe::egui;
 
-/// 窗口形态：对齐 PyQt 面板（420×660，最小 360×520，标题 Duo）。
-pub fn viewport() -> egui::ViewportBuilder {
-    egui::ViewportBuilder::default()
-        .with_title("Duo")
-        .with_inner_size([420.0, 660.0])
-        .with_min_inner_size([360.0, 520.0])
-        // 透明画布：clear_color 带 alpha 才能透出系统 blur。
-        .with_transparent(true)
-}
-
-/// 进程入口（main.rs 只留薄壳）。
+/// 进程入口（main.rs 只留薄壳）：单实例守卫 + egui 运行。
 pub fn run() {
+    if !winproc::single_instance("DuoPanel") {
+        winproc::notify_already_running("Duo 面板已在运行。");
+        return;
+    }
     let options = eframe::NativeOptions {
         viewport: viewport(),
         ..Default::default()
@@ -39,4 +37,14 @@ pub fn run() {
         eprintln!("duo-panel: {err}");
         std::process::exit(1);
     }
+}
+
+/// 窗口形态：对齐 PyQt 面板（420×660，最小 360×520，标题 Duo）。
+pub fn viewport() -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_title("Duo")
+        .with_inner_size([420.0, 660.0])
+        .with_min_inner_size([360.0, 520.0])
+        // 透明画布：clear_color 带 alpha 才能透出系统 blur。
+        .with_transparent(true)
 }

@@ -16,6 +16,7 @@ pub const AUDIO_CHOICES: [&str; 3] = VALID_AUDIO_POLICIES;
 pub const BAR_CHOICES: [&str; 3] = VALID_BAR_MODES;
 pub const THEME_CHOICES: [&str; 3] = VALID_THEMES;
 pub const CODEC_CHOICES: [&str; 4] = VALID_VIDEO_CODECS;
+pub const CORNER_CHOICES: [&str; 3] = duo_core::settings::VALID_CORNER_MODES;
 
 #[derive(Debug)]
 pub struct SettingsPageModel {
@@ -123,6 +124,55 @@ impl SettingsPageModel {
         }
     }
 
+    pub fn set_scrcpy_path(&mut self, path: &str) {
+        self.draft.scrcpy_path = path.trim().to_string();
+        self.touch();
+    }
+
+    pub fn set_adb_path(&mut self, path: &str) {
+        self.draft.adb_path = path.trim().to_string();
+        self.touch();
+    }
+
+    /// dpi：None = 跟随设备（wm density 探测）；Some = 钉死。
+    pub fn set_dpi(&mut self, dpi: Option<i64>) {
+        self.draft.dpi = dpi.map(|d| {
+            d.clamp(
+                duo_core::settings::DPI_RANGE.0,
+                duo_core::settings::DPI_RANGE.1,
+            )
+        });
+        self.touch();
+    }
+
+    pub fn set_render_scale(&mut self, scale: f64) {
+        self.draft.render_scale = scale.clamp(
+            duo_core::settings::RENDER_SCALE_RANGE.0,
+            duo_core::settings::RENDER_SCALE_RANGE.1,
+        );
+        self.touch();
+    }
+
+    pub fn set_corner_mode(&mut self, mode: &str) {
+        if CORNER_CHOICES.contains(&mode) {
+            self.draft.corner_mode = mode.into();
+            self.touch();
+        }
+    }
+
+    pub fn set_corner_size(&mut self, dip: i64) {
+        self.draft.corner_size_dip = dip.clamp(
+            duo_core::settings::CORNER_RANGE.0,
+            duo_core::settings::CORNER_RANGE.1,
+        );
+        self.touch();
+    }
+
+    pub fn set_turn_screen_off(&mut self, on: bool) {
+        self.draft.turn_screen_off = on;
+        self.touch();
+    }
+
     /// 非法枚举静默拒绝（编辑入口只收合法值，非法值进不了草稿）。
     pub fn reject_invalid_enum(&mut self, _s: &str) {}
 }
@@ -187,6 +237,28 @@ mod tests {
         assert_eq!(model.draft.fps, Some(1));
         model.set_bitrate(-5);
         assert_eq!(model.draft.bitrate_mbps, Some(1));
+    }
+
+    #[test]
+    fn extended_edits_roundtrip() {
+        let dir = base("extended");
+        let mut model = SettingsPageModel::load(Some(&dir));
+        model.set_adb_path("C:\\tools\\adb.exe");
+        model.set_scrcpy_path("C:\\tools\\scrcpy.exe");
+        model.set_dpi(None);
+        model.set_render_scale(2.5);
+        model.set_corner_mode("g2");
+        model.set_corner_size(48);
+        model.set_turn_screen_off(true);
+        model.save();
+        let reloaded = SettingsPageModel::load(Some(&dir));
+        assert_eq!(reloaded.draft.adb_path, "C:\\tools\\adb.exe");
+        assert_eq!(reloaded.draft.dpi, None);
+        assert_eq!(reloaded.draft.render_scale, 2.5);
+        assert_eq!(reloaded.draft.corner_mode, "g2");
+        assert_eq!(reloaded.draft.corner_size_dip, 48);
+        assert!(reloaded.draft.turn_screen_off);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
