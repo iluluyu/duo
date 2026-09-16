@@ -12,6 +12,7 @@ pub mod audio_lock;
 pub mod catalog;
 pub mod codec;
 pub mod devices;
+pub mod devicon;
 pub mod engine;
 pub mod host;
 pub mod icongen;
@@ -21,6 +22,7 @@ pub mod monitor;
 pub mod paths;
 pub mod session;
 pub mod settings;
+pub mod sweep;
 
 /// 与 Python `round()` 同语义的四舍五入（银行家舍入：.5 取偶）。
 /// 尺寸计算必须与 Python 实现逐位一致——这些值直接进 scrcpy argv。

@@ -204,13 +204,34 @@ fn unix_now() -> f64 {
 /// stderr 拼接后解析；None = 探测失败（二进制缺失/设备不在/超时）或无可用
 /// 条目——调用方降级为不 pin 的 h264。
 pub fn probe_encoders(scrcpy_path: &str, serial: &str, timeout_s: f64) -> Option<Vec<EncoderInfo>> {
-    let mut child = Command::new(scrcpy_path)
-        .arg(format!("--serial={serial}"))
-        .arg("--list-encoders")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+    // spawn 重试：高负载下偶发 EAGAIN/ENOMEM，重试 3 次（间隔 100ms）。
+    let mut child = None;
+    for attempt in 0..3 {
+        match Command::new(scrcpy_path)
+            .arg(format!("--serial={serial}"))
+            .arg("--list-encoders")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(spawned) => {
+                child = Some(spawned);
+                break;
+            }
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.raw_os_error() == Some(11)
+                    || err.raw_os_error() == Some(12) =>
+            {
+                if attempt == 2 {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => return None,
+        }
+    }
+    let mut child = child?;
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_s.max(0.0));
     loop {
         match child.try_wait() {
