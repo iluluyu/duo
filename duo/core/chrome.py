@@ -152,6 +152,8 @@ def overlay_command(
         pin_file: str | None = None,
         glass: bool = True,
         bar_theme: str = "system",
+        embed: bool = False,
+        embed_style: str = "immersive",
 ) -> list[str]:
         """Assemble the argv that launches the compiled overlay.
 
@@ -195,6 +197,15 @@ def overlay_command(
         ``bar_theme`` (light|dark|system): consumed only by the plain
         material (light #F3F3F3 / dark #202020); ``system`` resolves the
         Windows AppsUseLightTheme registry value inside the overlay.
+
+        ``embed`` (TODO 0.1, 2026-09-13): SetParent 嵌入实验——overlay 不再
+        贴三明治悬浮层，而是建自己的宿主窗口（真系统标题栏/边框/snap）
+        并把 scrcpy 窗口嵌入为子窗口铺满客户区（docs/window-experience.md
+        §14）。嵌入模式下上下巴模式与玻璃材质参数被 C# 侧忽略。
+
+        ``embed_style``: ``immersive``（默认，用户拍板）= 无边框但原生可
+        缩放宿主 + 顶部隐形拖动带/悬停胶囊；``native`` = 真系统标题栏
+        宿主。仅在 embed=True 时随 argv 下发。
         """
         argv = [
                 exe,
@@ -227,6 +238,8 @@ def overlay_command(
                 argv += ["--pin-file", pin_file]
         if corner_radius_dip > 0:
                 argv += ["--corner-radius", str(corner_radius_dip)]
+        if embed:
+                argv += ["--embed", "1", "--embed-style", embed_style]
         return argv
 
 
@@ -330,6 +343,8 @@ class ChromeOverlay:
                 pin_file: Path | None = None,
                 glass: bool = True,
                 bar_theme: str = "system",
+                embed: bool = False,
+                embed_style: str = "immersive",
         ) -> None:
                 self._title = title
                 self._serial = serial
@@ -356,6 +371,8 @@ class ChromeOverlay:
                         pin_file=pin_arg,
                         glass=glass,
                         bar_theme=bar_theme,
+                        embed=embed,
+                        embed_style=embed_style,
                 )
                 self._proc: subprocess.Popen[bytes] | None = None
 

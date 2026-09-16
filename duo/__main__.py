@@ -6,6 +6,7 @@ import argparse
 import signal
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from duo import __version__
@@ -26,6 +27,7 @@ from duo.core.codec import (
         save_encoders_cache,
 )
 from duo.core.devices import DeviceMonitor, poll_query
+from duo.core.duocore import DuoCoreError, SessionProcess, find_duo_core
 from duo.core.engine import (
         REQUIRED_TOOLS,
         DisplaySpec,
@@ -177,6 +179,42 @@ def _resolve_app_title(adb: Adb, package: str) -> str:
                 return package
         print(f"app: {info.label} ({info.package} {info.version_name or ''})", flush=True)
         return info.label
+
+
+def _run_session_via_duo_core(
+        spec: SessionSpec, device_gone: Callable[[], bool],
+) -> int:
+        """0.2.3 第一刀：会话监督下沉 duo-core（--duo-core 显式启用）。
+
+        语义对齐 Session.run：设备拔出返回 2，Ctrl+C 返回 130；overlay/
+        monitor 的编排仍在 Python 侧。"""
+        binary = find_duo_core()
+        if binary is None:
+                raise DuoCoreError(
+                        "--duo-core needs the duo-core binary "
+                        "(DUO_CORE_BIN, rust/target, or tools dir)"
+                )
+        proc = SessionProcess(
+                {
+                        "command": spec.command,
+                        "log_path": str(spec.log_path),
+                        "max_restarts": spec.max_restarts,
+                        "restart_delay_s": spec.restart_delay_s,
+                        "env": spec.env or {},
+                },
+                binary=binary,
+        )
+        proc.start()
+        try:
+                while proc.running:
+                        if device_gone():
+                                proc.stop()
+                                return 2
+                        time.sleep(0.5)
+        except KeyboardInterrupt:
+                proc.stop()
+                return 130
+        return proc.wait()
 
 
 def _run_mirror(args: argparse.Namespace) -> int:
@@ -349,9 +387,12 @@ def _run_mirror(args: argparse.Namespace) -> int:
                 # 窗口（SDL 无边框窗会自己接管 WM_NCCALCSIZE，后加的
                 # WS_CAPTION 永远没有标题带——2026-09-09 真机根因）。
                 # 沉浸/无 上巴仍然无边框 + overlay 胶囊。
-                borderless=args.chrome and borderless_for(
-                        _resolve_bar_mode(
-                                args.chrome_top, settings.top_bar_mode)),
+                # --embed：嵌入模式下 scrcpy 窗口必须是纯表面（宿主窗口
+                # 自带真系统框，子窗口不得再有自己的 caption）。
+                borderless=(args.chrome or args.embed) and (
+                        args.embed or borderless_for(
+                                _resolve_bar_mode(
+                                        args.chrome_top, settings.top_bar_mode))),
         )
         command = engine_args.to_argv(binary=scrcpy_path)
 
@@ -374,7 +415,7 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         # Window chrome: borderless window + Windows-side hover overlay.
         overlay: ChromeOverlay | None = None
-        if args.chrome:
+        if args.chrome or args.embed:
                 if not title:
                         raise ChromeError("--chrome needs a window title: pass --app or --title")
                 # Chin long-press (ring glyph on physical mirroring, back
@@ -418,6 +459,8 @@ def _run_mirror(args: argparse.Namespace) -> int:
                         pin_file=pin_file,
                         glass=_resolve_glass(args.glass, settings.glass_enabled),
                         bar_theme=args.bar_theme or settings.theme,
+                        embed=args.embed,
+                        embed_style=args.embed_style or "immersive",
                 )
                 overlay_log = overlay.start()
                 print(f"chrome overlay log: {overlay_log}", flush=True)
@@ -433,7 +476,11 @@ def _run_mirror(args: argparse.Namespace) -> int:
 
         print("starting engine... (Ctrl+C to stop)", flush=True)
         try:
-                code = session.run(should_stop=device_gone)
+                if args.duo_core:
+                        code = _run_session_via_duo_core(
+                                session.spec, device_gone)
+                else:
+                        code = session.run(should_stop=device_gone)
         finally:
                 monitor.stop()
                 if overlay is not None:
@@ -527,6 +574,30 @@ def _build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="borderless window with hover-revealed edge controls "
                 "(min/max/close, back/home overlay)",
+        )
+        mirror.add_argument(
+                "--embed",
+                action="store_true",
+                help="SetParent embedding experiment (TODO 0.1): the overlay "
+                "builds its own host window (real system caption, frame, "
+                "snap) and embeds the scrcpy window as a child filling the "
+                "client; implies the chrome overlay path with a borderless "
+                "scrcpy window",
+        )
+        mirror.add_argument(
+                "--embed-style",
+                choices=["immersive", "native"],
+                default=None,
+                help="host window style for --embed: immersive (default - "
+                "borderless but natively resizable, hover capsule) or "
+                "native (real system title bar)",
+        )
+        mirror.add_argument(
+                "--duo-core",
+                action="store_true",
+                help="run the engine session under the Rust duo-core binary "
+                "(TODO 0.2.3 first switch; needs DUO_CORE_BIN, rust/target "
+                "build, or the tools-dir deploy)",
         )
         mirror.add_argument(
                 "--chrome-top",

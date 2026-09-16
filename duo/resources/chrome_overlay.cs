@@ -182,6 +182,18 @@ namespace DuoChrome
             uint min, uint max, IntPtr mod, WinEventDelegate proc,
             uint pid, uint tid, uint flags);
         [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr h);
+
+        // -- embed host (TODO 0.1, 2026-09-13) ----------------------------
+        [DllImport("user32.dll")] public static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+        [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] public static extern bool AdjustWindowRectEx(
+            ref RECT r, uint style, bool menu, uint exStyle);
+        [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")] public static extern IntPtr SendMessageW(
+            IntPtr h, uint msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] public static extern bool ReleaseCapture();
     }
 
     internal static class Log
@@ -235,8 +247,9 @@ namespace DuoChrome
             string mode = "flex", sessionLog = null;
             string topMode = "immersive", bottomMode = "immersive";
             string pinFile = null;
-            bool home = false, pinTop = false, glass = true;
+            bool home = false, pinTop = false, glass = true, embed = false;
             string barTheme = "system";
+            string embedStyle = "immersive";
             int videoW = 0, videoH = 0, cornerDip = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
@@ -255,6 +268,8 @@ namespace DuoChrome
                 else if (argv[i] == "--glass") glass = argv[i + 1] == "1";
                 else if (argv[i] == "--bar-theme") barTheme = argv[i + 1];
                 else if (argv[i] == "--pin-file") pinFile = argv[i + 1];
+                else if (argv[i] == "--embed") embed = argv[i + 1] == "1";
+                else if (argv[i] == "--embed-style") embedStyle = argv[i + 1];
             }
             if (title == null || serial == null || adb == null)
             {
@@ -264,7 +279,8 @@ namespace DuoChrome
                     + "[--chrome-top immersive|native|none] "
                     + "[--chrome-bottom immersive|native|none] "
                     + "[--pin-top 0|1] [--pin-file <path>] [--glass 0|1] "
-                    + "[--bar-theme light|dark|system]");
+                    + "[--bar-theme light|dark|system] [--embed 0|1] "
+                    + "[--embed-style immersive|native]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -284,7 +300,20 @@ namespace DuoChrome
                 + " chrome=" + topMode + "/" + bottomMode
                 + " pin=" + (pinTop ? 1 : 0)
                 + " glass=" + (glass ? 1 : 0)
+                + " embed=" + (embed ? 1 : 0)
                 + (sessionLog == null ? "" : " log=" + sessionLog));
+            if (embed)
+            {
+                // TODO 0.1：SetParent 嵌入实验——宿主窗口 + 子窗口，全部
+                // 三明治面（下巴/胶囊/热区）不建。设计与验收见
+                // docs/window-experience.md §14。
+                using (EmbedHost host = new EmbedHost(title, embedStyle))
+                {
+                    Application.Run(host);
+                }
+                Log.Write("overlay exit");
+                return 0;
+            }
             using (Controller c = new Controller(
                 title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip,
                 topMode, bottomMode, pinTop, pinFile, glass, barTheme))
@@ -293,6 +322,564 @@ namespace DuoChrome
             }
             Log.Write("overlay exit");
             return 0;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Embed host (TODO 0.1, 2026-09-13): SetParent embedding instead of the
+    // overlay sandwich. Build our OWN host window - a normal system window:
+    // real caption, resize frame, taskbar entry, snap layouts all free -
+    // and reparent the scrcpy window into it as a WS_CHILD filling the
+    // client. The scrcpy window becomes a pure video surface; every
+    // hand-rolled affordance (edge strips, z-order sandwich,
+    // location-change hooks, taskbar-guard chin) is replaced by the host.
+    // docs/window-experience.md §14.
+    //
+    // Input: clicks land on the child directly; keyboard needs help -
+    // focus follows the HOST on activation, so WM_ACTIVATE/WM_SETFOCUS
+    // forward it to the child through AttachThreadInput (cross-process
+    // SetFocus is rejected without merging the input queues). Drift repair
+    // runs on the tick: SDL may re-assert its own styles after a renderer
+    // reinit, and mirror-mode rotations resize the child - both are pushed
+    // back to "exactly the host client".
+    // -------------------------------------------------------------------------
+    internal sealed class EmbedHost : Form
+    {
+        private const int TickMs = 100;
+        private const int FirstWaitMs = 12000;
+
+        private const int WM_SIZE = 0x0005;
+        private const int WM_ACTIVATE = 0x0006;
+        private const int WM_SETFOCUS = 0x0007;
+        private const int WM_CLOSE = 0x0010;
+        private const int GWL_STYLE = -16;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_CHILD = unchecked((int)0x40000000);
+        private const int WS_POPUP = unchecked((int)0x80000000);
+        private const int WS_CAPTION = 0x00C00000;
+        private const int WS_THICKFRAME = 0x00040000;
+        private const int WS_EX_APPWINDOW = 0x00040000;
+        private const uint SWP_NOZORDER = 0x0004;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+        private const uint SWP_FRAMECHANGED = 0x0020;
+
+        private readonly string _title;
+        private readonly string _style;        // immersive | native
+        private readonly Timer _tick = new Timer();
+        private IntPtr _child = IntPtr.Zero;
+        private EmbedBand _band;               // immersive style only
+        private int _waitedMs;
+        private bool _shown;      // stays invisible until the child is embedded
+        private bool _closing;
+
+        public EmbedHost(string title, string style)
+        {
+            _title = title;
+            _style = "native".Equals(style) ? "native" : "immersive";
+            Text = title;
+            FormBorderStyle = Immersive
+                ? FormBorderStyle.None     // styles patched in CreateParams
+                : FormBorderStyle.Sizable;
+            StartPosition = FormStartPosition.Manual;
+            AutoScaleMode = AutoScaleMode.None;
+            Size = new Size(900, 640);          // replaced at embed time by the scrcpy rect
+            MinimumSize = new Size(360, 300);   // keeps the child clear of SDL's min clamp
+            _tick.Interval = TickMs;
+            _tick.Tick += OnTick;
+            _tick.Start();
+        }
+
+        /// <summary>沉浸式宿主（用户拍板默认）：无边框但可缩放。</summary>
+        private bool Immersive { get { return "immersive".Equals(_style); } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                if (Immersive)
+                {
+                    // Borderless but RESIZABLE: WS_THICKFRAME keeps the
+                    // native resize borders as REAL non-client (never
+                    // covered by the child) -> native edge/corner resize +
+                    // Win11 snap + DWM shadow for free, exactly the family
+                    // the old overlay repaired onto the scrcpy window - but
+                    // here it is OUR WndProc, so native hit-testing works
+                    // (SDL's borderless window eats it, the reason the 9
+                    // EdgeStrips existed). SYSMENU/MIN/MAX keep Alt+Space
+                    // and Win+Up/Win+Down alive.
+                    cp.Style |= 0x00040000   // WS_THICKFRAME
+                              | 0x00080000   // WS_SYSMENU
+                              | 0x00020000   // WS_MINIMIZEBOX
+                              | 0x00010000;  // WS_MAXIMIZEBOX
+                }
+                return cp;
+            }
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            // Hidden until the scrcpy window is found and embedded: the
+            // host must appear ALREADY occupying the scrcpy rect, never as
+            // an empty flash first.
+            if (value && !_shown) value = false;
+            base.SetVisibleCore(value);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (_child != IntPtr.Zero && !_closing)
+            {
+                if (m.Msg == WM_SIZE && !NativeMethods.IsIconic(Handle))
+                {
+                    FillClient(0);
+                    if (_band != null) _band.SyncWidth();
+                }
+                else if (m.Msg == WM_ACTIVATE && (m.WParam.ToInt32() & 0xFFFF) != 0) FocusChild();
+                else if (m.Msg == WM_SETFOCUS) FocusChild();
+            }
+            base.WndProc(ref m);
+        }
+
+        private void OnTick(object sender, EventArgs e)
+        {
+            if (_closing) return;
+            if (_child == IntPtr.Zero)
+            {
+                IntPtr found = NativeMethods.FindWindowW(null, _title);
+                if (found == IntPtr.Zero)
+                {
+                    _waitedMs += TickMs;
+                    if (_waitedMs >= FirstWaitMs)
+                    {
+                        Log.Write("embed: giving up, window never appeared");
+                        Close();
+                    }
+                    return;
+                }
+                _child = found;
+                Embed();
+                return;
+            }
+            if (!NativeMethods.IsWindow(_child))
+            {
+                // scrcpy died (crash, device pull, its own exit): follow it.
+                Log.Write("embed: child gone, closing host");
+                _child = IntPtr.Zero;
+                Close();
+                return;
+            }
+            Glue();
+        }
+
+        private void Embed()
+        {
+            Log.Write("embed: window found hwnd=0x" + _child.ToString("x"));
+            if (!IsHandleCreated) { IntPtr h = Handle; }
+            NativeMethods.RECT r;
+            NativeMethods.GetWindowRect(_child, out r);
+            int cw = Math.Max(200, r.Right - r.Left);
+            int ch = Math.Max(160, r.Bottom - r.Top);
+            // Host outer rect chosen so the CLIENT equals the scrcpy
+            // window's old size: pixel-perfect takeover, the video never
+            // jumps between the standalone window and the embedded one.
+            NativeMethods.RECT want = r;
+            want.Right = want.Left + cw;
+            want.Bottom = want.Top + ch;
+            uint hostStyle = unchecked((uint)NativeMethods.GetWindowLong(Handle, GWL_STYLE));
+            uint hostEx = unchecked((uint)NativeMethods.GetWindowLong(Handle, GWL_EXSTYLE));
+            NativeMethods.AdjustWindowRectEx(ref want, hostStyle, false, hostEx);
+            Bounds = new Rectangle(want.Left, want.Top,
+                want.Right - want.Left, want.Bottom - want.Top);
+
+            NativeMethods.SetParent(_child, Handle);
+            int s = NativeMethods.GetWindowLong(_child, GWL_STYLE);
+            NativeMethods.SetWindowLong(_child, GWL_STYLE,
+                (s & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD);
+            int ex = NativeMethods.GetWindowLong(_child, GWL_EXSTYLE);
+            NativeMethods.SetWindowLong(_child, GWL_EXSTYLE, ex & ~WS_EX_APPWINDOW);
+            if (Immersive)
+            {
+                int round = 2;   // DWMWCP_ROUND (attr 33) - Win11 rounding
+                NativeMethods.DwmSetWindowAttribute(Handle, 33, ref round, 4);
+            }
+            _shown = true;
+            Visible = true;
+            FillClient(SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            if (Immersive)
+            {
+                // The one remaining overlay surface: an invisible-at-rest
+                // caption strip carrying the hover capsule. It lives INSIDE
+                // the host (WS_CHILD) - moves with it for free, no hooks,
+                // no cross-process z-order assertions ever again.
+                _band = new EmbedBand(this);
+                _band.Attach(_child);
+            }
+            Activate();
+            FocusChild();
+            Log.Write("embed: reparented into host style=" + _style);
+        }
+
+        /// <summary>Keep the child glued to "exactly the host client".
+        /// Style drift first (a WS_POPUP child escapes the client clip);
+        /// then the rect (mirror-mode rotation makes scrcpy resize itself).
+        /// GetWindowRect is in SCREEN coords for children too - translate
+        /// the origin through ScreenToClient before comparing.</summary>
+        private void Glue()
+        {
+            if (NativeMethods.IsIconic(Handle)) return;
+            int s = NativeMethods.GetWindowLong(_child, GWL_STYLE);
+            int want = (s & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD;
+            if (s != want)
+            {
+                Log.Write("embed: style drift repaired");
+                NativeMethods.SetWindowLong(_child, GWL_STYLE, want);
+                FillClient(SWP_FRAMECHANGED);
+                return;
+            }
+            NativeMethods.RECT cr;
+            NativeMethods.GetClientRect(Handle, out cr);
+            NativeMethods.RECT wr;
+            NativeMethods.GetWindowRect(_child, out wr);
+            NativeMethods.POINT org;
+            org.X = wr.Left;
+            org.Y = wr.Top;
+            NativeMethods.ScreenToClient(Handle, ref org);
+            if (org.X != 0 || org.Y != 0
+                || (wr.Right - wr.Left) != cr.Right
+                || (wr.Bottom - wr.Top) != cr.Bottom)
+            {
+                FillClient(0);
+            }
+            if (_band != null) _band.AssertAbove(_child);
+        }
+
+        private void FillClient(uint extra)
+        {
+            if (_child == IntPtr.Zero) return;
+            NativeMethods.RECT cr;
+            NativeMethods.GetClientRect(Handle, out cr);
+            if (cr.Right <= 0 || cr.Bottom <= 0) return;
+            NativeMethods.SetWindowPos(_child, IntPtr.Zero, 0, 0, cr.Right, cr.Bottom,
+                SWP_NOZORDER | extra);
+        }
+
+        private void FocusChild()
+        {
+            if (_child == IntPtr.Zero || !NativeMethods.IsWindowVisible(Handle)) return;
+            uint me = NativeMethods.GetCurrentThreadId();
+            uint childPid;
+            uint other = NativeMethods.GetWindowThreadProcessId(_child, out childPid);
+            bool attached = me != other && NativeMethods.AttachThreadInput(me, other, true);
+            try { NativeMethods.SetFocus(_child); }
+            finally { if (attached) NativeMethods.AttachThreadInput(me, other, false); }
+        }
+
+        internal IntPtr HostHandle { get { return Handle; } }
+
+        /// <summary>真实系统拖动：ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION)
+        /// 让 Windows 自己跑移动循环（含 Win11 贴边 snap 预览），非自造拖动引擎。</summary>
+        internal void CaptionDrag()
+        {
+            NativeMethods.ReleaseCapture();
+            NativeMethods.SendMessageW(Handle, 0x00A1 /*WM_NCLBUTTONDOWN*/,
+                (IntPtr)2 /*HTCAPTION*/, IntPtr.Zero);
+        }
+
+        internal void ToggleMaximize()
+        {
+            NativeMethods.ShowWindow(Handle,
+                NativeMethods.IsZoomed(Handle) ? 9 /*SW_RESTORE*/ : 3 /*SW_MAXIMIZE*/);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            _closing = true;
+            if (_child != IntPtr.Zero && NativeMethods.IsWindow(_child))
+            {
+                // Host ✕ takes the whole session down: WM_CLOSE lets
+                // scrcpy tear down adb/server cleanly; Python's Session
+                // then notices the engine exit and stops the overlay.
+                NativeMethods.PostMessageW(_child, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            _tick.Stop();
+            _tick.Dispose();
+            if (_band != null)
+            {
+                _band.Dispose();
+                _band = null;
+            }
+            base.OnFormClosed(e);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // The immersive embed host's caption band: ONE layered child strip at
+    // the top of the host client. At rest fully transparent yet
+    // hit-testable (alpha=1 fill - EdgeStrip precedent), so the strip drags
+    // the window like a caption; on hover it reveals the ─ □ ✕ capsule
+    // (plain DryGlass material v0 - glass sampling can follow if the embed
+    // lands). Living INSIDE the host removes the sandwich's entire
+    // tracking load: geometry is client-relative, moves with the host for
+    // free - no WinEvent hooks, no foreground re-assertions, no tick-driven
+    // z-order fights.
+    // ------------------------------------------------------------------------
+    internal sealed class EmbedBand : Form
+    {
+        public const int LogicalBandH = 40;      // top strip height, DIP
+        private const int LogicalBtn = 30;       // capsule button, DIP
+        private const int LogicalPad = 5;
+        private const int LogicalGap = 6;
+        private const int LogicalMargin = 8;     // capsule right margin, DIP
+        private const int GWL_STYLE = -16;
+        private const int WS_CHILD_STYLE = unchecked((int)0x40000000);
+
+        private static readonly Color Glass = Color.FromArgb(235, 28, 28, 30);
+        private static readonly Color CloseRed = Color.FromArgb(255, 232, 17, 35);
+
+        private readonly EmbedHost _host;
+        private readonly float _dpi;
+        private bool _hover;          // cursor inside the band (capsule revealed)
+        private int _hoverBtn = -1;
+        private bool _pressed;
+        private DateTime _lastClick = DateTime.MinValue;
+        private Point _lastClickPos;
+
+        public EmbedBand(EmbedHost host)
+        {
+            _host = host;
+            Bitmap probe = new Bitmap(1, 1);
+            using (Graphics g = Graphics.FromImage(probe)) _dpi = g.DpiX / 96f;
+            probe.Dispose();
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            AutoScaleMode = AutoScaleMode.None;
+            Size = new Size(900, (int)(LogicalBandH * _dpi));
+            WireInput();
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00080000      // WS_EX_LAYERED
+                            | 0x08000000;     // WS_EX_NOACTIVATE
+                return cp;
+            }
+        }
+
+        /// <summary>Reparent into the host client, directly above the video
+        /// child (HWND_TOP among the host's children), full client width.</summary>
+        public void Attach(IntPtr child)
+        {
+            if (!IsHandleCreated) { IntPtr h = Handle; }
+            NativeMethods.SetParent(Handle, _host.HostHandle);
+            int s = NativeMethods.GetWindowLong(Handle, GWL_STYLE);
+            NativeMethods.SetWindowLong(Handle, GWL_STYLE, s | WS_CHILD_STYLE);
+            NativeMethods.RECT cr;
+            NativeMethods.GetClientRect(_host.HostHandle, out cr);
+            NativeMethods.SetWindowPos(Handle, IntPtr.Zero /*HWND_TOP*/,
+                0, 0, cr.Right, Height, 0x0040 /*SWP_SHOWWINDOW*/);
+            Render();
+        }
+
+        public void SyncWidth()
+        {
+            NativeMethods.RECT cr;
+            NativeMethods.GetClientRect(_host.HostHandle, out cr);
+            if (cr.Right <= 0 || cr.Right == Width) return;
+            NativeMethods.SetWindowPos(Handle, IntPtr.Zero, 0, 0, cr.Right, Height,
+                0x0004 /*SWP_NOZORDER*/ | 0x0040 /*SWP_SHOWWINDOW*/);
+        }
+
+        public void AssertAbove(IntPtr child)
+        {
+            NativeMethods.SetWindowPos(Handle, IntPtr.Zero /*HWND_TOP*/, 0, 0, 0, 0,
+                0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/
+                | 0x0010 /*SWP_NOACTIVATE*/ | 0x0040 /*SWP_SHOWWINDOW*/);
+        }
+
+        private Rectangle CapsuleRect()
+        {
+            int btn = (int)(LogicalBtn * _dpi);
+            int pad = (int)(LogicalPad * _dpi);
+            int gap = (int)(LogicalGap * _dpi);
+            int w = 2 * pad + 3 * btn + 2 * gap;
+            int h = btn + 2 * pad;
+            int x = Width - w - (int)(LogicalMargin * _dpi);
+            int y = (Height - h) / 2;
+            return new Rectangle(x, y, w, h);
+        }
+
+        private Rectangle ButtonRect(int i)
+        {
+            Rectangle c = CapsuleRect();
+            int btn = (int)(LogicalBtn * _dpi);
+            int pad = (int)(LogicalPad * _dpi);
+            int gap = (int)(LogicalGap * _dpi);
+            return new Rectangle(c.X + pad + i * (btn + gap), c.Y + pad, btn, btn);
+        }
+
+        private void Render()
+        {
+            if (Width <= 0 || Height <= 0 || !IsHandleCreated) return;
+            using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.PixelOffsetMode = PixelOffsetMode.Half;
+                    using (SolidBrush ghost = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
+                        g.FillRectangle(ghost, 0, 0, Width, Height);
+                    if (_hover) PaintCapsule(g);
+                }
+                OverlayWindow.PremultiplyAlpha(bmp);
+                Push(bmp);
+            }
+        }
+
+        private void PaintCapsule(Graphics g)
+        {
+            Rectangle c = CapsuleRect();
+            using (GraphicsPath pill = PillPath(c))
+            using (SolidBrush glass = new SolidBrush(Glass))
+            {
+                g.FillPath(glass, pill);
+            }
+            bool zoomed = NativeMethods.IsZoomed(_host.HostHandle);
+            string[] glyphs =
+            {
+                ((char)0xE921).ToString(),                    // ChromeMinimize
+                (zoomed ? (char)0xE923 : (char)0xE922).ToString(), // restore / maximize
+                ((char)0xE8BB).ToString(),                    // ChromeClose
+            };
+            using (Font font = TopWindow.GlyphFont(_dpi))
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    Rectangle b = ButtonRect(i);
+                    if (i == _hoverBtn)
+                    {
+                        using (SolidBrush wash = new SolidBrush(
+                            i == 2 ? CloseRed : Color.FromArgb(10, 0, 0, 0)))
+                            g.FillEllipse(wash, b);
+                    }
+                    Color ink = Color.FromArgb(
+                        (i == 2 || i == _hoverBtn) ? 255 : 230, 255, 255, 255);
+                    OverlayWindow.DrawGlyph(g, glyphs[i], font, b, ink);
+                }
+            }
+        }
+
+        private static GraphicsPath PillPath(Rectangle r)
+        {
+            GraphicsPath p = new GraphicsPath();
+            int d = r.Height;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        private void Push(Bitmap bmp)
+        {
+            IntPtr screen = NativeMethods.GetDC(IntPtr.Zero);
+            IntPtr mem = NativeMethods.CreateCompatibleDC(screen);
+            IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0));
+            IntPtr old = NativeMethods.SelectObject(mem, hbm);
+            try
+            {
+                NativeMethods.SIZE size;
+                size.cx = Width; size.cy = Height;
+                NativeMethods.POINT src;
+                src.X = 0; src.Y = 0;
+                NativeMethods.BLENDFUNCTION blend;
+                blend.BlendOp = 0; blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255; blend.AlphaFormat = 1; // AC_SRC_ALPHA
+                NativeMethods.UpdateLayeredWindow(
+                    Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2);
+            }
+            finally
+            {
+                NativeMethods.SelectObject(mem, old);
+                NativeMethods.DeleteObject(hbm);
+                NativeMethods.DeleteDC(mem);
+                NativeMethods.ReleaseDC(IntPtr.Zero, screen);
+            }
+        }
+
+        private int HitButton(Point p)
+        {
+            for (int i = 0; i < 3; i++)
+                if (ButtonRect(i).Contains(p)) return i;
+            return -1;
+        }
+
+        private void WireInput()
+        {
+            MouseMove += delegate(object s, MouseEventArgs e)
+            {
+                int hit = HitButton(e.Location);
+                if (!_hover || hit != _hoverBtn)
+                {
+                    _hover = true;
+                    _hoverBtn = hit;
+                    Render();
+                }
+                Cursor = hit >= 0 ? Cursors.Hand : Cursors.SizeAll;
+            };
+            MouseLeave += delegate
+            {
+                _hover = false;
+                _hoverBtn = -1;
+                Render();
+            };
+            MouseDown += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) return;
+                if (HitButton(e.Location) >= 0)
+                {
+                    _pressed = true;
+                    return;
+                }
+                // 双击空带 = 最大化切换（HTCAPTION 模态循环会吃掉 WinForms
+                // 的双击事件，只能自己计时判定）。
+                DateTime now = DateTime.Now;
+                bool dbl = (now - _lastClick).TotalMilliseconds
+                        <= SystemInformation.DoubleClickTime
+                    && Math.Abs(e.X - _lastClickPos.X)
+                        < SystemInformation.DoubleClickSize.Width
+                    && Math.Abs(e.Y - _lastClickPos.Y)
+                        < SystemInformation.DoubleClickSize.Height;
+                _lastClick = now;
+                _lastClickPos = e.Location;
+                if (dbl)
+                {
+                    _lastClick = DateTime.MinValue;
+                    _host.ToggleMaximize();
+                    return;
+                }
+                _host.CaptionDrag();
+            };
+            MouseUp += delegate(object s, MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left || !_pressed) return;
+                _pressed = false;
+                int hit = HitButton(e.Location);
+                if (hit == 0) NativeMethods.ShowWindow(_host.HostHandle, 6 /*SW_MINIMIZE*/);
+                else if (hit == 1) _host.ToggleMaximize();
+                else if (hit == 2) NativeMethods.PostMessageW(
+                    _host.HostHandle, 0x0010 /*WM_CLOSE*/, IntPtr.Zero, IntPtr.Zero);
+            };
         }
     }
 
