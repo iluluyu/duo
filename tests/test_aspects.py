@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from duo.core.aspects import (
+from pyduo.core.aspects import (
         ASPECT_PRESETS,
         BODY_LABEL,
         BODY_LANDSCAPE_ID,

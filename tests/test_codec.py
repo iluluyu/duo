@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from duo.core.codec import (
+from pyduo.core.codec import (
         ENCODERS_TTL_S,
         CodecChoice,
         EncoderInfo,

@@ -13,14 +13,14 @@ import pytest
 
 pytest.importorskip("PyQt6.QtCore")
 
-from duo.core import adb as adb_mod  # noqa: E402
-from duo.core.adb import (  # noqa: E402
+from pyduo.core import adb as adb_mod  # noqa: E402
+from pyduo.core.adb import (  # noqa: E402
         MEDIA_VOLUME_MAX,
         clamp_media_volume,
         media_volume,
         media_volume_argv,
 )
-from duo.core.apps import Adb, AdbError  # noqa: E402
+from pyduo.core.apps import Adb, AdbError  # noqa: E402
 
 
 class _RecordingAdb(Adb):

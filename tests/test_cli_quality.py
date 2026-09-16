@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from duo.__main__ import (
+from pyduo.__main__ import (
     _build_parser,
     _resolve_audio,
     _resolve_bar_mode,
     _resolve_screen_off,
 )
-from duo.core.engine import EngineArgs, VideoSpec
+from pyduo.core.engine import EngineArgs, VideoSpec
 
 
 def _audio_argv(audio: bool) -> list[str]:
@@ -159,13 +159,13 @@ class TestVideoCodecArgv:
 
 def test_app_title_degrades_to_package_when_metadata_fails(capsys):
         """元数据失败不得阻断启动：超大 APK（QQ/微信）只降级标题。"""
-        from duo.__main__ import _resolve_app_title
-        from duo.core.apps import Adb, AdbError, AppInfo
+        from pyduo.__main__ import _resolve_app_title
+        from pyduo.core.apps import Adb, AdbError, AppInfo
 
         def boom(adb, package):
                 raise AdbError("com.tencent.mobileqq apk too large (371 MB)")
 
-        import duo.__main__ as cli
+        import pyduo.__main__ as cli
         original = cli.app_info
         cli.app_info = boom
         try:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-from duo.core.apps import (
+from pyduo.core.apps import (
         _NEUTRAL_PLATE,
         _alpha_bbox,
         _compose_adaptive,
@@ -399,7 +399,7 @@ def test_extract_icon_adaptive_layers_beat_legacy_raster(tmp_path, monkeypatch):
 
         from PIL import Image
 
-        import duo.core.apps as apps
+        import pyduo.core.apps as apps
 
         fg = _foreground_layer(200, (116, 116))
         legacy = Image.new("RGBA", (192, 192), (61, 195, 75, 255))
@@ -432,7 +432,7 @@ def test_extract_icon_vector_foreground_falls_back_to_legacy(tmp_path, monkeypat
 
         from PIL import Image
 
-        import duo.core.apps as apps
+        import pyduo.core.apps as apps
 
         legacy = Image.new("RGBA", (192, 192), (255, 255, 255, 255))
         legacy.paste(Image.new("RGBA", (90, 90), (227, 68, 44, 255)), (51, 51))
@@ -465,7 +465,7 @@ def test_extract_icon_raster_runs_normalize(tmp_path):
 
         from PIL import Image
 
-        from duo.core.apps import extract_icon
+        from pyduo.core.apps import extract_icon
 
         source = Image.new("RGBA", (128, 128), (255, 255, 255, 255))
         source.paste(Image.new("RGBA", (64, 64), (30, 100, 220, 255)), (32, 32))
@@ -540,7 +540,7 @@ E: vector (line=6)
 
 def test_resource_xml_file_finds_layer_xml():
         """The vector layer's XML file path resolves from the dump."""
-        from duo.core.apps import resource_xml_file
+        from pyduo.core.apps import resource_xml_file
 
         assert resource_xml_file(RESOURCES, "0x7f080384") is None
         assert resource_xml_file(RESOURCES, "0x7f080385") == "res/drawable/ic_learn_tip_btn.xml"
@@ -548,7 +548,7 @@ def test_resource_xml_file_finds_layer_xml():
 
 def test_parse_vector_tree_groups_and_paths():
         """Viewport, group transforms, fill refs and alpha all come out."""
-        from duo.core.apps import parse_vector_tree
+        from pyduo.core.apps import parse_vector_tree
 
         tree = parse_vector_tree(VECTOR_TREE)
         assert tree is not None
@@ -566,7 +566,7 @@ def test_parse_vector_tree_groups_and_paths():
 
 def test_parse_vector_tree_rejects_non_vector():
         """Adaptive-icon and bitmap xmltrees yield None."""
-        from duo.core.apps import parse_vector_tree
+        from pyduo.core.apps import parse_vector_tree
 
         assert parse_vector_tree(XMLTREE) is None
         assert parse_vector_tree("") is None
@@ -574,7 +574,7 @@ def test_parse_vector_tree_rejects_non_vector():
 
 def test_vector_svg_resolves_colors_and_transforms():
         """Resource-ref fills resolve; packed ints become #AARRGGBB."""
-        from duo.core.apps import parse_vector_tree, vector_svg
+        from pyduo.core.apps import parse_vector_tree, vector_svg
 
         tree = parse_vector_tree(VECTOR_TREE)
         assert tree is not None
@@ -591,7 +591,7 @@ def test_compose_adaptive_accepts_rendered_image_layer():
         """Vector-rendered PIL layers take the raster-bytes slot unchanged."""
         from PIL import Image
 
-        from duo.core.apps import _compose_adaptive
+        from pyduo.core.apps import _compose_adaptive
 
         fg = Image.new("RGBA", (432, 432), (0, 0, 0, 0))
         fg.paste(Image.new("RGBA", (200, 200), (255, 0, 0, 255)), (116, 116))

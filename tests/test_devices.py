@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from duo.core.devices import (
+from pyduo.core.devices import (
         EXIT_DEVICE_LOST,
         DeviceMonitor,
         parse_device_states,

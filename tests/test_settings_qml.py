@@ -40,8 +40,8 @@ from PyQt6.QtCore import (  # noqa: E402
 from PyQt6.QtQml import QQmlComponent, QQmlEngine  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-import duo.core.settings as settings_mod  # noqa: E402
-from duo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
+import pyduo.core.settings as settings_mod  # noqa: E402
+from pyduo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
 
 SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 

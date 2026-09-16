@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import duo.core.chrome as chrome
-from duo.core.chrome import (
+import pyduo.core.chrome as chrome
+from pyduo.core.chrome import (
         ChromeError,
         compile_command,
         overlay_command,
@@ -763,7 +763,7 @@ def test_top_pin_persists_per_app(tmp_path, monkeypatch):
         assert overlay.command[overlay.command.index("--pin-file") + 1] == r"C:\flags\x.flag"
         # CLI wiring: --app sessions read the flag and ship the file path;
         # the device mirror (no --app) stays session-only.
-        from duo import __main__ as cli
+        from pyduo import __main__ as cli
 
         src = __import__("pathlib").Path(cli.__file__).read_text(encoding="utf-8")
         assert "read_top_pin," in src and "top_pin_path," in src
@@ -1044,7 +1044,7 @@ def test_borderless_for_native_top_is_decorated():
 def test_cli_borderless_follows_top_mode():
         """__main__ 把 borderless_for 接到 --chrome 上（native 顶例外）；
         --embed 强制 borderless（TODO 0.1：子窗口必须是纯表面）"""
-        from duo import __main__ as cli
+        from pyduo import __main__ as cli
 
         src = __import__("pathlib").Path(cli.__file__).read_text(encoding="utf-8")
         assert "borderless_for," in src
@@ -1100,7 +1100,7 @@ def test_start_writes_diagnostic_banner(monkeypatch, tmp_path):
         duo 自己的日志目录（chrome-latest.log）——不依赖 overlay 进程的
         %TEMP% 可写性。用户真机测试失败时曾零证据可查（%TEMP% 不可写让
         overlay 自己的诊断日志全部静默丢失）。"""
-        import duo.core.chrome as chrome_mod
+        import pyduo.core.chrome as chrome_mod
 
         monkeypatch.setattr(chrome_mod, "ensure_built", lambda: Path("/x/y.exe"))
         monkeypatch.setattr(chrome_mod, "logs_dir", lambda: tmp_path)
@@ -1323,7 +1323,7 @@ def test_embed_argv_passthrough(monkeypatch):
         assert overlay.command[overlay.command.index("--embed-style") + 1] == "immersive"
         # CLI wiring: --embed implies the overlay path and forces a
         # borderless scrcpy window (pure embed surface).
-        from duo import __main__ as cli
+        from pyduo import __main__ as cli
 
         src = Path(cli.__file__).read_text(encoding="utf-8")
         assert '"--embed"' in src

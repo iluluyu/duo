@@ -62,7 +62,7 @@
 - [ ] **Rust 栈验收（新，优先）**：deploy 双 exe 后真机跑：面板渲染（设备卡/
       固定卡/搜索/网格/右键全菜单/运行卡/Toast/设置页）、会话 spawn（mirror
       argv 与 Python 版一致）、图标 sweep、音频仲裁、单实例提示、退出拖树。
-      rust\scripts\accept_windows.ps1 回填 Duo.exe 路径后复用。
+      src\rustduo\scripts\accept_windows.ps1 回填 Duo.exe 路径后复用。
 - [ ] 按 docs/windows-setup.md 清单正式回填打包版行为（onefile → `C:\Tools\Duo.exe`）
 - [ ] 空 flex 会话（无 `--app`）decorations 开启下的无帧降级体验
 - [ ] 中文输入：uhid 候选窗落物理屏是否复现 → 决定 `--display-ime-policy=local`

@@ -3,7 +3,7 @@
 # Rust 版：Duo.exe = duo-panel.exe，旁边摆 duo-core.exe（同目录探测）。
 $ErrorActionPreference = 'Stop'
 
-$src = if ($args[0]) { $args[0] } else { 'C:\duo\rust\target\release\duo-panel.exe' }
+$src = if ($args[0]) { $args[0] } else { 'C:\duo\src\rustduo\target\release\duo-panel.exe' }
 $core = Join-Path (Split-Path $src) 'duo-core.exe'
 $installDir = "$env:LOCALAPPDATA\Duo"
 $app = Join-Path $installDir 'Duo.exe'

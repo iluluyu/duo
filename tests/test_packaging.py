@@ -12,7 +12,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from duo.ui.app import _bundled_icon
+from pyduo.ui.app import _bundled_icon
 
 SPEC = Path(__file__).resolve().parents[1] / "duo.spec"
 VERIFY = Path(__file__).resolve().parents[1] / "scripts" / "verify_exe_icon.py"

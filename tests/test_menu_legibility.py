@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-STYLE = Path(__file__).resolve().parents[1] / "duo" / "ui" / "qml" / "Style.qml"
+STYLE = Path(__file__).resolve().parents[1] / "src" / "pyduo" / "ui" / "qml" / "Style.qml"
 AA = 4.5
 HALF_COVERAGE_FLOOR = 4.0     # 半覆盖边界（软光晕的梯度最弱处）
 # DESIGN.md 铁律 8 补充的额度：亮色 ≤ 40%（白晕在亮玻璃上更易被看见），

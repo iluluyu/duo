@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duo.core.icon_presets as icon_presets
-from duo.core.catalog import APP_CATALOG, catalog_by_package
-from duo.core.icon_presets import lighten, preset_icon_path, render_preset_svg
+import pyduo.core.icon_presets as icon_presets
+from pyduo.core.catalog import APP_CATALOG, catalog_by_package
+from pyduo.core.icon_presets import lighten, preset_icon_path, render_preset_svg
 
 
 def test_lighten_blends_each_channel_toward_white():

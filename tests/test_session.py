@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from duo.core.session import Session, SessionSpec, display_id_from_log, parse_display_id
+from pyduo.core.session import Session, SessionSpec, display_id_from_log, parse_display_id
 
 
 def _sleep_session(tmp_path: Path) -> Session:

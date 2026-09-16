@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from duo.core import engine
-from duo.core.engine import REQUIRED_TOOLS, ToolInfo, probe, probe_binary
+from pyduo.core import engine
+from pyduo.core.engine import REQUIRED_TOOLS, ToolInfo, probe, probe_binary
 
 
 def test_required_tools_listing():

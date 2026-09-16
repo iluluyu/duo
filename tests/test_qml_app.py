@@ -51,9 +51,9 @@ from PyQt6.QtQml import (  # noqa: E402
 from PyQt6.QtQuick import QQuickItem, QQuickWindow  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-import duo.ui.controller as controller_mod  # noqa: E402
-from duo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
-from duo.ui.controller import APP_CATALOG, MIRROR_KEY, PanelController  # noqa: E402
+import pyduo.ui.controller as controller_mod  # noqa: E402
+from pyduo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
+from pyduo.ui.controller import APP_CATALOG, MIRROR_KEY, PanelController  # noqa: E402
 
 SETTINGS_QML = QML_MAIN.with_name("SettingsPage.qml")
 
@@ -110,7 +110,7 @@ def qapp():
 @pytest.fixture()
 def settings_file(tmp_path, monkeypatch):
         """settings.json under a Chinese + space path (round trip friendly)."""
-        import duo.core.settings as settings_mod
+        import pyduo.core.settings as settings_mod
 
         path = tmp_path / "设 置" / "settings.json"
         monkeypatch.setattr(settings_mod, "settings_path", lambda: path)
@@ -2343,7 +2343,7 @@ def test_mirror_menu_bar_defaults(qapp, no_adb, prefs_stub, settings_file):
         top/bottom_bar_mode（设置页同一对字段）；选中圆点 = 当前默认；
         选择后菜单关闭、状态栏报出、落盘可读。
         """
-        from duo.core import settings as settings_mod
+        from pyduo.core import settings as settings_mod
 
         settings_mod.save_settings(settings_mod.Settings())
         controller = _MirrorSpyController("/nonexistent/adb-for-tests")
@@ -2490,7 +2490,7 @@ def test_mirror_card_media_volume_slider(qapp, no_adb, prefs_stub,
 
 def test_panel_lock_is_single_instance(tmp_path, monkeypatch):
         """run_app's lock: a second acquisition fails until the first unlocks."""
-        import duo.ui.app as app_mod
+        import pyduo.ui.app as app_mod
 
         monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
         first = app_mod._acquire_panel_lock()
@@ -2504,7 +2504,7 @@ def test_panel_lock_is_single_instance(tmp_path, monkeypatch):
 
 def test_run_app_refuses_second_panel(tmp_path, monkeypatch):
         """A refused panel exits 85 and says why - never a silent no-op."""
-        import duo.ui.app as app_mod
+        import pyduo.ui.app as app_mod
 
         monkeypatch.setattr(app_mod, "_panel_lock_path", lambda: tmp_path / "panel.lock")
         messages: list[str] = []

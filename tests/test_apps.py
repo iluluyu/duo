@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from duo.core.apps import (
+from pyduo.core.apps import (
         label_sort_key,
         parse_badging,
         parse_base_apk_path,
@@ -84,7 +84,7 @@ def test_parse_badging_empty_output():
 
 def test_extract_icon_defers_adaptive_xml(tmp_path: Path):
         """Adaptive icon XML references are deferred to the M3 compositing."""
-        from duo.core.apps import extract_icon
+        from pyduo.core.apps import extract_icon
 
         apk = tmp_path / "app.apk"
         with zipfile.ZipFile(apk, "w") as zf:
@@ -95,7 +95,7 @@ def test_extract_icon_defers_adaptive_xml(tmp_path: Path):
 
 def test_extract_icon_missing_entry(tmp_path: Path):
         """A missing icon entry yields None instead of an error."""
-        from duo.core.apps import extract_icon
+        from pyduo.core.apps import extract_icon
 
         apk = tmp_path / "app.apk"
         with zipfile.ZipFile(apk, "w") as zf:
@@ -109,7 +109,7 @@ def test_extract_icon_raster_gets_rounded_mask(tmp_path: Path):
 
         from PIL import Image
 
-        from duo.core.apps import extract_icon
+        from pyduo.core.apps import extract_icon
 
         source = Image.new("RGB", (64, 64), (255, 0, 0))
         buffer = io.BytesIO()
@@ -128,7 +128,7 @@ def test_extract_icon_raster_gets_rounded_mask(tmp_path: Path):
 
 def test_app_info_icon_cache_name_is_versioned(tmp_path: Path, monkeypatch):
         """Icon caches carry the .r20 suffix; apk/metadata caches do not."""
-        import duo.core.apps as apps
+        import pyduo.core.apps as apps
 
         monkeypatch.setattr(apps, "aapt2_ensure", lambda root=None: tmp_path / "aapt2.exe")
         monkeypatch.setattr(
@@ -236,7 +236,7 @@ def test_render_device_icons_caches_and_feeds_app_info(tmp_path: Path):
 
         from PIL import Image
 
-        from duo.core.apps import app_info, parse_renderer_meta, render_device_icons
+        from pyduo.core.apps import app_info, parse_renderer_meta, render_device_icons
 
         artwork = Image.new("RGBA", (432, 432), (18, 184, 104, 255))
         buffer = io.BytesIO()
@@ -305,7 +305,7 @@ def test_render_device_icons_incremental_skips_warm_cache(tmp_path: Path):
 
         from PIL import Image
 
-        from duo.core.apps import render_device_icons
+        from pyduo.core.apps import render_device_icons
 
         artwork = Image.new("RGBA", (432, 432), (18, 184, 104, 255))
         buffer = io.BytesIO()
@@ -354,7 +354,7 @@ def test_render_device_icons_incremental_skips_warm_cache(tmp_path: Path):
 
 def test_render_device_icons_requires_dex(tmp_path: Path, monkeypatch):
         """No dex on disk -> False, nothing crashes."""
-        from duo.core.apps import render_device_icons
+        from pyduo.core.apps import render_device_icons
 
         class FakeAdb:
                 serial = "fake"
@@ -368,5 +368,5 @@ def test_render_device_icons_requires_dex(tmp_path: Path, monkeypatch):
                 def shell(self, command: str, timeout: float = 0.0) -> str:
                         return ""
 
-        monkeypatch.setattr("duo.core.apps._RENDER_DEX", tmp_path / "missing.dex")
+        monkeypatch.setattr("pyduo.core.apps._RENDER_DEX", tmp_path / "missing.dex")
         assert render_device_icons(FakeAdb(), ["a.b.c"], tmp_path) is False

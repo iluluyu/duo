@@ -29,9 +29,9 @@ REPO = SPECPATH
 #   embeds the exe resource (Explorer view); the taskbar/title-bar icon
 #   comes from Qt at runtime, so the file must also ship and app.py sets it.
 datas = [
-    (os.path.join(REPO, "duo/ui/qml"), "duo/ui/qml"),
-    (os.path.join(REPO, "duo/resources/chrome_overlay.cs"), "duo/resources"),
-    (os.path.join(REPO, "duo/resources/duo_icons.dex"), "duo/resources"),
+    (os.path.join(REPO, "src/pyduo/ui/qml"), "pyduo/ui/qml"),
+    (os.path.join(REPO, "src/pyduo/resources/chrome_overlay.cs"), "pyduo/resources"),
+    (os.path.join(REPO, "src/pyduo/resources/duo_icons.dex"), "pyduo/resources"),
     (os.path.join(REPO, "assets/duo.ico"), "assets"),
 ]
 

@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "src"))
 
 from PyQt6 import sip  # noqa: E402
 from PyQt6.QtCore import QEventLoop, QObject, QTimer, QUrl  # noqa: E402
@@ -35,10 +35,10 @@ from PyQt6.QtGui import QGuiApplication  # noqa: E402
 from PyQt6.QtQml import QQmlApplicationEngine  # noqa: E402
 from PyQt6.QtQuick import QQuickWindow  # noqa: E402
 
-import duo.core.settings as settings_mod  # noqa: E402
-import duo.ui.controller as controller_mod  # noqa: E402
-from duo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
-from duo.ui.controller import APP_CATALOG, PanelController  # noqa: E402
+import pyduo.core.settings as settings_mod  # noqa: E402
+import pyduo.ui.controller as controller_mod  # noqa: E402
+from pyduo.ui.app import QML_MAIN, SettingsApi  # noqa: E402
+from pyduo.ui.controller import APP_CATALOG, PanelController  # noqa: E402
 
 OUT = REPO / "docs" / "validation" / "assets"
 TMP = Path(tempfile.mkdtemp(prefix="duo_qml_shots_"))
