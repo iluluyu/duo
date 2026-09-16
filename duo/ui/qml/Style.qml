@@ -81,6 +81,15 @@ QtObject {
     readonly property real menuContrastHi: root.dark ? 0.10 : 0.10
     /// 菜单 1px 描边（软件回退路径；暗底翻白）
     readonly property color menuFillBorder: root.dark ? "#1AFFFFFF" : "#1A000000"
+    /// 菜单文字保底光晕（vibrancy）：字形的模糊剪影垫在清晰文字后面，
+    /// 底景与墨色同调时托住字形边界；底景同调 / 主题画布上不可见，
+    /// 且不碰字形轮廓（字重零改动，与 Text.Outline 的 +18% 墨迹量相反）。
+    /// alpha = 强度（规则上限 45%，见 DESIGN.md 铁律 8 补充）；
+    /// blur × blurMax = 模糊半径（亮 0.35×16 ≈ 5.6px ≈ σ 2.8 / 暗同）。
+    /// 配方、实测与候选对比见 docs/ui/glass-recipe.md §7。
+    readonly property color menuInkHalo: root.dark ? "#80000000" : "#61FFFFFF"
+    readonly property real menuHaloBlur: 0.35
+    readonly property int menuHaloBlurMax: 16
     /// 浮层圆角（DESIGN.md §2：浮层 12）。
     readonly property int flyoutRadius: 12
     /// 控件圆角（条目 / 洗色块等，DESIGN.md §2：控件 10）。

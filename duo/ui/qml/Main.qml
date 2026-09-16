@@ -714,7 +714,7 @@ ApplicationWindow {
                             color: densityDec.pressed ? Style.pressWash
                                 : (densityDec.hovered ? Style.hoverWash : "transparent")
                         }
-                        contentItem: Text {
+                        contentItem: MenuLabel {
                             anchors.centerIn: parent
                             text: "−"
                             font.pixelSize: 14
@@ -796,7 +796,7 @@ ApplicationWindow {
                             color: densityInc.pressed ? Style.pressWash
                                 : (densityInc.hovered ? Style.hoverWash : "transparent")
                         }
-                        contentItem: Text {
+                        contentItem: MenuLabel {
                             anchors.centerIn: parent
                             text: "+"
                             font.pixelSize: 14
@@ -925,7 +925,7 @@ ApplicationWindow {
                             color: scaleDec.pressed ? Style.pressWash
                                 : (scaleDec.hovered ? Style.hoverWash : "transparent")
                         }
-                        contentItem: Text {
+                        contentItem: MenuLabel {
                             anchors.centerIn: parent
                             text: "−"
                             font.pixelSize: 14
@@ -967,7 +967,7 @@ ApplicationWindow {
                             color: scaleInc.pressed ? Style.pressWash
                                 : (scaleInc.hovered ? Style.hoverWash : "transparent")
                         }
-                        contentItem: Text {
+                        contentItem: MenuLabel {
                             anchors.centerIn: parent
                             text: "+"
                             font.pixelSize: 14
@@ -1561,6 +1561,41 @@ ApplicationWindow {
         }
     }
 
+    // 菜单玻璃上的文字：保底光晕 = 字形模糊剪影（同向低 alpha）垫在清晰文字
+    // 后面——清晰文字走正常光栅路径，字重零改动、无硬边（1px 硬描边版会把
+    // 墨迹量抬 +18%，已弃）。玻璃关/软件回退时整条光晕路径不跑。
+    // 配方与实测见 docs/ui/glass-recipe.md §7，规则见 DESIGN.md 铁律 8 补充。
+    component MenuLabel: Item {
+        id: ml
+        property alias text: mlInk.text
+        property alias font: mlInk.font
+        property color color: Style.ink
+        implicitWidth: mlInk.implicitWidth
+        implicitHeight: mlInk.implicitHeight
+
+        Text {
+            id: mlHalo
+            text: ml.text
+            font: ml.font
+            color: Style.menuInkHalo
+            visible: Style.menuGlass
+            layer.enabled: Style.menuGlass
+            layer.sourceRect: Qt.rect(-8, -8, width + 16, height + 16)
+            layer.effect: MultiEffect {
+                blurEnabled: true
+                blurMax: Style.menuHaloBlurMax
+                blur: Style.menuHaloBlur
+                autoPaddingEnabled: false
+            }
+        }
+        Text {
+            id: mlInk
+            text: ml.text
+            font: ml.font
+            color: ml.color
+        }
+    }
+
     // 上下文菜单普通条目：高 32、圆角 10、hover 洗色、无图标（文字自解释，
     // DESIGN.md §3.6）。文字左对齐菜单边缘 12（x4 + 内 8）。
     component MenuRow: AbstractButton {
@@ -1575,7 +1610,7 @@ ApplicationWindow {
             Behavior on color { ColorAnimation { duration: Style.durFast } }
         }
         contentItem: Item {
-            Text {
+            MenuLabel {
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 text: mrow.text
@@ -1612,7 +1647,7 @@ ApplicationWindow {
                 dotSize: 4
                 dotColor: Style.accent
             }
-            Text {
+            MenuLabel {
                 x: 20
                 anchors.verticalCenter: parent.verticalCenter
                 text: crow.text
@@ -1643,14 +1678,14 @@ ApplicationWindow {
             Behavior on color { ColorAnimation { duration: Style.durFast } }
         }
         contentItem: Item {
-            Text {
+            MenuLabel {
                 x: 20
                 anchors.verticalCenter: parent.verticalCenter
                 text: srow.text
                 font.pixelSize: 13
                 color: Style.ink
             }
-            Text {
+            MenuLabel {
                 anchors.right: parent.right
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
@@ -1675,7 +1710,7 @@ ApplicationWindow {
         x: 4
         width: parent.width - 8
         implicitHeight: 20
-        Text {
+        MenuLabel {
             objectName: msl.textName
             x: 8
             anchors.verticalCenter: parent.verticalCenter
@@ -1729,7 +1764,7 @@ ApplicationWindow {
                 dotSize: 4
                 dotColor: Style.accent
             }
-            Text {
+            MenuLabel {
                 x: 20
                 anchors.verticalCenter: parent.verticalCenter
                 text: arow.text
@@ -1798,7 +1833,7 @@ ApplicationWindow {
                 dotSize: 4
                 dotColor: Style.accent
             }
-            Text {
+            MenuLabel {
                 x: 20
                 anchors.verticalCenter: parent.verticalCenter
                 text: brow.text

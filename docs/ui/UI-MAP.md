@@ -59,6 +59,7 @@
 
 - [DESIGN.md](DESIGN.md)——验收标准（铁律、令牌、组件规范、性能预算）
 - [glass-recipe.md](glass-recipe.md)——菜单毛玻璃算法与配方（MenuGlassPlate 唯一论述）
+- [RESEARCH-LEGIBILITY.md](RESEARCH-LEGIBILITY.md)——玻璃上的文字可读性：Apple/微软/社区做法与文字保底光晕的推导
 - [../window-experience.md](../window-experience.md)——会话窗行为规范；§10 窗口栏三态与 z 序定稿（**改上巴前必读**）
 - [RESEARCH-ICONS.md](RESEARCH-ICONS.md)——图标获取/统一化调研与法律边界（**改图标前必读**）
 - [RESEARCH.md](RESEARCH.md)——UI 优化起点的事实底账
@@ -107,6 +108,7 @@ glass-recipe.md。
 | `AppTile` | 92×102 磁贴 | hover 只洗图标区；★ 置顶角标（`pinButton`，常显/hover 露出） |
 | `PinnedIcon` | 固定卡 44px 小图标 | 语义与磁贴一致 |
 | `MenuGlassPlate` | 四枚菜单共用毛玻璃底板 | 三明治结构，硬规则见 glass-recipe.md |
+| `MenuLabel` | 菜单玻璃上的文字 | 双层：模糊剪影保底层（同向低 alpha，仅玻璃路径）+ 清晰正文层（字重零改动），见 glass-recipe.md §7 |
 | `MenuRow` / `MenuCheckRow` / `MenuSubmenuRow` | 菜单条目 | 高 32、圆角 10、凹槽栅格（圆点 x8 / 文字 x20） |
 | `MenuSectionLabel` | 菜单小节头 | 高 20、11px 次色；objectName 可换名 |
 | `AspectMenuRow` + `AspectPickEntry` | 比例条目 | 高 28、圆角 8、右侧 SVG 示意矩形（2× 生成抗锯齿） |
