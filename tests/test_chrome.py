@@ -160,8 +160,9 @@ def test_native_sandwich_paint_markers():
         # 2026-09-10 渲染修复：ULW 要预乘 alpha（GDI+ 直通 alpha 被抬亮
         # = "灰线锯齿"元凶），三处上屏（PushLayered/PushGhost/
         # PushGhostBitmap）必经 PremultiplyAlpha；字形走 GDI+ DrawGlyph
-        # （AntiAliasGridFit），GDI 文本 alpha 盲不得回流。
-        assert text.count("PremultiplyAlpha(bmp)") == 3
+        # （AntiAliasGridFit），GDI 文本 alpha 盲不得回流。2026-09-13 起
+        # 第四处：EmbedBand（沉浸式嵌入宿主的胶囊带）同样预乘。
+        assert text.count("PremultiplyAlpha(bmp)") == 4
         assert "AntiAliasGridFit" in text
         assert "TextRenderer.DrawText" not in text
         # Adaptive pill: dark rgba(29,29,31,.40) / white rgba(255,255,255,
@@ -1041,12 +1042,14 @@ def test_borderless_for_native_top_is_decorated():
 
 
 def test_cli_borderless_follows_top_mode():
-        """__main__ 把 borderless_for 接到 --chrome 上（native 顶例外）"""
+        """__main__ 把 borderless_for 接到 --chrome 上（native 顶例外）；
+        --embed 强制 borderless（TODO 0.1：子窗口必须是纯表面）"""
         from duo import __main__ as cli
 
         src = __import__("pathlib").Path(cli.__file__).read_text(encoding="utf-8")
         assert "borderless_for," in src
-        assert "borderless=args.chrome and borderless_for(" in src
+        assert "borderless=(args.chrome or args.embed) and (" in src
+        assert "args.embed or borderless_for(" in src
 
 
 def test_build_is_fresh_matches_stamp(tmp_path):
@@ -1190,3 +1193,141 @@ def test_chrome_overlay_compiles_with_real_csc():
                 (proc.stdout + proc.stderr)[-2000:].decode("gbk", "replace"),
         )
         out.unlink(missing_ok=True)
+
+
+def test_embed_host_source_contract():
+        """TODO 0.1（2026-09-13）SetParent 嵌入实验的源码合同：--embed 1 时
+        overlay 不建任何三明治面，改走 EmbedHost——自己的宿主窗口（真系统
+        caption/边框/snap/taskbar 白拿）+ scrcpy 窗口 SetParent 进来当
+        WS_CHILD 铺满客户区（docs/window-experience.md §14）：
+
+          - 宿主隐身等待：发现并嵌入 scrcpy 窗口前不显示（SetVisibleCore
+            拦截，杜绝先闪一个空窗）；
+          - 像素级接管：AdjustWindowRectEx 反推外框使客户区 = scrcpy 原
+            窗口尺寸，视频零跳变；
+          - 样式手术：剥 WS_POPUP/WS_CAPTION/WS_THICKFRAME + 加 WS_CHILD
+            + 清 WS_EX_APPWINDOW（宿主独占任务栏）；tick 上 Glue 防漂移
+            （SDL 渲染器重建可能自我复辟样式；镜像转屏会自改尺寸）；
+          - 焦点转发：WM_ACTIVATE/WM_SETFOCUS → AttachThreadInput 合并
+            输入队列后 SetFocus 子窗口（跨进程 SetFocus 直接调用必拒）；
+          - 尺寸跟随：WM_SIZE → FillClient（最小化跳过）；子窗口坐标经
+            ScreenToClient 折算再比对（GetWindowRect 对子窗返回屏幕坐标）；
+          - 生命周期：宿主 ✕ → WM_CLOSE 送 scrcpy（干净拆 adb/server，
+            Python Session 察觉引擎退出）；子窗口消亡 → 宿主自杀；窗口
+            12s 不出现放弃退出。
+        """
+        text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
+        # argv: pair-loop parsing + usage banner; Program.Main runs the
+        # EmbedHost INSTEAD of the Controller sandwich.
+        assert 'argv[i] == "--embed"' in text
+        assert 'argv[i] == "--embed-style"' in text
+        assert "[--embed 0|1]" in text
+        assert "[--embed-style immersive|native]" in text
+        assert "bool home = false, pinTop = false, glass = true, embed = false;" in text
+        assert "string embedStyle = \"immersive\";" in text
+        assert "using (EmbedHost host = new EmbedHost(title, embedStyle))" in text
+        # Host class + hidden-until-embed + pixel-perfect takeover.
+        assert "internal sealed class EmbedHost : Form" in text
+        assert "if (value && !_shown) value = false;" in text
+        assert "AdjustWindowRectEx" in text
+        # Reparent + style surgery, re-applied on drift.
+        assert "NativeMethods.SetParent(_child, Handle);" in text
+        surgery = "(s & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD"
+        assert surgery in text
+        assert "ex & ~WS_EX_APPWINDOW" in text
+        assert "Glue()" in text and "style drift repaired" in text
+        # Focus forwarding through merged input queues.
+        assert "AttachThreadInput(me, other, true)" in text
+        assert "NativeMethods.SetFocus(_child);" in text
+        assert "(m.WParam.ToInt32() & 0xFFFF) != 0) FocusChild();" in text
+        assert "m.Msg == WM_SETFOCUS) FocusChild();" in text
+        # Size following + child-rect comparison in parent space.
+        assert "if (m.Msg == WM_SIZE && !NativeMethods.IsIconic(Handle))" in text
+        assert "FillClient(0);" in text
+        assert "NativeMethods.ScreenToClient(Handle, ref org);" in text
+        # Lifecycle both directions.
+        assert "PostMessageW(_child, WM_CLOSE, IntPtr.Zero, IntPtr.Zero)" in text
+        assert '"embed: child gone, closing host"' in text
+        assert '"embed: giving up, window never appeared"' in text
+
+
+def test_embed_immersive_host_contract():
+        """沉浸式嵌入宿主（TODO 0.1 v2，用户拍板默认 immersive）：无边框但
+        原生可缩放 + 一条住在宿主内的隐形拖动带/悬停胶囊。
+
+          - 宿主样式：WS_THICKFRAME|WS_SYSMENU|MIN/MAXBOX 加在无边框窗上
+            （缩放边是真非客户区，不被子窗盖住 → 原生边/角缩放 + Win11
+            snap + 阴影，不需要 EdgeStrip 热区）；DWMWCP_ROUND 圆角；
+          - EmbedBand 是宿主的 WS_CHILD 分层条：静止 alpha=1 纯热区
+            （EdgeStrip 先例），悬停露 ─ □ ✕ 胶囊（v0 干底纯材质，玻璃
+            采样待嵌入方案定型后再上）；几何相对客户区，随宿主免费移动
+            ——零 WinEvent 钩子、零跨进程 z 序断言；
+          - 拖动 = ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION) 真系统移动
+            循环（含贴边 snap 预览）；双击空带 = 最大化切换（模态循环会
+            吃掉 WinForms 双击，自己计时判定）；
+          - 键盘链路保留：Alt+Space 系统菜单、Win+Up/Down（SYSMENU +
+            MIN/MAXBOX）。
+        """
+        text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
+        # Immersive is the default; native is the opt-in variant.
+        assert '_style = "native".Equals(style) ? "native" : "immersive";' in text
+        assert 'string embedStyle = "immersive";' in text
+        # Borderless-but-resizable host styles + Win11 rounding.
+        assert "cp.Style |= 0x00040000   // WS_THICKFRAME" in text
+        assert "| 0x00080000   // WS_SYSMENU" in text
+        assert "| 0x00020000   // WS_MINIMIZEBOX" in text
+        assert "| 0x00010000;  // WS_MAXIMIZEBOX" in text
+        assert "int round = 2;   // DWMWCP_ROUND (attr 33) - Win11 rounding" in text
+        # The band: one layered child strip, hot zone at rest.
+        assert "internal sealed class EmbedBand : Form" in text
+        assert "Color.FromArgb(1, 0, 0, 0)" in text
+        assert "NativeMethods.SetParent(Handle, _host.HostHandle);" in text
+        assert "s | WS_CHILD_STYLE" in text
+        # Real system drag via HTCAPTION (no self-made move engine).
+        assert "internal void CaptionDrag()" in text
+        assert "NativeMethods.ReleaseCapture();" in text
+        assert "0x00A1 /*WM_NCLBUTTONDOWN*/" in text
+        assert "(IntPtr)2 /*HTCAPTION*/" in text
+        # Capsule actions: min / max-toggle (IsZoomed) / close via host WM_CLOSE.
+        assert "_host.HostHandle, 6 /*SW_MINIMIZE*/" in text
+        assert "internal void ToggleMaximize()" in text
+        assert "? 9 /*SW_RESTORE*/ : 3 /*SW_MAXIMIZE*/" in text
+        assert "_host.HostHandle, 0x0010 /*WM_CLOSE*/" in text
+        # Double-click on the empty band toggles maximize (manual timing,
+        # the modal drag loop eats WinForms double-clicks).
+        assert "SystemInformation.DoubleClickTime" in text
+        # Glyph reuse from the family (minimize/maximize-restore/close).
+        assert "TopWindow.GlyphFont(_dpi)" in text
+        assert "OverlayWindow.DrawGlyph" in text
+        assert "OverlayWindow.PremultiplyAlpha(bmp);" in text
+        # Band z re-assert rides the existing Glue tick (local, cheap).
+        assert "_band.AssertAbove(_child);" in text
+        assert "_band.SyncWidth();" in text
+
+
+def test_embed_argv_passthrough(monkeypatch):
+        """--embed 的 Python 侧闭环：overlay_command 默认不传，embed=True
+        追加 ["--embed","1"]；ChromeOverlay 透传；CLI --embed 蕴含 chrome
+        路径并强制 borderless（子窗口必须是纯表面）。"""
+        argv = overlay_command("/x.exe", "t", "s", "a", False)
+        assert "--embed" not in argv
+        argv = overlay_command("/x.exe", "t", "s", "a", False, embed=True)
+        assert argv[argv.index("--embed") + 1] == "1"
+        assert argv[argv.index("--embed-style") + 1] == "immersive"
+        argv = overlay_command(
+                "/x.exe", "t", "s", "a", False, embed=True, embed_style="native")
+        assert argv[argv.index("--embed-style") + 1] == "native"
+        monkeypatch.setattr(chrome, "ensure_built", lambda: Path("/x/y.exe"))
+        overlay = chrome.ChromeOverlay(
+                title="t", serial="s", adb_path="adb", embed=True)
+        assert overlay.command[overlay.command.index("--embed-style") + 1] == "immersive"
+        # CLI wiring: --embed implies the overlay path and forces a
+        # borderless scrcpy window (pure embed surface).
+        from duo import __main__ as cli
+
+        src = Path(cli.__file__).read_text(encoding="utf-8")
+        assert '"--embed"' in src
+        assert "if args.chrome or args.embed:" in src
+        assert "args.embed or borderless_for(" in src
+        assert "embed=args.embed," in src
+        assert "embed_style=args.embed_style or \"immersive\"" in src

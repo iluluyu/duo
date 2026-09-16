@@ -574,3 +574,91 @@ C#。关玻璃的普通材质（Opus 配方）：
   （bright +0.05/+0.07、contrast +0.08/+0.10）、玻璃开关的「菜单即时 /
   窗口栏 per-launch」不同步性（独立进程 argv 语义，与窗口栏模式一致）、
   音量图标 ink2 4.7:1 与未知态滑块无拇指（均保留）。
+
+## §14 SetParent 嵌入实验（2026-09-13，TODO 0.1）
+
+> 路线背景见 TODO.md §0：嵌入是对 overlay 机制的思想升级，**不依赖技术
+> 栈切换**——先在现有 C# 上验证（一两次实验量级），见到效果再决定投入
+> （Rust 第一档/第二档）。
+
+### 思想
+
+三明治方案（§9-§13）本质是"贴悬浮窗"：每个操作面（下巴/胶囊/热区条/
+侧带）都是独立 HWND，需要 z 序插入、LOCATIONCHANGE 钩子、50ms tick、
+任务栏守卫、模拟最大化……全套手工共置逻辑。嵌入方案反过来：**overlay
+建自己的宿主窗口**（真系统窗口：caption、缩放边框、snap layouts、
+任务栏、最小化/最大化全部白拿），然后把 scrcpy 窗口 `SetParent` 进来当
+`WS_CHILD` 铺满客户区。scrcpy 窗口退化为纯视频表面；宿主移动/缩放时
+子窗口**自动跟随**（子窗口坐标系免费），全部共置逻辑被"父子关系"一个
+原语替代。
+
+### 实现合同（chrome_overlay.cs `EmbedHost`，`--embed 1`）
+
+- 入口：`Program.Main` 解析 `--embed 0|1`；为 1 时改走
+  `EmbedHost`，**不建任何三明治面**（Controller/下巴/胶囊/热区全部跳过）。
+- 隐身等待：宿主 `SetVisibleCore` 拦截首次显示——找到并嵌入 scrcpy
+  窗口前不亮相（杜绝先闪一个空窗再跳变的观感）；12s 不出现则放弃退出。
+- 像素级接管：嵌入时以 scrcpy 原窗口矩形为客户区目标，
+  `AdjustWindowRectEx` 反推宿主外框——宿主亮相的瞬间视频零跳变。
+- 样式手术：`SetParent` 后剥 `WS_POPUP|WS_CAPTION|WS_THICKFRAME`、
+  加 `WS_CHILD`、清 `WS_EX_APPWINDOW`（任务栏只有宿主一个条目）；
+  Python 侧 `--embed` 强制 scrcpy `--window-borderless`（子窗口必须是
+  纯表面，SDL 带框窗自己接管 WM_NCCALCSIZE 补不出/去不掉 caption）。
+- 焦点转发：键盘焦点天然落在宿主上（子窗口不是激活目标）——
+  `WM_ACTIVATE`/`WM_SETFOCUS` 里 `AttachThreadInput` 合并两进程输入
+  队列后 `SetFocus` 子窗口（跨进程直接 SetFocus 必被拒）。鼠标不需要
+  帮忙：点击落在子窗口上，Win32 默认把焦点交给被点窗口。
+- 尺寸跟随：宿主 `WM_SIZE` → `FillClient`（最小化跳过，客户区无效时
+  跳过）；flex 虚拟屏跟随链路 = 宿主 resize → 子窗口 MoveWindow →
+  子窗口 WM_SIZE → scrcpy 看到新尺寸 → display 跟随（全原有管线）。
+- 漂移修复：tick（100ms）上的 `Glue()`——SDL 渲染器重建可能自我复辟
+  样式（`WS_POPUP` 子窗会逃出客户区裁剪）；镜像转屏时 scrcpy 自改窗
+  尺寸。两者都被推回"恰好等于宿主客户区"。子窗坐标经 `ScreenToClient`
+  折算再比对（`GetWindowRect` 对子窗返回**屏幕**坐标，直比必误判）。
+- 生命周期：宿主 ✕ → `WM_CLOSE` 送 scrcpy（干净拆 adb/server，Python
+  `Session` 察觉引擎退出后 stop overlay）；子窗口消亡（崩溃/设备拔出）
+  → 宿主自杀；`_closing` 闸门防 tick 在拆窗竞态里重新发现垂死窗口。
+
+### Python 侧接线
+
+`duo mirror --embed`（蕴含 chrome 路径）：`overlay_command` 追加
+`--embed 1`；`borderless` 强制真（见上）；面板（ui/controller.py）暂不
+接线——实验验证通过后再上。
+
+### 验收清单（Windows 真机，TODO 0.1 完成标准）
+
+1. 视频正常渲染（子窗口内 D3D/GL 无黑屏、无残影）；
+2. 鼠标点击/拖拽注入正常（含 scrcpy 右键 BACK）；
+3. 键盘：点宿主标题栏后打字仍进设备（焦点转发生效）；
+4. 拖宿主边缘缩放：flex 跟随不中断、无撕裂；拖角/贴边 snap layouts；
+5. 最大化/最小化/还原/任务栏/Alt-Tab 全链路（任务栏单条目）；
+6. 宿主 ✕ 与设备拔出双向拆链（进程组干净退出、无孤儿 scrcpy）；
+7. 对比基线：与三明治模式（immersive/native）同场景帧率/流畅度手感。
+
+### 已知观察项（实验阶段先记录不修）
+
+- 混合 DPI 感知：宿主进程 `SetProcessDPIAware`（系统级），SDL 为
+  per-monitor——同显示器无碍，跨不同缩放的多显示器行为待真机观察。
+- scrcpy 自身快捷键（MOD+f 全屏等）作用在子窗口上，行为待观察。
+- IME（uhid 键盘）候选窗仍落在物理屏，与既有 TODO 项合并观察。
+
+### 沉浸式宿主（v2，2026-09-13 用户拍板默认）
+
+用户偏好沉浸式（无标题栏），嵌入宿主两档：
+
+- **immersive（默认）**：宿主无边框但 `WS_THICKFRAME|WS_SYSMENU|MIN/MAXBOX`
+  ——缩放边是真非客户区、不被子窗盖住，**原生边/角缩放 + Win11 snap +
+  阴影 + DWMWCP_ROUND 圆角全部白拿**（SDL 无边框窗吃掉 NC 命中测试才需要
+  9 条 EdgeStrip，自己的 WndProc 没这个问题）。键盘链路保留：Alt+Space
+  系统菜单、Win+Up/Down。
+- **native**：真系统标题栏（v1 形态，`--embed-style native`）。
+
+沉浸式的标题栏操作面 = **EmbedBand**：一条住在宿主内的 WS_CHILD 分层条
+（顶部 40 DIP）——静止 alpha=1 纯热区（EdgeStrip 先例，不可见但可命中），
+拖动空带 = `ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION)` 真系统移动循环
+（贴边 snap 预览原样生效）；悬停露出 ─ □ ✕ 胶囊（v0 干底纯材质
+#1C1C1E@92%，玻璃采样待方案定型再上；字形复用 GlyphFont/DrawGlyph）；
+双击空带 = 最大化切换（模态拖动会吃掉 WinForms 双击事件，自己计时判定）。
+**住在宿主内 = 几何相对客户区、随宿主免费移动**：零 WinEvent 钩子、零
+前台 z 序重断言、零 tick 跟随（唯一保留的 tick 动作是本地兄弟 z 序
+AssertAbove 与漂移 Glue）。
