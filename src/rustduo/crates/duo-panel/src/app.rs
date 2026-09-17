@@ -28,6 +28,7 @@ use crate::prefs::{
 use crate::sessions::{panel_log_path, session_label, Sessions, MIRROR_KEY};
 use crate::settings_view::SettingsPageModel;
 use crate::theme::{ThemeKind, Tokens};
+use crate::winproc;
 
 /// 两页常驻（胶囊即导航）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,7 +385,7 @@ impl PanelApp {
             } else {
                 path.clone()
             };
-            let out = std::process::Command::new(&bin)
+            let out = winproc::quiet_command(&bin)
                 .arg("--version")
                 .output()
                 .map_err(|_| "无法运行".to_string())?;
@@ -660,7 +661,7 @@ impl PanelApp {
             }
         }
         let serial = self.serial()?;
-        let output = std::process::Command::new(&self.adb)
+        let output = winproc::quiet_command(&self.adb)
             .args(["-s", &serial, "shell", "wm", "size"])
             .output()
             .ok()?;
@@ -688,7 +689,7 @@ impl PanelApp {
                     detail: "虚拟屏未就绪，稍后重试".into(),
                 };
             };
-            let output = std::process::Command::new(&adb)
+            let output = winproc::quiet_command(&adb)
                 .args([
                     "-s",
                     &serial,
@@ -715,7 +716,7 @@ impl PanelApp {
                     detail: "无法解析应用入口".into(),
                 };
             };
-            let output = std::process::Command::new(&adb)
+            let output = winproc::quiet_command(&adb)
                 .args([
                     "-s",
                     &serial,
