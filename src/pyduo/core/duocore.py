@@ -38,6 +38,8 @@ def find_duo_core() -> Path | None:
         if override:
                 candidates.append(Path(override))
         candidates += [
+                _REPO_ROOT / "src" / "rustduo" / "target" / "release" / _EXE_NAME,
+                _REPO_ROOT / "src" / "rustduo" / "target" / "debug" / _EXE_NAME,
                 _REPO_ROOT / "rust" / "target" / "release" / _EXE_NAME,
                 _REPO_ROOT / "rust" / "target" / "debug" / _EXE_NAME,
                 tools_dir() / _EXE_NAME,

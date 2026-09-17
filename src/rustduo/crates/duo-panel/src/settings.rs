@@ -570,10 +570,7 @@ impl SettingsLayout {
             + SP
             + ROW_H
             + SP
-            + ROW_H
-            + SP
-            + CAPTION_H
-            + SP
+            + (ROW_H + CAPTION_H + 6.0)
             + ROW_H
             + SP
             + CELL_H
@@ -595,9 +592,8 @@ impl SettingsLayout {
         let audio_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let tso_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
-        cy += ROW_H + SP;
-        let tso_caption = Pos2::new(x, cy + 9.0);
-        cy += CAPTION_H + SP;
+        let tso_caption = Pos2::new(x, cy + 36.0);
+        cy += ROW_H + CAPTION_H + 6.0;
         let dpi_switch = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
         cy += ROW_H + SP;
         let dpi_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, CELL_H));
@@ -1065,5 +1061,25 @@ fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
         "窗口栏（默认）"
     } else {
         "外观"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_layout_y_chain_and_grouping() {
+        let layout = SettingsLayout::compute(420.0, 660.0, "", false);
+        assert!(layout.engine.bg.top() < layout.quality.bg.top());
+        assert!(layout.quality.bg.top() < layout.windowbar.bg.top());
+        assert!(layout.windowbar.bg.top() < layout.appearance.bg.top());
+        assert_eq!(layout.save.height(), 32.0);
+
+        let title_to_caption = layout.tso_caption.y - layout.tso_row.center().y;
+        let caption_to_next = layout.dpi_switch.center().y - layout.tso_caption.y;
+        assert!(title_to_caption > 0.0);
+        assert!(caption_to_next > title_to_caption);
+        assert!((title_to_caption - 20.0).abs() < 0.01);
     }
 }

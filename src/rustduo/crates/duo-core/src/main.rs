@@ -10,7 +10,7 @@
 //!   apps     --adb <path> --serial <s>   已装应用枚举 + 目录合并
 //!   audio-lock --data-dir <dir> acquire|release|status  单音频仲裁锁
 //!
-//! 协议合同见 duo/core/duocore.py（Python 面板侧客户端）与 TODO.md §0。
+//! 协议合同见 src/pyduo/core/duocore.py（Python 面板侧客户端）与 TODO.md §0。
 
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;

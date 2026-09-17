@@ -1,72 +1,101 @@
 # Duo Windows 指南
 
-> Windows 原生运行（Python + PyQt6-QML）+ adb/scrcpy 控制设备。
+> Duo 原生运行环境部署、双架构构建与使用指引。
+>
+> - **生产推荐（Rust 原生栈）**：`duo-panel`（`Duo.exe` 面板）+ `duo-core`（`duo-core.exe` 核心引擎），零 Python 运行时依赖，秒启、低内存占用，静默无控制台黑窗。
+> - **参考验证（Python 栈）**：`src/pyduo`（PyQt6-QML 面板 + CLI），作为功能对译基准与快速原型验证。
 
-## 安装（一次性）
+---
+
+## 1. 运行前置准备
+
+1. **环境工具**：
+   - `adb.exe` 与 `scrcpy.exe` 须在系统 `PATH`（推荐通过 `scoop install adb scrcpy` 安装，或在 Duo 设置页固定路径）。
+2. **安卓设备准备**：
+   - 开启系统「开发者选项」并允许「USB 调试」。
+   - 首次连接电脑时在手机/平板端勾选「一律允许此计算机进行调试」。
+
+---
+
+## 2. 安装与构建（Rust 原生栈，推荐）
+
+### 方案 A：WSL 交叉构建并自动部署（日常开发最快）
+
+在 WSL2 Linux 终端下一键交叉编译 Windows 双 exe 并直装到 Windows 本地目录：
+
+```sh
+# 一次性前置工具（Arch Linux 为例）
+sudo pacman -S --needed mingw-w64-gcc
+rustup target add x86_64-pc-windows-gnu
+
+# 交叉构建并部署到 ~/.local/share/duo/tools/
+cd src/rustduo
+./scripts/build_wsl.sh --deploy
+```
+
+### 方案 B：Windows 原生编译
+
+在 Windows PowerShell（管理员或普通终端）中：
 
 ```powershell
-# 1. Python 3.11+（或 scoop install python）
+cd C:\duo\src\rustduo
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -Deploy
+```
+
+### 方案 C：安装到系统应用目录
+
+将编译产物安装为标准桌面应用（创建桌面/开始菜单快捷方式与控制面板卸载项）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 C:\duo\src\rustduo\target\x86_64-pc-windows-gnu\release\duo-panel.exe
+```
+
+- **安装目录**：`%LOCALAPPDATA%\Duo`
+- **主程序**：`Duo.exe`（自动探测同目录下的 `duo-core.exe`）
+- **数据与日志**：`%USERPROFILE%\.local\share\duo`
+
+---
+
+## 3. Python 验证栈（可选，开发参考）
+
+供对比行为与运行现有 pytest 套件：
+
+```powershell
+# 1. 环境准备（Python 3.11+）
 winget install -e --id Python.Python.3.12
 
-# 2. 取代码
-robocopy \\wsl.localhost\archlinux\home\luyu\duo C:\duo /E /XD .venv __pycache__ .git
+# 2. 拉取依赖并以可编辑模式安装
 cd C:\duo
-
-# 3. 环境与依赖
 py -m venv .venv
-.venv\Scripts\pip install -e ".[gui]"
+.venv\Scripts\pip install -e ".[gui,build]"
 
-# 4. 启动
+# 3. 启动 Python GUI 面板
 .venv\Scripts\duo --gui
+
+# 4. （可选）打包单文件 exe 产物
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
-前置：`adb.exe`/`scrcpy.exe` 在 PATH（scoop 已满足）；设备 USB 调试已授权。
+---
 
-## 打包（onefile 单文件，固定产物 `C:\Tools\Duo.exe`）
+## 4. 产物功能校验清单
 
-```powershell
-# Windows 侧（管理员）：先 robocopy 同步 WSL 工作区（脚本预检会比对
-# duo.spec/app.py/duo.ico 哈希，旧拷贝直接拒建），后一键构建 + 部署 +
-# 图标嵌入验证（spec 为唯一规格，内含 datas/hiddenimports）
-robocopy \\wsl.localhost\archlinux\home\luyu\duo C:\duo /E /XD .venv __pycache__ .git
-C:\duo\scripts\build_windows.ps1
+- [ ] **面板启动**：双击 `Duo.exe` → 瞬时启动，正常显示设备状态卡与已安装应用磁贴。
+- [ ] **投屏开窗**：点击应用图标或主界面「投屏」→ 启动对应虚拟屏会话与 C# overlay 交互条（首窗编译 C# 约 2s，后续秒开）。
+- [ ] **静默无闪屏**：启动会话与后台轮询无任何 cmd/conhost 控制台黑窗闪烁。
+- [ ] **横竖屏记忆**：右键磁贴切换固定比例（16:9 / 9:16 等）或自适应窗口，再次启动保留设定。
+- [ ] **音频策略**：首窗声音输出正常，多窗启动按设置策略（默认仅最新会话发声）自动仲裁。
+- [ ] **生命周期**：面板退出时，后台附属会话进程（`scrcpy.exe`、`DuoChromeOverlay.exe` 等）通过 Job Object 干净退出，无孤儿进程残留。
 
-# 手动等价：cd C:\duo; pyinstaller duo.spec --noconfirm; 部署 dist\Duo.exe
-# （或 scoop python：python3 -m pip install -e ".[gui,build]" 后同上）
-```
+---
 
-### 产物校验清单
+## 5. 常见问题与排查
 
-- [ ] 双击 `Duo.exe` → 面板正常（设备卡、应用真图标、玻璃样式）
-- [ ] 点应用 → 会话窗口 + overlay 控件（首窗 csc 编译约 2s）
-- [ ] `Duo.exe --check` 退出码 0
-- [ ] 设置页读写 settings.json（`%USERPROFILE%\.local\share\duo`）
-- [ ] 图标两条链路均取 `assets/duo.ico`：exe 资源（资源管理器）+ 运行时任务栏/
-  标题栏（spec datas 携带、app.py setWindowIcon）；换图标同名覆盖后重打，
-  或 `python scripts/switch_icon.py <候选名>`
+| 现象 | 原因分析 | 解决方案 |
+|---|---|---|
+| 面板显示「无设备在线」 | 数据线仅供电、驱动未装、未授权调试 | 换高速数据线；在设备弹窗确认授权；终端运行 `adb devices` 确认识别 |
+| 找不到 adb 或 scrcpy | 安装路径未加入系统 PATH | 在设置页「引擎」卡中手动填写或浏览选择 `adb.exe` / `scrcpy.exe` 的绝对路径 |
+| 终端见 `protocol fault` / 端口被占 | 第三方软件自带的陈旧 adb 服务抢占 5037 端口 | 检查并禁用竞争服务（如投屏软件后台服务），终端执行 `taskkill /F /IM adb.exe` 清理残留后重启 Duo |
+| 窗口交互条/下巴未出现 | C# 现场编译器报错或环境缺失 .NET Framework 4.5+ | 检查 `%USERPROFILE%\.local\share\duo\logs` 中的 overlay 日志；确认系统具备 `csc.exe`（Win10/11 均自带） |
+| 面板退出后后台仍有 scrcpy | 历史版本残留或强杀主进程 | 生产版本已由 Job Object 绑定生命周期；如遇异常残留执行 `taskkill /F /IM scrcpy.exe` |
 
-**打包版 adb 提示**：exe 继承的 PATH 与终端不同，scoop 的 adb 可能探测不到——
-设置页固定 adb/scrcpy 路径（`adb_path`/`scrcpy_path` 优先于 PATH）。
-
-## 日常使用
-
-1. 面板 → 设备绿灯
-2. 点图标开窗；**右键/长按图标**切竖横屏（按应用记忆）
-3. 首窗有声（FLAC），后续自动静音（latest 仲裁）
-4. 「运行中」芯片 ✕ 关窗；点芯片 = 应用拉回该虚拟屏
-5. 应用网格按标签拼音首字母排序；点图标右上角 ☆/★ **置顶**（常驻最上，
-   记忆在 `gui_prefs.json`）
-
-## 故障排查
-
-| 症状 | 处理 |
-|---|---|
-| 面板无设备 | 换线/口；重新授权调试 |
-| 找不到 adb（打包版） | 设置页固定 adb 路径 |
-| 日志见 `protocol fault` / `Could not start adb server`、设备应用全消失 | 第三方软件自带的**旧版 adb** 与 PATH 上的 adb 互杀 5037（实例：SuperDisplay 的 `MirrorService` 服务自带 adb 28，与 scoop adb 37 每 2s 轮询互杀对方 server）。定位：`Get-CimInstance Win32_Process -Filter "name='adb.exe'"` 看命令行与父进程。处理：`Stop-Service` + `Set-Service -StartupType Manual` 禁用对方服务，`taskkill /F /IM adb.exe` 清残留，面板自动恢复 |
-| 设备状态抖动 | ~6s 容错内正常；持续离线看 `adb devices` |
-| 窗口控件缺失 | 等 2s（csc 首编）；看 `%USERPROFILE%\.local\share\duo\logs` |
-| 面板关了但 Duo.exe/scrcpy 还在后台 | 旧版 bug（2026-09-10 起已修：面板退出整树终止 + Job Object 崩溃兕底，见 docs/window-experience.md §12）。重打包后不再出现；临时清理：`taskkill /T /F /IM Duo.exe`（注意会连面板一起杀） |
-| 图标显示为文字 | 首次拉 APK 解析，稍候 |
-| 重打后仍显示旧图标 | Windows 图标缓存：`ie4uinit.exe -show` 后重启 explorer；
-  任务栏钉住项需取消后重新钉 |
