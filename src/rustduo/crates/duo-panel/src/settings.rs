@@ -1,0 +1,1028 @@
+//! 设置页像素渲染（SettingsPage.qml 逐组照抄；模型在 settings_view.rs）。
+//!
+//! 页面骨架：bg 实底无色斑；滚动区 x16..w-16 / y64..footer 顶；卡间距
+//! 12；GlassCard = r14 cardFill + cardBorder + 内边 12 + 内距 9 + 标题
+//! 13px DemiBold。底部保存主按钮（w76 h32 r10 accent，右缘 16 底 12）。
+
+use std::time::{Duration, Instant};
+
+use egui::{Pos2, Rect, Sense, Ui, Vec2};
+
+use crate::app::PanelApp;
+use crate::paint;
+use crate::theme::{over, ThemeKind, Tokens};
+
+/// 控件标签（CaptionText：12px ink2）。
+fn caption(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
+    paint::text_left_weight(painter, pos, text, 12.0, t.ink2, false);
+}
+
+/// 卡标题（13px DemiBold，QML letterSpacing 1 不做——字体度量差 1px 级）。
+fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
+    paint::text_left_weight(painter, pos, text, 13.0, t.ink, true);
+}
+
+/// 正文行文字（13px ink）。
+fn row_label(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
+    paint::text_left_weight(painter, pos, text, 13.0, t.ink, false);
+}
+
+/// ModeButton（分段单选）：h32 r10；选中 = accent 14% 底 + accent 45%
+/// 边 + accent DemiBold；未选 = 透明 + hover wash + ink2。
+#[must_use]
+fn mode_button(
+    ui: &mut Ui,
+    t: &Tokens,
+    id: egui::Id,
+    rect: Rect,
+    text: &str,
+    selected: bool,
+) -> bool {
+    let resp = ui.interact(rect, id, Sense::click());
+    let fill = if selected {
+        over(t.bg, t.accent, 0.14)
+    } else if resp.hovered() {
+        t.hover_on_card
+    } else {
+        t.card
+    };
+    paint::rounded_fill(ui.painter(), rect, 10.0, fill);
+    if selected {
+        let border = over(t.bg, t.accent, 0.45);
+        paint::rounded_stroke(ui.painter(), rect, 10.0, border);
+    }
+    paint::text_centered(
+        ui.painter(),
+        rect.center(),
+        text,
+        13.0,
+        selected,
+        if selected { t.accent } else { t.ink2 },
+    );
+    resp.clicked()
+}
+
+/// GlassSwitch（纯开关，40×24 轨 r12 + 白圆 thumb h-4；点击整轨切换）。
+#[must_use]
+fn glass_switch(ui: &mut Ui, t: &Tokens, id: egui::Id, center: Pos2, checked: bool) -> bool {
+    let track = Rect::from_center_size(center, Vec2::new(40.0, 24.0));
+    let resp = ui.interact(track, id, Sense::click());
+    let track_color = if checked {
+        t.accent
+    } else {
+        match t.kind {
+            ThemeKind::Dark => over(t.bg, egui::Color32::WHITE, 0.24),
+            ThemeKind::Light => over(t.bg, egui::Color32::BLACK, 0.16),
+        }
+    };
+    paint::rounded_fill(ui.painter(), track, 12.0, track_color);
+    let knob = track.height() - 4.0;
+    let x = if checked {
+        track.right() - knob - 2.0
+    } else {
+        track.left() + 2.0
+    };
+    ui.painter().circle_filled(
+        Pos2::new(x, track.center().y),
+        knob / 2.0,
+        egui::Color32::WHITE,
+    );
+    resp.clicked()
+}
+
+/// 文字行 + 右侧开关（h32；QML 镜像开关/DPI 跟随/玻璃材质行）。
+#[must_use]
+fn switch_row(
+    ui: &mut Ui,
+    t: &Tokens,
+    id: egui::Id,
+    area: Rect,
+    label: &str,
+    checked: bool,
+) -> bool {
+    row_label(
+        ui.painter(),
+        t,
+        Pos2::new(area.left(), area.center().y - 6.5),
+        label,
+    );
+    glass_switch(
+        ui,
+        t,
+        id,
+        Pos2::new(area.right() - 20.0, area.center().y),
+        checked,
+    )
+}
+
+/// NumberBox（−/+ 步进 28px 点击区 + 中央可键入数字；h32 r10
+/// controlFill + hairline/accent(focus) 边）。返回 Some(新值)。
+#[must_use]
+fn number_box(
+    ui: &mut Ui,
+    t: &Tokens,
+    id: egui::Id,
+    rect: Rect,
+    value: i64,
+    (lo, hi): (i64, i64),
+) -> Option<i64> {
+    let resp = ui.interact(rect, id, Sense::click());
+    let down = Rect::from_min_size(rect.min, Vec2::new(28.0, rect.height()));
+    let up = Rect::from_min_size(
+        Pos2::new(rect.right() - 28.0, rect.top()),
+        Vec2::new(28.0, rect.height()),
+    );
+    let dresp = ui.interact(down, id.with("d"), Sense::click());
+    let uresp = ui.interact(up, id.with("u"), Sense::click());
+    let focused = ui.ctx().memory(|m| m.has_focus(id.with("edit")));
+
+    paint::rounded_fill(ui.painter(), rect, 10.0, t.control_fill);
+    let border = if focused {
+        t.accent
+    } else {
+        t.hairline_on_card
+    };
+    paint::rounded_stroke(ui.painter(), rect, 10.0, border);
+    let glyph_color = t.ink2;
+    paint::text_centered(ui.painter(), down.center(), "−", 14.0, false, glyph_color);
+    paint::text_centered(ui.painter(), up.center(), "+", 14.0, false, glyph_color);
+
+    // 中央可键入：失焦提交，回车提交
+    let mut buf = value.to_string();
+    let edit = egui::TextEdit::singleline(&mut buf)
+        .id(id.with("edit"))
+        .font(egui::FontId::proportional(13.0))
+        .text_color(t.ink)
+        .frame(false)
+        .desired_width(rect.width() - 56.0)
+        .horizontal_align(egui::Align::Center)
+        .vertical_align(egui::Align::Center);
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
+        Pos2::new(rect.left() + 28.0, rect.top()),
+        Vec2::new(rect.width() - 56.0, rect.height()),
+    )));
+    let eresp = inner.add(edit);
+    let _ = eresp;
+    if focused && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        ui.ctx().memory_mut(|m| m.surrender_focus(id.with("edit")));
+    }
+    if dresp.clicked() {
+        return Some((value - 1).max(lo));
+    }
+    if uresp.clicked() {
+        return Some((value + 1).min(hi));
+    }
+    if resp.clicked() && !dresp.clicked() && !uresp.clicked() {
+        ui.ctx().memory_mut(|m| m.request_focus(id.with("edit")));
+    }
+    // 键入值：合法即提交（每帧 parse，非法忽略）
+    if let Ok(parsed) = buf.trim().parse::<i64>() {
+        if parsed != value && (lo..=hi).contains(&parsed) {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+/// NumberCell：标签行 h20 + NumberBox。
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+fn number_cell(
+    ui: &mut Ui,
+    t: &Tokens,
+    id: egui::Id,
+    rect: Rect,
+    title: &str,
+    value: i64,
+    range: (i64, i64),
+    enabled: bool,
+) -> Option<i64> {
+    caption(
+        ui.painter(),
+        t,
+        Pos2::new(rect.left(), rect.top() + 8.0),
+        title,
+    );
+    let box_rect = Rect::from_min_size(
+        Pos2::new(rect.left(), rect.top() + 26.0),
+        Vec2::new(rect.width(), 32.0),
+    );
+    if !enabled {
+        // QML opacity 0.45（预合成近似：控件色向底色收）
+        let faded = |c: egui::Color32| over(t.bg, c, 0.55);
+        let tt = fade_tokens(t, faded);
+        number_box(ui, &tt, id, box_rect, value, range)
+    } else {
+        number_box(ui, t, id, box_rect, value, range)
+    }
+}
+
+/// 禁用态令牌近似（DPI 框跟随设备时）：颜色向 bg 收 45%。
+fn fade_tokens(t: &Tokens, f: impl Fn(egui::Color32) -> egui::Color32 + Copy) -> Tokens {
+    let mut tt = *t;
+    tt.ink = f(t.ink);
+    tt.ink2 = f(t.ink2);
+    tt.control_fill = f(t.control_fill);
+    tt.hairline_on_card = f(t.hairline_on_card);
+    tt.accent = f(t.accent);
+    tt
+}
+
+/// 渲染倍率滑杆（QML renderScaleSlider：轨 4px hairline + accent 填充 +
+/// thumb 16 白 + accent 边；1.0–3.0 步 0.1）。h24 区域。
+#[must_use]
+fn render_scale_slider(
+    ui: &mut Ui,
+    t: &Tokens,
+    id: egui::Id,
+    rect: Rect,
+    value: f64,
+) -> Option<f64> {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let track = Rect::from_center_size(
+        Pos2::new(rect.center().x, rect.center().y),
+        Vec2::new(rect.width(), 4.0),
+    );
+    let frac = ((value - 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+    paint::rounded_fill(ui.painter(), track, 2.0, t.hairline_on_card);
+    let fill = Rect::from_min_max(
+        track.min,
+        Pos2::new(track.left() + track.width() * frac, track.bottom()),
+    );
+    if fill.width() > 0.0 {
+        paint::rounded_fill(ui.painter(), fill, 2.0, t.accent);
+    }
+    let cx = track.left() + track.width() * frac;
+    ui.painter()
+        .circle_filled(Pos2::new(cx, track.center().y), 8.0, egui::Color32::WHITE);
+    paint::circle_stroke(
+        ui.painter(),
+        Pos2::new(cx, track.center().y),
+        8.0,
+        if resp.dragged() {
+            t.accent_hover
+        } else {
+            t.accent
+        },
+    );
+    if resp.dragged() {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            let v = 1.0 + f as f64 * 2.0;
+            return Some((v * 10.0).round() / 10.0);
+        }
+    }
+    if resp.clicked() {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            return Some(1.0 + f as f64 * 2.0);
+        }
+    }
+    None
+}
+
+/// 路径行（标题 h26 + [TextField 撑开 | 浏览 | 检测] h32）。返回
+/// (路径改动, 点了浏览, 点了检测)。
+#[must_use]
+fn path_row(
+    ui: &mut Ui,
+    t: &Tokens,
+    tool: &str,
+    rect: Rect,
+    text: &mut String,
+    probe_pill: Option<(&str, Instant)>,
+    locked: bool,
+) -> (Option<String>, bool, bool) {
+    let mut changed = None;
+    let mut browse = false;
+    let mut detect = false;
+    caption(
+        ui.painter(),
+        t,
+        Pos2::new(rect.left(), rect.top() + 7.0),
+        &format!("{tool} 路径"),
+    );
+    // 检测结果胶囊（右侧，2.5s 淡出语义：这里只在时限内显示）
+    if let Some((label, at)) = probe_pill {
+        if at.elapsed() < Duration::from_millis(2500) {
+            let w = label.chars().count() as f32 * 6.5 + 20.0;
+            let pill =
+                Rect::from_min_size(Pos2::new(rect.right() - w, rect.top()), Vec2::new(w, 26.0));
+            paint::rounded_fill(ui.painter(), pill, 13.0, t.pill);
+            paint::text_centered(
+                ui.painter(),
+                pill.center(),
+                label,
+                12.0,
+                false,
+                egui::Color32::WHITE,
+            );
+        }
+    }
+    let row = Rect::from_min_size(
+        Pos2::new(rect.left(), rect.top() + 32.0),
+        Vec2::new(rect.width(), 32.0),
+    );
+    let sec_w = 64.0;
+    let field_w = row.width() - (sec_w + 8.0) * 2.0;
+    let field = Rect::from_min_size(row.min, Vec2::new(field_w, 32.0));
+    let browse_r = Rect::from_min_size(
+        Pos2::new(field.right() + 8.0, row.top()),
+        Vec2::new(sec_w, 32.0),
+    );
+    let detect_r = Rect::from_min_size(
+        Pos2::new(browse_r.right() + 8.0, row.top()),
+        Vec2::new(sec_w, 32.0),
+    );
+
+    // TextField：controlFill + hairline/accent(focus)；占位「留空自动探测」
+    let fid = egui::Id::new(("settings-path", tool));
+    let focused = ui.ctx().memory(|m| m.has_focus(fid));
+    paint::rounded_fill(ui.painter(), field, 10.0, t.control_fill);
+    let border = if focused {
+        t.accent
+    } else {
+        t.hairline_on_card
+    };
+    paint::rounded_stroke(ui.painter(), field, 10.0, border);
+    let mut edit = egui::TextEdit::singleline(text)
+        .id(fid)
+        .font(egui::FontId::proportional(13.0))
+        .text_color(if locked { t.ink2 } else { t.ink })
+        .frame(false)
+        .desired_width(field_w - 20.0)
+        .hint_text("留空自动探测");
+    if locked {
+        edit = edit.interactive(false);
+    }
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
+        Pos2::new(field.left() + 10.0, field.top()),
+        Vec2::new(field_w - 20.0, 32.0),
+    )));
+    let eresp = inner.add(edit);
+    if eresp.changed() {
+        changed = Some(text.trim().to_string());
+    }
+
+    // SecButton ×2（浏览/检测）
+    let sec = |ui: &mut Ui, r: Rect, id: egui::Id, label: &str, enabled: bool, out: &mut bool| {
+        let resp = ui.interact(r, id, Sense::click());
+        let fill = if !enabled {
+            t.control_fill
+        } else if resp.is_pointer_button_down_on() {
+            t.press_on_card
+        } else if resp.hovered() {
+            t.hover_on_card
+        } else {
+            t.control_fill
+        };
+        paint::rounded_fill(ui.painter(), r, 10.0, fill);
+        let border = if enabled {
+            t.hairline_on_card
+        } else {
+            t.control_fill
+        };
+        paint::rounded_stroke(ui.painter(), r, 10.0, border);
+        paint::text_centered(
+            ui.painter(),
+            r.center(),
+            label,
+            13.0,
+            false,
+            if enabled { t.ink } else { t.ink2 },
+        );
+        if enabled && resp.clicked() {
+            *out = true;
+        }
+    };
+    sec(
+        ui,
+        browse_r,
+        fid.with("browse"),
+        "浏览",
+        !locked,
+        &mut browse,
+    );
+    sec(
+        ui,
+        detect_r,
+        fid.with("detect"),
+        "检测",
+        !locked,
+        &mut detect,
+    );
+    (changed, browse, detect)
+}
+
+// ---------------------------------------------------------------- 布局
+
+/// 布局常量（SettingsPage.qml 逐值照抄）。
+mod geom {
+    pub const PAD: f32 = 12.0; // GlassCard cardPad
+    pub const SP: f32 = 9.0; // 卡内 Column spacing
+    pub const CARD_SP: f32 = 12.0; // 卡间距
+    pub const PATH_ROW_H: f32 = 64.0; // 标题 26 + 6 + 输入 32
+    pub const CELL_H: f32 = 58.0; // 标签 20 + 6 + 数字框 32
+    pub const CAPTION_H: f32 = 21.0;
+    pub const LABEL_H: f32 = 20.0;
+    pub const ROW_H: f32 = 32.0; // 按钮/开关行
+    pub const SLIDER_H: f32 = 24.0;
+    pub const TITLE_H: f32 = 19.0; // 卡标题 13px
+    pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
+    pub const MARGIN: f32 = 16.0; // 滚动区左右边距
+    /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
+    pub const CARD_EXTRA: f32 = 3.0 + PAD * 2.0 + 10.0;
+    pub const TOP: f32 = 64.0; // 胶囊下让位
+    pub const FOOTER_H: f32 = 46.0; // footer 32 + 12 + 2（DPI 行跨界残迹根除）
+}
+
+/// 设置页布局（两遍绘制解耦：先算全部 rect，再画卡底，再画内容）。
+pub struct SettingsLayout {
+    /// 滚动视口（内容 clip 区）。
+    pub vp: Rect,
+    pub problem: Option<(Rect, String)>,
+    pub engine: Card,
+    pub scrcpy_row: Rect,
+    pub adb_row: Rect,
+    pub lock_hint: Option<Rect>,
+    pub fps_cell: Rect,
+    pub bitrate_cell: Rect,
+    pub quality: Card,
+    pub codec_row: [Rect; 4],
+    pub audio_label: Pos2,
+    pub audio_row: [Rect; 3],
+    pub tso_row: Rect,
+    pub tso_caption: Pos2,
+    pub dpi_switch: Rect,
+    pub dpi_cell: Rect,
+    pub dpi_caption: Pos2,
+    pub rs_label: Pos2,
+    pub rs_value: Pos2,
+    pub rs_slider: Rect,
+    pub rs_caption: Pos2,
+    pub windowbar: Card,
+    pub top_label: Pos2,
+    pub top_row: [Rect; 2],
+    pub bottom_label: Pos2,
+    pub bottom_row: [Rect; 3],
+    pub wb_caption: Pos2,
+    pub appearance: Card,
+    pub theme_label: Pos2,
+    pub theme_row: [Rect; 3],
+    pub glass_row: Rect,
+    pub save: Rect,
+    pub content_h: f32,
+}
+
+/// 一张卡：底板 rect + 标题位置 + 内容横向范围。
+pub struct Card {
+    pub bg: Rect,
+    pub title: Pos2,
+    pub inner: Rect, // 内容排布区（含左右 PAD 内缩）
+}
+
+impl SettingsLayout {
+    pub fn compute(w: f32, h: f32, problems: &str, engine_locked: bool) -> Self {
+        use geom::*;
+        // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8
+        let left = MARGIN + 8.0;
+        let cw = w - (MARGIN + 8.0) * 2.0;
+        let vp = Rect::from_min_max(
+            Pos2::new(left, TOP),
+            Pos2::new(left + cw, h - FOOTER_H - 8.0),
+        );
+        let inner_w = cw - PAD * 2.0;
+        let x = left + PAD;
+        let save = Rect::from_min_size(
+            Pos2::new(w - MARGIN - 76.0, h - 12.0 - ROW_H),
+            Vec2::new(76.0, ROW_H),
+        );
+        let mut y = vp.top();
+
+        let problem = (!problems.is_empty()).then(|| {
+            let lines = problems.lines().count().max(1) as f32;
+            let bar = Rect::from_min_size(Pos2::new(left, y), Vec2::new(cw, 20.0 + lines * 18.0));
+            (bar, problems.to_string())
+        });
+        if let Some((bar, _)) = &problem {
+            y += bar.height() + CARD_SP;
+        }
+
+        // 引擎卡
+        let lock = if engine_locked { LOCK_H + SP } else { 0.0 };
+        let engine_h =
+            CARD_EXTRA + TITLE_H + SP + PATH_ROW_H + SP + PATH_ROW_H + SP + lock + CELL_H;
+        let engine = card_frame(Pos2::new(left, y), cw, engine_h);
+        let mut cy = engine.title.y + TITLE_H + SP;
+        let scrcpy_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, PATH_ROW_H));
+        cy += PATH_ROW_H + SP;
+        let adb_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, PATH_ROW_H));
+        cy += PATH_ROW_H + SP;
+        let lock_hint = (engine_locked)
+            .then(|| Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, LOCK_H)));
+        if lock_hint.is_some() {
+            cy += LOCK_H + SP;
+        }
+        let half = (inner_w - 12.0) / 2.0;
+        let fps_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(half, CELL_H));
+        let bitrate_cell =
+            Rect::from_min_size(Pos2::new(x + half + 12.0, cy), Vec2::new(half, CELL_H));
+        y += engine_h + CARD_SP;
+
+        // 投屏质量卡
+        let q_items = TITLE_H
+            + SP
+            + ROW_H
+            + SP
+            + LABEL_H
+            + SP
+            + ROW_H
+            + SP
+            + ROW_H
+            + SP
+            + CAPTION_H
+            + SP
+            + ROW_H
+            + SP
+            + CELL_H
+            + SP
+            + CAPTION_H
+            + SP
+            + LABEL_H
+            + SP
+            + SLIDER_H
+            + SP
+            + CAPTION_H;
+        let quality_h = CARD_EXTRA + q_items;
+        let quality = card_frame(Pos2::new(left, y), cw, quality_h);
+        let mut cy = quality.title.y + TITLE_H + SP;
+        let codec_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
+        cy += ROW_H + SP;
+        let audio_label = Pos2::new(x, cy + 8.0);
+        cy += LABEL_H + SP;
+        let audio_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
+        cy += ROW_H + SP;
+        let tso_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
+        cy += ROW_H + SP;
+        let tso_caption = Pos2::new(x, cy);
+        cy += CAPTION_H + SP;
+        let dpi_switch = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
+        cy += ROW_H + SP;
+        let dpi_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, CELL_H));
+        cy += CELL_H + SP;
+        let dpi_caption = Pos2::new(x, cy);
+        cy += CAPTION_H + SP;
+        let rs_label = Pos2::new(x, cy + 4.0);
+        let rs_value = Pos2::new(x + inner_w - 20.0, cy + 10.0);
+        cy += LABEL_H + SP;
+        let rs_slider = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, SLIDER_H));
+        cy += SLIDER_H + SP;
+        let rs_caption = Pos2::new(x, cy);
+        y += quality_h + CARD_SP;
+
+        // 窗口栏（默认）卡
+        let wb_items =
+            TITLE_H + SP + LABEL_H + SP + ROW_H + SP + LABEL_H + SP + ROW_H + SP + CAPTION_H;
+        let wb_h = CARD_EXTRA + wb_items;
+        let windowbar = card_frame(Pos2::new(left, y), cw, wb_h);
+        let mut cy = windowbar.title.y + TITLE_H + SP;
+        let top_label = Pos2::new(x, cy + 8.0);
+        cy += LABEL_H + SP;
+        let top_row: [Rect; 2] = seg_row(x, cy, inner_w, 2).try_into().unwrap();
+        cy += ROW_H + SP;
+        let bottom_label = Pos2::new(x, cy + 8.0);
+        cy += LABEL_H + SP;
+        let bottom_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
+        cy += ROW_H + SP;
+        let wb_caption = Pos2::new(x, cy);
+        y += wb_h + CARD_SP;
+
+        // 外观卡
+        let ap_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + ROW_H;
+        let ap_h = CARD_EXTRA + ap_items;
+        let appearance = card_frame(Pos2::new(left, y), cw, ap_h);
+        let mut cy = appearance.title.y + TITLE_H + SP;
+        let theme_label = Pos2::new(x, cy + 8.0);
+        cy += LABEL_H + SP;
+        let theme_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
+        cy += ROW_H + SP;
+        let glass_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
+
+        Self {
+            vp,
+            problem,
+            engine,
+            scrcpy_row,
+            adb_row,
+            lock_hint,
+            fps_cell,
+            bitrate_cell,
+            quality,
+            codec_row,
+            audio_label,
+            audio_row,
+            tso_row,
+            tso_caption,
+            dpi_switch,
+            dpi_cell,
+            dpi_caption,
+            rs_label,
+            rs_value,
+            rs_slider,
+            rs_caption,
+            windowbar,
+            top_label,
+            top_row,
+            bottom_label,
+            bottom_row,
+            wb_caption,
+            appearance,
+            theme_label,
+            theme_row,
+            glass_row,
+            save,
+            content_h: y + ap_h,
+        }
+    }
+}
+
+fn card_frame(pos: Pos2, w: f32, h: f32) -> Card {
+    Card {
+        bg: Rect::from_min_size(pos, Vec2::new(w, h)),
+        title: Pos2::new(pos.x + geom::PAD, pos.y + geom::PAD + 3.0),
+        inner: Rect::from_min_size(
+            Pos2::new(pos.x + geom::PAD, pos.y + geom::PAD),
+            Vec2::new(w - geom::PAD * 2.0, h - geom::PAD * 2.0),
+        ),
+    }
+}
+
+/// n 等分按钮行（间距 8）。
+fn seg_row(x: f32, y: f32, w: f32, n: usize) -> Vec<Rect> {
+    let bw = (w - 8.0 * (n - 1) as f32) / n as f32;
+    (0..n)
+        .map(|i| {
+            Rect::from_min_size(
+                Pos2::new(x + i as f32 * (bw + 8.0), y),
+                Vec2::new(bw, geom::ROW_H),
+            )
+        })
+        .collect()
+}
+
+/// 设置页主体（app.rs Page::Settings 分发；布局 + 双遍绘制 + 滚动）。
+pub fn show(app: &mut PanelApp, ui: &mut Ui) {
+    let t = app.tokens;
+    let full = ui.max_rect();
+    ui.painter().rect_filled(full, 0, t.bg); // QML 页面 Rectangle 盖色斑
+
+    let problems = app.settings_problems();
+    let engine_locked = app.engine_locked();
+    let layout = SettingsLayout::compute(full.width(), full.height(), &problems, engine_locked);
+
+    // 滚轮（视口内；超出才滚）
+    let max_scroll = (layout.content_h - layout.vp.height()).max(0.0);
+    if ui.rect_contains_pointer(layout.vp) && max_scroll > 0.0 {
+        let dy = ui.input(|i| i.raw_scroll_delta.y);
+        app.settings_scroll = (app.settings_scroll - dy).clamp(0.0, max_scroll);
+    }
+    let scroll = app.settings_scroll;
+
+    // 视口内裁剪（clip 超出内容）
+    let painter = ui.painter().with_clip_rect(layout.vp);
+
+    // 卡底四张（先画，内容后画盖其上）
+    for c in [
+        &layout.engine,
+        &layout.quality,
+        &layout.windowbar,
+        &layout.appearance,
+    ] {
+        let shifted = Rect::from_min_size(Pos2::new(c.bg.min.x, c.bg.min.y - scroll), c.bg.size());
+        paint::rounded_fill(&painter, shifted, 14.0, t.card);
+        paint::rounded_stroke(&painter, shifted, 14.0, t.card_border);
+        card_title(
+            &painter,
+            &t,
+            Pos2::new(shifted.left() + geom::PAD, shifted.top() + geom::PAD),
+            card_name(c, &layout),
+        );
+    }
+
+    // 问题红条
+    if let Some((bar, text)) = &layout.problem {
+        let bar = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y - scroll), bar.size());
+        paint::rounded_fill(&painter, bar, 10.0, over(t.bg, t.danger, 0.10));
+        paint::rounded_stroke(&painter, bar, 10.0, over(t.bg, t.danger, 0.35));
+        paint::text_left_weight(
+            &painter,
+            Pos2::new(bar.left() + 10.0, bar.top() + 10.0),
+            text,
+            13.0,
+            t.danger,
+            false,
+        );
+    }
+
+    // 引擎卡内容
+    let sy = |r: Rect| Rect::from_min_size(Pos2::new(r.min.x, r.min.y - scroll), r.size());
+    let py = |p: Pos2| Pos2::new(p.x, p.y - scroll);
+
+    let mut scrcpy = app.settings.draft.scrcpy_path.clone();
+    let pill_scrcpy = app.probe_pill_for("scrcpy");
+    let (chg, browse, detect) = path_row(
+        ui,
+        &t,
+        "scrcpy",
+        sy(layout.scrcpy_row),
+        &mut scrcpy,
+        pill_scrcpy
+            .as_ref()
+            .map(|(_, text, at)| (text.as_str(), *at)),
+        engine_locked,
+    );
+    if let Some(p) = chg {
+        app.settings.set_scrcpy_path(&p);
+    }
+    if browse {
+        app.browse_engine("scrcpy");
+    }
+    if detect {
+        app.start_probe("scrcpy", &app.settings.draft.scrcpy_path.clone());
+    }
+
+    let mut adb = app.settings.draft.adb_path.clone();
+    let pill_adb = app.probe_pill_for("adb");
+    let (chg, browse, detect) = path_row(
+        ui,
+        &t,
+        "adb",
+        sy(layout.adb_row),
+        &mut adb,
+        pill_adb.as_ref().map(|(_, text, at)| (text.as_str(), *at)),
+        engine_locked,
+    );
+    if let Some(p) = chg {
+        app.settings.set_adb_path(&p);
+    }
+    if browse {
+        app.browse_engine("adb");
+    }
+    if detect {
+        app.start_probe("adb", &app.settings.draft.adb_path.clone());
+    }
+
+    if let Some(hint) = layout.lock_hint {
+        let hint = sy(hint);
+        paint::rounded_fill(&painter, hint, 10.0, over(t.bg, t.warn, 0.14));
+        paint::text_left_weight(
+            &painter,
+            Pos2::new(hint.left() + 8.0, hint.top() + 10.0),
+            "会话运行中，不可修改引擎路径",
+            12.0,
+            t.warn,
+            false,
+        );
+    }
+
+    let fps = app.settings.draft.fps.unwrap_or(60);
+    if let Some(v) = number_cell(
+        ui,
+        &t,
+        egui::Id::new("fps"),
+        sy(layout.fps_cell),
+        "FPS",
+        fps,
+        (1, 240),
+        true,
+    ) {
+        app.settings.set_fps(v);
+    }
+    let bitrate = app.settings.draft.bitrate_mbps.unwrap_or(30);
+    if let Some(v) = number_cell(
+        ui,
+        &t,
+        egui::Id::new("bitrate"),
+        sy(layout.bitrate_cell),
+        "码率 Mbps",
+        bitrate,
+        (1, 200),
+        true,
+    ) {
+        app.settings.set_bitrate(v);
+    }
+
+    // 投屏质量卡内容
+    const CODECS: [(&str, &str); 4] = [
+        ("auto", "自动(推荐)"),
+        ("h264", "H.264"),
+        ("h265", "H.265"),
+        ("av1", "AV1"),
+    ];
+    for (i, (value, label)) in CODECS.iter().enumerate() {
+        let r = sy(layout.codec_row[i]);
+        if mode_button(
+            ui,
+            &t,
+            egui::Id::new(("codec", i)),
+            r,
+            label,
+            app.settings.draft.video_codec == *value,
+        ) {
+            app.settings.set_video_codec(value);
+        }
+    }
+    caption(&painter, &t, py(layout.audio_label), "音频");
+    const AUDIOS: [(&str, &str); 3] = [
+        ("latest", "仅最新会话"),
+        ("all", "全部会话"),
+        ("off", "静音"),
+    ];
+    for (i, (value, label)) in AUDIOS.iter().enumerate() {
+        let r = sy(layout.audio_row[i]);
+        if mode_button(
+            ui,
+            &t,
+            egui::Id::new(("audio", i)),
+            r,
+            label,
+            app.settings.draft.audio_policy == *value,
+        ) {
+            app.settings.set_audio_policy(value);
+        }
+    }
+    if switch_row(
+        ui,
+        &t,
+        egui::Id::new("tso"),
+        sy(layout.tso_row),
+        "镜像时关闭设备屏幕",
+        app.settings.draft.turn_screen_off,
+    ) {
+        app.settings
+            .set_turn_screen_off(!app.settings.draft.turn_screen_off);
+    }
+    caption(
+        &painter,
+        &t,
+        py(layout.tso_caption),
+        "黑屏防误触；仅整机镜像有效",
+    );
+
+    let dpi_auto = app.settings.draft.dpi.is_none();
+    if switch_row(
+        ui,
+        &t,
+        egui::Id::new("dpiauto"),
+        sy(layout.dpi_switch),
+        "DPI 跟随设备",
+        dpi_auto,
+    ) {
+        app.settings
+            .set_dpi(if dpi_auto { Some(160) } else { None });
+    }
+    let dpi_val = app.settings.draft.dpi.unwrap_or(160);
+    if let Some(v) = number_cell(
+        ui,
+        &t,
+        egui::Id::new("dpi"),
+        sy(layout.dpi_cell),
+        "DPI",
+        dpi_val,
+        (120, 640),
+        !dpi_auto,
+    ) {
+        app.settings.set_dpi(Some(v));
+    }
+    caption(
+        &painter,
+        &t,
+        py(layout.dpi_caption),
+        "默认 160（同屏内容最多）；跟随则与设备一致",
+    );
+
+    caption(&painter, &t, py(layout.rs_label), "渲染倍率");
+    let scale_now = app.settings.draft.render_scale;
+    paint::text_centered(
+        &painter,
+        py(layout.rs_value),
+        &format!("{scale_now:.1}×"),
+        13.0,
+        true,
+        t.accent,
+    );
+    if let Some(v) = render_scale_slider(
+        ui,
+        &t,
+        egui::Id::new("rscale"),
+        sy(layout.rs_slider),
+        scale_now,
+    ) {
+        app.settings.set_render_scale(v);
+    }
+    caption(
+        &painter,
+        &t,
+        py(layout.rs_caption),
+        "窗口 ÷ 倍率 = 实际渲染分辨率；1× = 原生",
+    );
+
+    // 窗口栏（默认）卡内容
+    caption(&painter, &t, py(layout.top_label), "上巴");
+    const TOPS: [(&str, &str); 2] = [("immersive", "沉浸"), ("native", "系统")];
+    for (i, (value, label)) in TOPS.iter().enumerate() {
+        let r = sy(layout.top_row[i]);
+        if mode_button(
+            ui,
+            &t,
+            egui::Id::new(("topbar", i)),
+            r,
+            label,
+            app.settings.draft.top_bar_mode == *value,
+        ) {
+            app.settings.set_bar_mode(true, value);
+        }
+    }
+    caption(&painter, &t, py(layout.bottom_label), "下巴");
+    const BOTTOMS: [(&str, &str); 3] = [
+        ("immersive", "沉浸"),
+        ("native", "系统"),
+        ("none", "不显示"),
+    ];
+    for (i, (value, label)) in BOTTOMS.iter().enumerate() {
+        let r = sy(layout.bottom_row[i]);
+        if mode_button(
+            ui,
+            &t,
+            egui::Id::new(("botbar", i)),
+            r,
+            label,
+            app.settings.draft.bottom_bar_mode == *value,
+        ) {
+            app.settings.set_bar_mode(false, value);
+        }
+    }
+    caption(&painter, &t, py(layout.wb_caption), "应用未单独设置时生效");
+
+    // 外观卡内容
+    caption(&painter, &t, py(layout.theme_label), "主题");
+    const THEMES: [(&str, &str); 3] = [("light", "亮色"), ("dark", "暗色"), ("system", "跟随系统")];
+    for (i, (value, label)) in THEMES.iter().enumerate() {
+        let r = sy(layout.theme_row[i]);
+        if mode_button(
+            ui,
+            &t,
+            egui::Id::new(("theme", i)),
+            r,
+            label,
+            app.settings.draft.theme == *value,
+        ) {
+            app.settings.set_theme(value);
+        }
+    }
+    if switch_row(
+        ui,
+        &t,
+        egui::Id::new("glass"),
+        sy(layout.glass_row),
+        "玻璃材质",
+        app.settings.draft.glass_enabled,
+    ) {
+        app.settings.set_glass(!app.settings.draft.glass_enabled);
+    }
+
+    // footer：保存主按钮（视口外恒定右下）
+    let resp = ui.interact(layout.save, egui::Id::new("settings-save"), Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        t.accent_press
+    } else if resp.hovered() {
+        t.accent_hover
+    } else {
+        t.accent
+    };
+    paint::rounded_fill(ui.painter(), layout.save, 10.0, fill);
+    paint::text_centered(
+        ui.painter(),
+        layout.save.center(),
+        "保存",
+        13.0,
+        true,
+        egui::Color32::WHITE,
+    );
+    if resp.clicked() {
+        app.save_settings_and_return();
+    }
+}
+
+/// 画卡标题时从引用反查名字（绘制循环需要；四次调用对应四卡）。
+fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
+    if std::ptr::eq(c, &layout.engine) {
+        "引擎"
+    } else if std::ptr::eq(c, &layout.quality) {
+        "投屏质量"
+    } else if std::ptr::eq(c, &layout.windowbar) {
+        "窗口栏（默认）"
+    } else {
+        "外观"
+    }
+}

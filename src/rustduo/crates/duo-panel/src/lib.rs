@@ -15,7 +15,8 @@ pub mod paint;
 pub mod pinyin;
 pub mod prefs;
 pub mod sessions;
-pub mod settings_view;
+pub mod settings;
+mod settings_view;
 pub mod theme;
 pub mod winproc;
 

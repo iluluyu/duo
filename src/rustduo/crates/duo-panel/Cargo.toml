@@ -9,6 +9,7 @@ description = "Duo panel UI in egui (TODO 0.4 v0): settings page, glass window, 
 duo-core = { path = "../duo-core" }
 eframe = { version = "0.31", features = ["wgpu"] }
 egui = "0.31"
+rfd = "0.15"
 egui_extras = { version = "0.31", features = ["svg", "file", "image"] }
 encoding_rs = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use eframe::egui::{RichText, Sense, Vec2};
+use eframe::egui::{Sense, Vec2};
 
 use crate::sessions;
 use duo_core::aspects::{
@@ -26,10 +26,8 @@ use crate::prefs::{
     DisplayChoice,
 };
 use crate::sessions::{panel_log_path, session_label, Sessions, MIRROR_KEY};
-use crate::settings_view::{
-    SettingsPageModel, AUDIO_CHOICES, BAR_CHOICES, CODEC_CHOICES, CORNER_CHOICES, THEME_CHOICES,
-};
-use crate::theme::{rounding, ThemeKind, Tokens};
+use crate::settings_view::SettingsPageModel;
+use crate::theme::{ThemeKind, Tokens};
 
 /// 两页常驻（胶囊即导航）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +73,9 @@ fn bar_entry_after(
 /// 已装探测后台任务结果（已装包名全集 + duo-core apps 行）。
 type InstalledResult = Result<(Vec<String>, Vec<backend::AppRow>), String>;
 
+/// 引擎路径检测结果：。*/
+pub(crate) type ProbeResult = Result<(String, bool, String), String>;
+
 /// 移动应用到虚拟屏的后台任务结果。
 struct MoveResult {
     package: String,
@@ -117,6 +118,12 @@ pub struct PanelApp {
     pub(crate) media_volume: i64,
     /// 网格滚动偏移（像素；QML interactive 网格的 egui 对应物）。
     pub(crate) grid_scroll: f32,
+    /// 设置页滚动偏移（像素）。
+    pub(crate) settings_scroll: f32,
+    /// 引擎路径检测后台任务：(tool, ok, detail)。
+    pub(crate) probe_bg: Option<Background<ProbeResult>>,
+    /// 检测结果瞬时胶囊：(tool, 文案, 落地时刻)；2.5s 淡出（QML 同款）。
+    pub(crate) probe_pill: Option<(String, String, Instant)>,
     pub(crate) volume_pending: Option<(i64, Instant)>,
     /// 出图模式：(path, 已渲染帧数, 启动时刻)。帧数 ≥40 且满 1.6s（桩
     /// duo-core 的 watch/apps 首行落位）才请求截图，收到即存盘退出。
@@ -160,6 +167,9 @@ impl PanelApp {
             toast: None,
             media_volume: -1,
             grid_scroll: 0.0,
+            settings_scroll: 0.0,
+            probe_bg: None,
+            probe_pill: None,
         };
         // QML _status_text 初始「就绪」→ 启动即挂状态 toast
         app.toast_now("就绪");
@@ -295,6 +305,125 @@ impl PanelApp {
             {
                 self.settings.set_bar_mode(false, mode);
                 ui.close_menu();
+            }
+        }
+    }
+
+    /// 引擎锁（会话运行中不可改路径）。
+    pub(crate) fn engine_locked(&self) -> bool {
+        !self.sessions.running().is_empty()
+    }
+
+    /// 设置读取问题清单（红条；空 = 无）。
+    pub(crate) fn settings_problems(&self) -> String {
+        self.settings
+            .flash
+            .clone()
+            .filter(|f| f.starts_with("未保存：") || !f.contains("已保存"))
+            .unwrap_or_default()
+    }
+
+    /// 引擎路径检测结果胶囊。
+    pub(crate) fn probe_pill_for(&self, tool: &str) -> Option<(String, String, Instant)> {
+        self.probe_pill
+            .as_ref()
+            .filter(|(t, _, _)| t == tool)
+            .cloned()
+    }
+
+    /// 异步检测引擎路径（pyduo SettingsApi.probe：--version 可执行性）。
+    pub(crate) fn start_probe(&mut self, tool: &str, path: &str) {
+        let tool = tool.to_string();
+        let path = path.trim().to_string();
+        self.probe_pill = Some((tool.clone(), "检测中…".into(), Instant::now()));
+        self.probe_bg = Some(Background::spawn(move || {
+            let bin = if path.is_empty() {
+                // PATH 查找（which 语义）
+                let ext = if cfg!(windows) { ".exe" } else { "" };
+                let candidates: Vec<PathBuf> = std::env::var_os("PATH")
+                    .map(|p| std::env::split_paths(&p).collect())
+                    .unwrap_or_default();
+                candidates
+                    .iter()
+                    .map(|d| d.join(format!("{tool}{ext}")))
+                    .find(|p| p.is_file())
+                    .ok_or_else(|| format!("{tool} 不在 PATH"))?
+                    .display()
+                    .to_string()
+            } else {
+                path.clone()
+            };
+            let out = std::process::Command::new(&bin)
+                .arg("--version")
+                .output()
+                .map_err(|_| "无法运行".to_string())?;
+            let ok = out.status.success();
+            let detail = if ok {
+                let first = String::from_utf8_lossy(&out.stdout);
+                first.lines().next().unwrap_or("").trim().to_string()
+            } else {
+                String::new()
+            };
+            Ok((tool, ok, detail))
+        }));
+    }
+
+    /// 后台检测结果落地（update 泵）。
+    pub(crate) fn pump_probe(&mut self) {
+        let Some(bg) = self.probe_bg.take() else {
+            return;
+        };
+        match bg.take() {
+            Some(Ok((tool, ok, detail))) => {
+                let path_set = match tool.as_str() {
+                    "scrcpy" => !self.settings.draft.scrcpy_path.trim().is_empty(),
+                    _ => !self.settings.draft.adb_path.trim().is_empty(),
+                };
+                let text = if ok {
+                    if detail.is_empty() {
+                        "✓ 可执行".to_string()
+                    } else {
+                        format!("✓ {detail}")
+                    }
+                } else if path_set {
+                    "✗ 无法运行，请检查路径".to_string()
+                } else {
+                    "✗ 未在 PATH 找到，可手动填写路径".to_string()
+                };
+                self.probe_pill = Some((tool, text, Instant::now()));
+            }
+            Some(Err(_)) => {}
+            None => self.probe_bg = Some(bg),
+        }
+    }
+
+    /// 保存并返回主页（QML saveChanges：空清单 = accepted → resolveAdb +
+    /// pop；非空留在页内红条）。
+    pub(crate) fn save_settings_and_return(&mut self) {
+        self.settings.save();
+        if !self.settings.dirty {
+            self.page = Page::Home;
+            self.resolve_adb();
+            self.settings.dismiss_flash();
+        }
+    }
+
+    /// 保存后重找 adb（QML Main 侧 resolveAdb 语义）。
+    fn resolve_adb(&mut self) {
+        self.adb = resolve_adb_path(&self.settings.draft, None, &self.adb.clone());
+    }
+
+    /// 浏览按钮（native 文件对话框；shot/无交互环境无害）。
+    pub(crate) fn browse_engine(&mut self, _tool: &str) {
+        if let Some(picked) = rfd::FileDialog::new()
+            .set_title("选择可执行文件")
+            .pick_file()
+        {
+            let text = picked.display().to_string();
+            if _tool == "scrcpy" {
+                self.settings.set_scrcpy_path(&text);
+            } else {
+                self.settings.set_adb_path(&text);
             }
         }
     }
@@ -915,204 +1044,10 @@ impl PanelApp {
         });
     }
 
-    fn toast(&mut self, ui: &mut egui::Ui, msg: &str) {
-        let t = self.tokens;
-        egui::Frame::NONE
-            .fill(t.pill)
-            .corner_radius(14.0)
-            .inner_margin(egui::Margin::symmetric(12, 6))
-            .show(ui, |ui| {
-                ui.label(RichText::new(msg).size(13.0).color(t.ink));
-            });
-    }
-
     // -------------------------------------------------------------- 设置页
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
-        if let Some(msg) = self.settings.flash.clone() {
-            self.toast(ui, &msg);
-            ui.add_space(4.0);
-            self.settings.dismiss_flash();
-        }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.settings_group(ui, "投屏质量", |ui, app| {
-                let t = app.tokens;
-                let codec_now = app.settings.draft.video_codec.clone();
-                ui.label(RichText::new("视频编码").size(13.0).color(t.ink2));
-                let codec = combo(ui, "duo-codec", &codec_now, &CODEC_CHOICES, |v| {
-                    v.to_string()
-                });
-                if codec != codec_now {
-                    app.settings.set_video_codec(&codec);
-                }
-                ui.add_space(8.0);
-                let fps_now = app.settings.draft.fps.unwrap_or(60);
-                let mut fps = fps_now;
-                ui.add(egui::Slider::new(&mut fps, 1..=240).text("帧率"));
-                if fps != fps_now {
-                    app.settings.set_fps(fps);
-                }
-                let bitrate_now = app.settings.draft.bitrate_mbps.unwrap_or(30);
-                let mut bitrate = bitrate_now;
-                ui.add(egui::Slider::new(&mut bitrate, 1..=200).text("码率 Mbps"));
-                if bitrate != bitrate_now {
-                    app.settings.set_bitrate(bitrate);
-                }
-            });
-            self.settings_group(ui, "音频", |ui, app| {
-                let policy_now = app.settings.draft.audio_policy.clone();
-                let policy = combo(ui, "duo-audio", &policy_now, &AUDIO_CHOICES, audio_label);
-                if policy != policy_now {
-                    app.settings.set_audio_policy(&policy);
-                }
-                ui.add_space(6.0);
-                let serial = app.serial();
-                let mut volume = app.media_volume;
-                ui.add_enabled(
-                    serial.is_some(),
-                    egui::Slider::new(&mut volume, 0..=15).text("媒体音量"),
-                );
-                if volume != app.media_volume {
-                    app.media_volume = volume;
-                    if let (Some(binary), Some(serial)) = (app.duo_core.clone(), serial) {
-                        let adb = app.adb.clone();
-                        app.volume_bg = Some(Background::spawn(move || {
-                            let _ = backend::set_volume(
-                                &binary.display().to_string(),
-                                &adb,
-                                &serial,
-                                volume,
-                            );
-                        }));
-                    }
-                }
-            });
-            self.settings_group(ui, "窗口栏", |ui, app| {
-                let top_now = app.settings.draft.top_bar_mode.clone();
-                let top = bar_combo(ui, "duo-top-bar", &top_now, "上巴");
-                if top != top_now {
-                    app.settings.set_bar_mode(true, &top);
-                }
-                let bottom_now = app.settings.draft.bottom_bar_mode.clone();
-                let bottom = bar_combo(ui, "duo-bottom-bar", &bottom_now, "下巴");
-                if bottom != bottom_now {
-                    app.settings.set_bar_mode(false, &bottom);
-                }
-            });
-            self.settings_group(ui, "外观", |ui, app| {
-                let mut glass = app.settings.draft.glass_enabled;
-                if ui.checkbox(&mut glass, "玻璃（系统 blur）").changed() {
-                    app.settings.set_glass(glass);
-                }
-                let theme_now = app.settings.draft.theme.clone();
-                let theme = combo(ui, "duo-theme", &theme_now, &THEME_CHOICES, |v| {
-                    v.to_string()
-                });
-                if theme != theme_now {
-                    app.settings.set_theme(&theme);
-                }
-                ui.add_space(4.0);
-                let corner_now = app.settings.draft.corner_mode.clone();
-                let corner = combo(ui, "duo-corner", &corner_now, &CORNER_CHOICES, |v| {
-                    v.to_string()
-                });
-                if corner != corner_now {
-                    app.settings.set_corner_mode(&corner);
-                }
-                if app.settings.draft.corner_mode == "g2" {
-                    let size_now = app.settings.draft.corner_size_dip;
-                    let mut size = size_now;
-                    ui.add(egui::Slider::new(&mut size, 0..=96).text("圆角 DIP"));
-                    if size != size_now {
-                        app.settings.set_corner_size(size);
-                    }
-                }
-            });
-            self.settings_group(ui, "显示", |ui, app| {
-                let dpi_follow = app.settings.draft.dpi.is_none();
-                if ui.checkbox(&mut { dpi_follow }, "密度跟随设备").changed() {
-                    if dpi_follow {
-                        app.settings.set_dpi(None);
-                    } else {
-                        app.settings.set_dpi(Some(160));
-                    }
-                }
-                if let Some(dpi) = app.settings.draft.dpi {
-                    let mut value = dpi;
-                    ui.add(egui::Slider::new(&mut value, 120..=640).text("密度 dpi"));
-                    if value != dpi {
-                        app.settings.set_dpi(Some(value));
-                    }
-                }
-                let scale_now = app.settings.draft.render_scale;
-                let mut scale = scale_now;
-                ui.add(egui::Slider::new(&mut scale, 1.0..=3.0).text("渲染倍率"));
-                if scale != scale_now {
-                    app.settings.set_render_scale(scale);
-                }
-                let mut screen_off = app.settings.draft.turn_screen_off;
-                if ui.checkbox(&mut screen_off, "镜像时关闭设备屏幕").changed() {
-                    app.settings.set_turn_screen_off(screen_off);
-                }
-            });
-            self.settings_group(ui, "工具路径", |ui, app| {
-                let mut scrcpy = app.settings.draft.scrcpy_path.clone();
-                ui.label(RichText::new("scrcpy").size(13.0));
-                let edit = egui::TextEdit::singleline(&mut scrcpy)
-                    .hint_text("PATH 探测")
-                    .desired_width(ui.available_width());
-                if ui.add(edit).changed() {
-                    app.settings.set_scrcpy_path(&scrcpy);
-                }
-                let mut adb = app.settings.draft.adb_path.clone();
-                ui.label(RichText::new("adb").size(13.0));
-                let edit = egui::TextEdit::singleline(&mut adb)
-                    .hint_text("PATH 探测")
-                    .desired_width(ui.available_width());
-                if ui.add(edit).changed() {
-                    app.settings.set_adb_path(&adb);
-                }
-            });
-            let t = self.tokens;
-            let label = if self.settings.dirty {
-                "保存"
-            } else {
-                "已保存"
-            };
-            let button =
-                egui::Button::new(RichText::new(label).size(13.0)).fill(if self.settings.dirty {
-                    t.accent
-                } else {
-                    t.segment_fill
-                });
-            if ui.add_sized([ui.available_width(), 28.0], button).clicked() {
-                self.settings.save();
-                self.adb = resolve_adb_path(&self.settings.draft, None, "adb");
-                self.duo_core = backend::find_duo_core();
-                self.ensure_watch();
-            }
-        });
-    }
-
-    fn settings_group(
-        &mut self,
-        ui: &mut egui::Ui,
-        title: &str,
-        body: impl FnOnce(&mut egui::Ui, &mut Self),
-    ) {
-        let t = self.tokens;
-        egui::Frame::NONE
-            .fill(t.card)
-            .stroke(egui::Stroke::new(1.0_f32, t.card_border))
-            .corner_radius(rounding::CARD)
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(title).size(14.0).strong().color(t.ink));
-                ui.add_space(6.0);
-                body(ui, self);
-            });
-        ui.add_space(8.0);
+        crate::settings::show(self, ui);
     }
 
     /// 出图泵：帧数 ≥40 且 1.6s 就绪后请求 Screenshot；事件回包存盘即退。
@@ -1121,7 +1056,7 @@ impl PanelApp {
             return;
         };
         *frames += 1;
-        let ready = *frames >= 40 && started.elapsed() >= Duration::from_millis(1600);
+        let ready = *frames >= 40 && started.elapsed() >= Duration::from_millis(2900);
         if ready {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
@@ -1234,48 +1169,6 @@ impl PanelApp {
     }
 }
 
-fn combo(
-    ui: &mut egui::Ui,
-    id: &str,
-    current: &str,
-    choices: &[&str],
-    label: impl Fn(&str) -> String,
-) -> String {
-    let mut value = current.to_string();
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(label(current))
-        .show_ui(ui, |ui| {
-            for c in choices {
-                ui.selectable_value(&mut value, c.to_string(), label(c));
-            }
-        });
-    value
-}
-
-fn audio_label(policy: &str) -> String {
-    match policy {
-        "latest" => "仅最新会话".into(),
-        "all" => "全部会话".into(),
-        _ => "静音".into(),
-    }
-}
-
-fn bar_combo(ui: &mut egui::Ui, id: &str, current: &str, label: &str) -> String {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(13.0));
-        combo(ui, id, current, &BAR_CHOICES, bar_label)
-    })
-    .inner
-}
-
-fn bar_label(mode: &str) -> String {
-    match mode {
-        "immersive" => "沉浸".into(),
-        "native" => "系统标题栏".into(),
-        _ => "不显示".into(),
-    }
-}
-
 impl eframe::App for PanelApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.tokens.bg;
@@ -1307,6 +1200,7 @@ impl eframe::App for PanelApp {
         self.sync_visuals(ctx);
         self.pump_background();
         self.pump_volume_debounce();
+        self.pump_probe();
         self.pump_shot(ctx);
 
         // 画布（bg + 六枚色斑）铺满；卡片自管边距（QML x:20 语义）
@@ -1315,11 +1209,18 @@ impl eframe::App for PanelApp {
             .show(ctx, |ui| {
                 let full = ui.max_rect();
                 ui.painter().rect_filled(full, 0, self.tokens.bg);
-                crate::paint::canvas_spots(ui.painter(), &self.tokens, full);
-                self.top_capsule(ui);
                 match self.page {
-                    Page::Home => crate::home::show(self, ui),
-                    Page::Settings => self.settings_page(ui),
+                    // 设置页自铺无斑底（QML Rectangle 盖色斑）+ 内容，
+                    // 之后胶囊恒在最上（跨页常驻）
+                    Page::Home => {
+                        crate::paint::canvas_spots(ui.painter(), &self.tokens, full);
+                        crate::home::show(self, ui);
+                        self.top_capsule(ui);
+                    }
+                    Page::Settings => {
+                        self.settings_page(ui);
+                        self.top_capsule(ui);
+                    }
                 }
             });
         // Toast（2.5s 淡出语义在 home::toast 内）
