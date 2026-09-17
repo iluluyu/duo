@@ -124,22 +124,37 @@ duo/                       # 仓库根（不变）
   （逻辑×1.25）像素采样对拍
 - GLM-5.3-flash 终验：light/dark 双主题主面板宣布像素级一致 ✅
 
-### P3 交互语义移植（未开始）
+### P3 交互语义移植（✅ 2026-09-17 完成，语义对齐 controller.py）
 
-- [ ] 点击路由：磁贴/固定卡 = startSession（运行中 →
-      startAppOnDisplay 拉回虚拟屏）；右键/长按 = 上下文菜单
-- [ ] 应用右键菜单全量：打开/置顶/竖横屏/显示模式（自适应窗口 |
-      固定比例 ▸ 4+4+机身横竖）/窗口栏 ▸（上/下巴 跟随默认/沉浸/
-      系统[/不显示]）/音频独占/断开保留/DPI ▸/渲染倍率 ▸/
-      自适应窗口记忆——逐条对齐 controller.py 槽位与 prefs 写入
-- [ ] 镜像卡右键：打开投屏/镜像时关闭设备屏幕/默认窗口栏
-- [ ] 搜索行为：拼音首字母前缀 + 标签小写包含、Ctrl+F 聚焦、
-      Esc 清空失焦、清空钮
-- [ ] 音量条：未知中性态、拖动视觉先行 + 200ms 防抖落命令
-- [ ] 会话动作：芯片点击 startAppOnDisplay（am start --display）、
-      ✕ stopSession、镜像会话禁点
-- [ ] 键盘：Ctrl+, 设置、Esc 返回
-- [ ] 单测：菜单动作 → prefs/sessions 调用路径；搜索过滤合同
+- [x] 点击路由：磁贴/固定卡 = startSession（运行中 →
+      startAppOnDisplay 拉回虚拟屏）；右键 = 上下文菜单
+- [x] 应用右键菜单全量（QML appContextMenu 结构逐行）：打开 / 置顶
+      到固定栏 / hairline / 自适应窗口（勾选行+关菜单）/ 固定比例 ▸
+      （小节头 横屏 21:9·16:9·4:3·1:1·机身 / 竖屏 3:4·2:3·5:7·9:16·
+      机身，圆点=fixed 记忆）/ 窗口栏 ▸（上巴 跟随默认·沉浸·系统；
+      下巴 跟随默认·沉浸·系统·不显示，圆点=explicit）/ 音频独占（勾选
+      **不收菜单**）/ 断开保留画面（勾选不收菜单）/ DPI ▸（跟随默认·
+      160·240·320·自定义 −/+ 步进 10 键入 120–640）/ 渲染倍率 ▸
+      （跟随默认·1×·1.4×·2×·3×·微调 0.1）
+- [x] set_display_fixed 校验对齐 pyduo：冻结表 id 直接过、机身对需
+      设备（无设备 toast 不落库）、未知 id 拒绝；toast「将以 X 常驻」；
+      set_bar 两键全清整条退场（不存空壳节）
+- [x] 删除 QML 菜单没有的项：「按比例打开」临时启动分支、竖横屏
+      菜单项（pyduo togglePortrait 同为无调用点死代码，连带删除）
+- [x] 镜像卡右键（QML mirrorContextMenu 逐行）：打开投屏 / hairline /
+      窗口栏一级平铺（上巴 沉浸·系统；下巴 沉浸·系统·不显示）→
+      setDefaultBarMode；「镜像时关闭设备屏幕」不在 QML 菜单，已删
+- [x] 搜索行为：拼音首字母前缀 + 标签小写包含、Ctrl+F 聚焦、
+      Esc 先清空再失焦、清空钮 28×28（hover danger 洗色）
+- [x] 音量条：未知中性态、拖动视觉先行 + 200ms 防抖落命令
+- [x] 会话动作：芯片点击 startAppOnDisplay、✕ stopSession（hover
+      danger）、镜像会话禁点
+- [x] 键盘：Ctrl+, 设置、Esc 设置页取消返回（settings.reject =
+      放弃 draft 重载磁盘，QML cancelled 语义）
+- [x] 单测：resolve_fixed_aspect 四分支 / bar_entry_after 全清退场
+      + 单边保留（决策提纯为模块级纯函数）
+- [ ] 遗留（并入 P4）：菜单浮层像素皮肤（menuFill 实底 + hairline +
+      MenuRow 32px 行高/圆点 4px）——当前 egui 默认菜单皮肤
 
 ### P4 设置页像素移植（未开始）
 
