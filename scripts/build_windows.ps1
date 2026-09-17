@@ -12,7 +12,7 @@ Set-Location $repo
 # reachable (e.g. building from a checkout elsewhere).
 $wslRepo = '\\wsl.localhost\archlinux\home\luyu\duo'
 if (Test-Path $wslRepo -ErrorAction SilentlyContinue) {
-        foreach ($f in @('duo.spec', 'duo\ui\app.py', 'assets\duo.ico', 'gui_entry.py')) {
+        foreach ($f in @('duo.spec', 'src\pyduo\ui\app.py', 'assets\duo.ico', 'gui_entry.py')) {
                 $here = Get-FileHash -Algorithm SHA256 (Join-Path $repo $f)
                 $there = Get-FileHash -Algorithm SHA256 (Join-Path $wslRepo $f)
                 if ($here.Hash -ne $there.Hash) {

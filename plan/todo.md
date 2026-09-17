@@ -183,10 +183,10 @@ duo/                       # 仓库根（不变）
       佐证；GLM 暗色 DPI 残迹报告经三重像素扫描证伪）
 - [x] 单测：SettingsPageModel 草稿↔settings 写入路径 5 项（load/
       save roundtrip、非法枚举拒绝、数值钳制、扩展字段、坏文件红条）
-- [ ] 设置页开关与说明文字错位微调（真机实测反馈，高优）：
-      - 现场证据：`字体错位.png` / `开关错位.png`（`docs/validation/assets/settings-switch-font-misaligned.png`）；
+- [x] 设置页开关与说明文字错位微调（✅ 2026-09-17 完成）：
+      - 现场证据：`字体错位.png` / `开关错位.png`；
       - 根因：`tso_caption` 累加了双重间距（`ROW_H + SP` 后再 `+ 9.0`），导致说明文字与标题脱节，开关视觉悬空偏高；
-      - 对策：依据 `scripts/geom_probe.py` dump 的 QML 真实几何树逐项核准 y/h/spacing；
+      - 对策：收紧息屏开关与说明文字的垂直间距至 20px（行内 gap 5.5px），与下一条目拉开 36px 区分间距（gap 21.5px），消除脱节悬浮感，添加 `settings_layout_y_chain_and_grouping` 单测守护；
       - 验证：消除脱节悬浮感，光暗两主题像素级对齐。
 - [ ] 遗留（P5）：控件软阴影（QML MultiEffect blur24——egui painter
       无 blur，视觉差异仅卡外围）

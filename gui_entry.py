@@ -29,7 +29,7 @@ def _install_crash_capture():
     import faulthandler
     import traceback
 
-    from duo.core.paths import data_dir
+    from pyduo.core.paths import data_dir
 
     log = data_dir() / "logs" / "panel-errors.log"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -48,11 +48,11 @@ def _install_crash_capture():
 
 def _main() -> int:
     if len(sys.argv) > 1:
-        from duo.__main__ import main
+        from pyduo.__main__ import main
 
         return main(sys.argv[1:])
     _install_crash_capture()
-    from duo.ui.app import run_app
+    from pyduo.ui.app import run_app
 
     return run_app()
 

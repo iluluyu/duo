@@ -662,3 +662,24 @@ C#。关玻璃的普通材质（Opus 配方）：
 **住在宿主内 = 几何相对客户区、随宿主免费移动**：零 WinEvent 钩子、零
 前台 z 序重断言、零 tick 跟随（唯一保留的 tick 动作是本地兄弟 z 序
 AssertAbove 与漂移 Glue）。
+
+## §15 方案收敛与生产基线（2026-09-17）
+
+### 1. 架构收敛：回归并固化 C# Overlay 三明治方案
+
+经过工程实测与权衡：
+- **SetParent 宿主嵌入归档**：跨进程 `SetParent` 将 SDL 渲染窗转为子窗口虽能省去跟随同步，但带来了多 DPI 混合拉伸、SDL 输入队列抢占、WinForms/Win32 消息循环偶发死锁等复杂边界条件。该方案正式归档为实验性探索。
+- **C# Overlay 生产基线**：继续全面采用成熟稳定的三明治架构（`chrome_overlay.cs` + `chrome.rs`）。通过现场 C# 编译运行无边框透明交互顶栏与毛玻璃下巴，兼备高帧率渲染自由与沉浸式窗口质感。
+- **CLI 参数统一**：`duo-core mirror` 与 Python CLI 统一使用 `--chrome`，移除未成熟的 `--embed` 实验参数，保证双端逻辑与测试合同 100% 对齐。
+
+### 2. 全局静默无黑窗（CREATE_NO_WINDOW）
+
+针对 Windows 平台下后台调用进程时偶发的 cmd/conhost 控制台黑窗闪烁问题，Duo 原生层统一引入 `quiet_command` 规范：
+- Windows 侧创建全部子进程（`adb.exe`、`scrcpy.exe`、`csc.exe`、`DuoChromeOverlay.exe`）时显式附加 `CREATE_NO_WINDOW = 0x08000000` 标志。
+- 后台轮询与进程托管全面静默化，彻底消除用户界面弹窗抖动。
+
+### 3. Flex 虚拟显示屏方向锁定
+
+在自由窗口模式（flex）下，安卓系统响应传感器或应用请求可能会自动旋转虚拟屏，导致桌面端窗口与视频比例冲突。
+- 一旦解析到虚拟显示屏 ID，立即执行 `wm set-ignore-orientation-request -d <id> 1`，将虚拟屏方向与旋转响应严格锁定在桌面端窗口决定的横/竖规格下。
+

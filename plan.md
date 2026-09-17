@@ -15,20 +15,14 @@
 
 ## 2. 当前待解决的问题
 
-### 2.1 设置页开关与文字对齐微调（高优，真机视觉缺陷）
+### 2.1 设置页开关与文字对齐微调（✅ 2026-09-17 已完成）
 
 - **问题证据**：`字体错位.png`、`开关错位.png`（归档至 [`docs/validation/assets/settings-switch-font-misaligned.png`](file:///home/luyu/duo/docs/validation/assets/settings-switch-font-misaligned.png)）。
-- **现象描述**：
-  1. 「镜像时关闭设备屏幕」开关位于第一行标题右侧，下方的说明文字「黑屏防误触；仅整机镜像有效」与标题行间距过大，导致视觉上说明文字脱离功能单元，开关显得过高悬浮；
-  2. 「DPI 跟随设备」开关行与下方 DPI 数值框/说明文字的相对位置与禁用态联动需精确对齐；
-  3. egui 字体行盒与 QML `Text` 的垂直居中锚定存在 2~4px 的微小偏差。
-- **排查与根因**：
-  - `src/rustduo/crates/duo-panel/src/settings.rs` 中 `tso_caption` 在累加 `ROW_H + SP` 后额外增加了 `+ 9.0`（双重间距）；
-  - `switch_row` 中标签与开关居中于 `ROW_H`，而包含二级说明的复合行需要按照 QML 组件层级（`Item { height: 32 }` + `CaptionText`）紧凑排布。
+- **根因分析**：`src/rustduo/crates/duo-panel/src/settings.rs` 中 `tso_caption` 在累加 `ROW_H + SP` 后额外增加了 `+ 9.0`（双重间距，达 34px），导致说明文字与标题行严重脱节，开关视觉悬空偏高。
 - **解决措施**：
-  - [ ] 依据 [`scripts/geom_probe.py`](file:///home/luyu/duo/scripts/geom_probe.py) 导出的真实 QML 几何树数据校准 `settings.rs` 的 Y 链计算；
-  - [ ] 优化 `switch_row` 与说明文字的相对布局，消除视觉悬空感；
-  - [ ] 重新生成暗色/亮色截图，核验像素级对齐。
+  - [x] 校准 `SettingsLayout::compute`：收紧息屏开关与说明文字垂直间距至 20px（内部 gap 5.5px），与下一条目拉开 36px 区分间距（gap 21.5px）；
+  - [x] 消除脱节悬浮感，添加 `settings_layout_y_chain_and_grouping` 单测守护；
+  - [x] 更新 `docs/ui/DESIGN.md` §3.10 规格定义。
 
 ### 2.2 Windows 真机全链路验收（P5）
 
