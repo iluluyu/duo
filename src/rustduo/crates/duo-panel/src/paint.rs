@@ -101,6 +101,21 @@ pub fn text_left_weight(
     painter.galley(pos, galley, Color32::WHITE);
 }
 
+/// 左对齐、垂直居中于 pos.y（QML anchors.verticalCenter 对译；设置页
+/// 标签/小节头用，消除 egui/Qt 字体度量差导致的行内偏移）。
+pub fn text_left_at_center(painter: &egui::Painter, pos: Pos2, s: &str, px: f32, color: Color32) {
+    let galley = painter.ctx().fonts(|f| {
+        f.layout_job(egui::text::LayoutJob::simple(
+            s.to_owned(),
+            FontId::proportional(px),
+            color,
+            f32::INFINITY,
+        ))
+    });
+    let pos = Pos2::new(pos.x, pos.y - galley.size().y / 2.0);
+    painter.galley(pos, galley, Color32::WHITE);
+}
+
 /// 半透明色叠在不透明底上（theme::over 的本地别名，语义同 QML）。
 fn blend_over(base: Color32, rgb: Color32, a: f32) -> Color32 {
     crate::theme::over(base, rgb, a)

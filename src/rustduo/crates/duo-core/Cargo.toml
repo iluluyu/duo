@@ -9,18 +9,14 @@ description = "Duo core logic, sunk from Python (TODO 0.2: pure-logic + process 
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# chrome overlay 的源码 stamp（缓存失效键，对译 pyduo hashlib.sha256）。
+sha2 = "0.10"
 
-# 宿主窗口（host 子命令）只存在于 Windows；target 门控保证非 Windows
-# 编译零影响（TODO 0.3，docs/window-experience.md §14）。
+# monitor.rs 的 Windows 工作区探测（SPI_GETWORKAREA）所需的最小 feature 面；
+# 宿主窗口实验（host）已删，不再需要 Dwm/Gdi/Threading 等大面板。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Dwm",
-    "Win32_Graphics_Gdi",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Threading",
-    "Win32_UI_HiDpi",
-    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

@@ -10,13 +10,14 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
 use crate::paths;
+use crate::quiet::quiet_command;
 
 /// 缓存超龄即重探（对译 ENCODERS_TTL_S：编码器只随系统更新变化，一周自愈）。
 pub const ENCODERS_TTL_S: f64 = 7.0 * 24.0 * 3600.0;
@@ -207,7 +208,7 @@ pub fn probe_encoders(scrcpy_path: &str, serial: &str, timeout_s: f64) -> Option
     // spawn 重试：高负载下偶发 EAGAIN/ENOMEM，重试 3 次（间隔 100ms）。
     let mut child = None;
     for attempt in 0..3 {
-        match Command::new(scrcpy_path)
+        match quiet_command(scrcpy_path)
             .arg(format!("--serial={serial}"))
             .arg("--list-encoders")
             .stdout(Stdio::piped())

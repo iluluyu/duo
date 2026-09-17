@@ -2,10 +2,7 @@
 //! 对译；面板与 duo-core 同数据目录，设置/prefs 直接走库调用，长跑与
 //! 阻塞型查询走子进程：watch / apps / sweep / volume / mirror）。
 
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -193,65 +190,37 @@ pub fn set_volume(binary: &str, adb: &str, serial: &str, index: i64) -> Result<(
 
 // ------------------------------------------------------------- watch pump
 
-/// 设备监控（duo-core watch 子进程 + 读行线程 → 共享状态图）。
+/// 设备监控（库内轮询线程 → 共享状态图；2026-09-17 起零子进程）。
+///
+/// 旧实现 spawn `duo-core watch` 常驻子进程，GUI 面板 stdin 为 NULL →
+/// 子进程 stdin-EOF 线程立即自杀（设备列表恒空，真机数据失败根因）；
+/// 且面板退出后可能孤儿。改为面板直接链接 duo-core 库，线程内每
+/// interval 调 `run_devices_query`，语义与 cmd_watch 完全一致
+/// （MonitorState 守约窗口 + states/degraded）。
 pub struct DeviceWatch {
     states: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
     degraded: Arc<Mutex<bool>>,
-    child: Option<Child>,
-    stop: Arc<AtomicBool>,
 }
 
 impl DeviceWatch {
-    pub fn start(binary: &str, adb: &str, interval_s: f64) -> Self {
+    pub fn start(adb: &str, interval_s: f64) -> Self {
         let states = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
         let degraded = Arc::new(Mutex::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let child = Command::new(binary)
-            .args(["watch", "--adb", adb, "--interval", &interval_s.to_string()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()
-            .map(|mut child| {
-                if let Some(stdout) = child.stdout.take() {
-                    let states = states.clone();
-                    let degraded = degraded.clone();
-                    let stop = stop.clone();
-                    thread::spawn(move || {
-                        let reader = BufReader::new(stdout);
-                        for line in reader.lines().map_while(Result::ok) {
-                            if stop.load(Ordering::Acquire) {
-                                return;
-                            }
-                            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-                                continue;
-                            };
-                            if value.get("type").and_then(|t| t.as_str()) != Some("devices") {
-                                continue;
-                            }
-                            if let Some(map) = value.get("states").and_then(|s| s.as_object()) {
-                                let fresh: std::collections::BTreeMap<String, String> = map
-                                    .iter()
-                                    .filter_map(|(k, v)| {
-                                        v.as_str().map(|s| (k.clone(), s.to_string()))
-                                    })
-                                    .collect();
-                                *states.lock().unwrap_or_else(|p| p.into_inner()) = fresh;
-                            }
-                            if let Some(flag) = value.get("degraded").and_then(|d| d.as_bool()) {
-                                *degraded.lock().unwrap_or_else(|p| p.into_inner()) = flag;
-                            }
-                        }
-                    });
+        let shared_states = states.clone();
+        let shared_degraded = degraded.clone();
+        let adb = adb.to_string();
+        thread::spawn(move || {
+            let mut monitor = duo_core::devices::MonitorState::new();
+            loop {
+                if let Some(fresh) = monitor.apply_query(duo_core::devices::run_devices_query(&adb))
+                {
+                    *shared_states.lock().unwrap_or_else(|p| p.into_inner()) = fresh;
                 }
-                child
-            });
-        Self {
-            states,
-            degraded,
-            child,
-            stop,
-        }
+                *shared_degraded.lock().unwrap_or_else(|p| p.into_inner()) = monitor.degraded();
+                thread::sleep(Duration::from_secs_f64(interval_s.max(0.2)));
+            }
+        });
+        Self { states, degraded }
     }
 
     /// 最近一次状态图（空 = 首帧未达）。
@@ -278,15 +247,6 @@ impl DeviceWatch {
             Some(online[0].clone())
         } else {
             None
-        }
-    }
-}
-
-impl Drop for DeviceWatch {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(child) = self.child.as_mut() {
-            winproc::terminate_tree(child);
         }
     }
 }

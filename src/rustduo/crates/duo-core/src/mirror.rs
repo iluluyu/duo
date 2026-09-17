@@ -1,7 +1,7 @@
 //! `mirror` 子命令编排层（对译 `duo/__main__.py::_run_mirror` + `_resolve_*`；
 //! 合同镜像 tests/test_cli_quality.py）。纯裁决/装配逻辑在本文件上半部
-//! （可测），进程驱动在下半部。0.3 语义：`--chrome`/`--embed` 统一走
-//! 进程内宿主窗口（host），C# overlay 退役（docs/window-experience.md §14）。
+//! （可测），进程驱动在下半部。`--chrome` 走 pyduo 真机验证过的路径：
+//! scrcpy 无边框窗口 + Windows 侧 C# overlay（chrome.rs）提供胶囊/下巴。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::apps::run_device_density;
 use crate::audio_lock::AudioLock;
 use crate::catalog::catalog_by_package;
+use crate::chrome::borderless_for;
 use crate::codec;
 use crate::devices::{run_devices_query, DeviceStates, EXIT_DEVICE_LOST};
 use crate::engine::{DisplayMode, DisplaySpec, EngineArgs, VideoSpec};
@@ -127,8 +128,6 @@ pub struct MirrorArgs {
     pub video_codec: Option<String>,
     pub title: Option<String>,
     pub chrome: bool,
-    pub embed: bool,
-    pub embed_style: Option<String>,
     pub chrome_top: Option<String>,
     pub chrome_bottom: Option<String>,
     pub glass: Option<String>,
@@ -157,8 +156,6 @@ impl Default for MirrorArgs {
             video_codec: None,
             title: None,
             chrome: false,
-            embed: false,
-            embed_style: None,
             chrome_top: None,
             chrome_bottom: None,
             glass: None,
@@ -255,14 +252,6 @@ pub fn parse_args(argv: &[String]) -> Result<MirrorArgs, String> {
             }
             "title" => args.title = Some(value(&mut i)?),
             "chrome" => args.chrome = true,
-            "embed" => args.embed = true,
-            "embed-style" => {
-                args.embed_style = Some(one_of(
-                    "embed-style",
-                    &value(&mut i)?,
-                    &["immersive", "native"],
-                )?)
-            }
             "chrome-top" => {
                 args.chrome_top = Some(one_of(
                     "chrome-top",
@@ -466,12 +455,8 @@ pub fn effective_video(
     )
 }
 
-/// chrome 请求面（--chrome/--embed 在 0.3 统一 = 宿主窗口接管窗口栏）。
-pub fn chrome_requested(args: &MirrorArgs) -> bool {
-    args.chrome || args.embed
-}
-
-/// 装配 EngineArgs（host_mode：宿主窗口在场，scrcpy 恒纯表面）。
+/// 装配 EngineArgs（borderless 由 chrome + 上巴模式决定：native 顶要
+/// scrcpy 自建带框窗，其余走无边框 + overlay）。
 pub fn build_engine_args(
     args: &MirrorArgs,
     settings: &Settings,
@@ -479,7 +464,7 @@ pub fn build_engine_args(
     video: VideoSpec,
     audio: bool,
     title: &str,
-    host_mode: bool,
+    borderless: bool,
 ) -> EngineArgs {
     let mut engine = EngineArgs::new(args.serial.clone().unwrap_or_default());
     engine.display = plan.display.clone();
@@ -497,7 +482,7 @@ pub fn build_engine_args(
     engine.window_y = plan.window_y;
     engine.window_width = plan.window_width;
     engine.window_height = plan.window_height;
-    engine.borderless = host_mode;
+    engine.borderless = borderless;
     engine
 }
 
@@ -520,6 +505,16 @@ fn trim_float(x: f64) -> String {
     }
 }
 
+/// DisplayMode 的 argv 名（overlay --display-mode 用；仅 Windows 会话接线）。
+#[cfg(windows)]
+fn display_mode_name(mode: DisplayMode) -> &'static str {
+    match mode {
+        DisplayMode::Flex => "flex",
+        DisplayMode::Fixed => "fixed",
+        DisplayMode::Mirror => "mirror",
+    }
+}
+
 fn stamp_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -537,7 +532,7 @@ fn stamp_utc() -> String {
 }
 
 /// Howard Hinnant 的 civil_from_days（无时区依赖的 UTC 年月日）。
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64;
@@ -583,7 +578,7 @@ fn device_states(adb: &str) -> DeviceStates {
 }
 
 /// `mirror` 驱动：设置 → 工具/serial 择一 → 显示规划 → 视频择优 →
-/// （Windows chrome）进程内宿主 / 其余受监督会话；设备拔出返回 2。
+/// （Windows chrome）C# overlay 贴窗 / 其余受监督会话；设备拔出返回 2。
 pub fn run(argv: &[String]) -> i32 {
     let args = match parse_args(argv) {
         Ok(args) => args,
@@ -641,6 +636,9 @@ pub fn run(argv: &[String]) -> i32 {
         println!("audio already owned by another duo window - muted");
     }
 
+    // 上巴 native = 真系统标题栏：scrcpy 不得无边框（chrome.rs
+    // borderless_for，2026-09-09 真机定稿）；沉浸/无 上巴仍无边框。
+    let top_bar_mode = resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode);
     let mut engine = build_engine_args(
         &args,
         &settings,
@@ -648,7 +646,7 @@ pub fn run(argv: &[String]) -> i32 {
         video,
         audio,
         &title,
-        chrome_requested(&args),
+        args.chrome && borderless_for(&top_bar_mode),
     );
     engine.adb_binary = Some(adb_path.clone());
     let log_path = session_log_path(&args, None);
@@ -662,14 +660,20 @@ pub fn run(argv: &[String]) -> i32 {
                 return 1;
             }
         },
-        log_path,
+        log_path: log_path.clone(),
         max_restarts: 3,
         restart_delay_s: 2.0,
         env: [("ADB".to_string(), adb_path.clone())].into(),
+        // flex 会话防旋转乒乓风暴（display 模式在 engine.argv 体现，
+        // session 侧按 --flex-display 旗标匹配后再下发）
+        orientation_lock: Some(adb_path.clone()),
     };
 
-    let host_mode = chrome_requested(&args);
-    if host_mode {
+    // Window chrome：无边框窗口 + Windows 侧 overlay（会话前启动，与
+    // pyduo 启动序一致；非 Windows 打印提示后继续纯会话）。
+    #[allow(unused_mut)]
+    let mut overlay: Option<crate::chrome::ChromeOverlay> = None;
+    if args.chrome {
         if title.is_empty() {
             eprintln!("error: chrome needs a window title: pass --app or --title");
             audio_lock.release();
@@ -677,18 +681,70 @@ pub fn run(argv: &[String]) -> i32 {
         }
         #[cfg(windows)]
         {
-            let style = args
-                .embed_style
-                .clone()
-                .or_else(|| args.chrome_top.clone().filter(|m| m == "native"));
-            let opts = crate::host::HostOptions {
-                title,
-                style: crate::host::HostStyle::parse(&style.as_deref()),
-                serial: Some(serial),
+            use crate::chrome::{read_top_pin, top_pin_path, ChromeOverlay, OverlayArgs};
+            use crate::settings::corner_radius_dip;
+            let bottom_bar_mode =
+                resolve_bar_mode(args.chrome_bottom.as_deref(), &settings.bottom_bar_mode);
+            // 视频尺寸 seed 只给 fixed（比例锁）；flex 纯自由窗口，
+            // 镜像不传（尺寸经 session log 流入）。
+            let (vd_w, vd_h) = if plan.display.mode == DisplayMode::Fixed {
+                (plan.display.width, plan.display.height)
+            } else {
+                (None, None)
             };
-            let code = crate::host::run_host(&spec, &opts, &mut |_| {});
-            audio_lock.release();
-            return code;
+            // 按应用固定：本次启动读初值，overlay 右键切换回写同一文件；
+            // 整机镜像无包名不落盘，固定随会话生灭。
+            let pin_file = args.app.as_deref().map(|app| top_pin_path(app, None));
+            if let Some(pin) = &pin_file {
+                if let Some(parent) = pin.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            let overlay_args = OverlayArgs {
+                title: title.clone(),
+                serial: serial.clone(),
+                adb_path: adb_path.clone(),
+                home: args.app.is_none(),
+                display_mode: display_mode_name(args.display).to_string(),
+                video_width: vd_w,
+                video_height: vd_h,
+                session_log: Some(log_path.display().to_string()),
+                corner_radius_dip: args
+                    .corner_radius
+                    .unwrap_or_else(|| corner_radius_dip(&settings)),
+                top_bar_mode: top_bar_mode.clone(),
+                bottom_bar_mode,
+                pin_top: args
+                    .app
+                    .as_deref()
+                    .map(|app| read_top_pin(app, None))
+                    .unwrap_or(false),
+                pin_file: pin_file.map(|p| p.display().to_string()),
+                glass: resolve_glass(args.glass.as_deref(), settings.glass_enabled),
+                bar_theme: args
+                    .bar_theme
+                    .clone()
+                    .unwrap_or_else(|| settings.theme.clone()),
+                ..OverlayArgs::default()
+            };
+            match ChromeOverlay::new(None, overlay_args) {
+                Ok(mut started) => match started.start() {
+                    Ok(overlay_log) => {
+                        println!("chrome overlay log: {}", overlay_log.display());
+                        overlay = Some(started);
+                    }
+                    Err(err) => {
+                        eprintln!("error: chrome overlay failed to start: {err}");
+                        audio_lock.release();
+                        return 1;
+                    }
+                },
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    audio_lock.release();
+                    return 1;
+                }
+            }
         }
         #[cfg(not(windows))]
         {
@@ -718,6 +774,9 @@ pub fn run(argv: &[String]) -> i32 {
     }
     println!("starting engine... (Ctrl+C to stop)");
     let code = run_session_abortable(&spec, &abort, &mut |_| {});
+    if let Some(overlay) = overlay.as_mut() {
+        overlay.stop();
+    }
     audio_lock.release();
     if *watcher_gone.lock().expect("device watch lock") {
         println!("device disconnected - session stopped");
@@ -835,7 +894,7 @@ mod tests {
         let a = parse_args(&argv("mirror")).unwrap();
         assert_eq!(a.display, DisplayMode::Flex);
         assert!(a.chrome_top.is_none() && a.chrome_bottom.is_none());
-        assert!(!a.no_vd_destroy_content && !a.portrait && !a.chrome && !a.embed);
+        assert!(!a.no_vd_destroy_content && !a.portrait && !a.chrome);
     }
 
     #[test]
@@ -868,13 +927,15 @@ mod tests {
     fn parser_mirror_display_mode_and_booleans() {
         let a = parse_args(&argv(
             "mirror --display mirror --portrait --no-audio --no-screen-off \
-             --no-vd-destroy-content --chrome --embed --embed-style native",
+             --no-vd-destroy-content --chrome",
         ))
         .unwrap();
         assert_eq!(a.display, DisplayMode::Mirror);
         assert!(a.portrait && a.no_audio && a.no_screen_off);
-        assert!(a.no_vd_destroy_content && a.chrome && a.embed);
-        assert_eq!(a.embed_style.as_deref(), Some("native"));
+        assert!(a.no_vd_destroy_content && a.chrome);
+        // embed 实验已删：旗标不再被接受。
+        assert!(parse_args(&argv("mirror --embed")).is_err());
+        assert!(parse_args(&argv("mirror --embed-style native")).is_err());
     }
 
     const AREA: WorkArea = WorkArea {
@@ -1014,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_args_host_mode_is_borderless_surface() {
+    fn engine_args_borderless_surface() {
         let a = args();
         let plan = DisplayPlan::default();
         let engine = build_engine_args(&a, &settings(), &plan, default_video(), true, "T", true);
@@ -1043,13 +1104,44 @@ mod tests {
     }
 
     #[test]
-    fn chrome_requested_unifies_chrome_and_embed() {
-        assert!(!chrome_requested(&args()));
+    fn chrome_borderless_follows_top_mode() {
+        // 对译 test_cli_borderless_follows_top_mode：--chrome 时 borderless
+        // 跟随上巴模式（native = 带框窗），无 chrome 恒带框。
         let mut a = args();
         a.chrome = true;
-        assert!(chrome_requested(&a));
-        a.chrome = false;
-        a.embed = true;
-        assert!(chrome_requested(&a));
+        let s = settings();
+        let plan = DisplayPlan::default();
+        let engine = build_engine_args(
+            &a,
+            &s,
+            &plan,
+            default_video(),
+            true,
+            "T",
+            a.chrome && borderless_for(&resolve_bar_mode(a.chrome_top.as_deref(), &s.top_bar_mode)),
+        );
+        assert!(engine
+            .to_argv("scrcpy")
+            .unwrap()
+            .iter()
+            .any(|f| f == "--window-borderless"));
+        a.chrome_top = Some("native".into());
+        let engine = build_engine_args(
+            &a,
+            &s,
+            &plan,
+            default_video(),
+            true,
+            "T",
+            a.chrome && borderless_for(&resolve_bar_mode(a.chrome_top.as_deref(), &s.top_bar_mode)),
+        );
+        assert!(
+            !engine
+                .to_argv("scrcpy")
+                .unwrap()
+                .iter()
+                .any(|f| f == "--window-borderless"),
+            "native 顶 = 真系统标题栏"
+        );
     }
 }

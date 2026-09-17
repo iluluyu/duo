@@ -153,8 +153,9 @@ duo/                       # 仓库根（不变）
       放弃 draft 重载磁盘，QML cancelled 语义）
 - [x] 单测：resolve_fixed_aspect 四分支 / bar_entry_after 全清退场
       + 单边保留（决策提纯为模块级纯函数）
-- [ ] 遗留（并入 P4）：菜单浮层像素皮肤（menuFill 实底 + hairline +
-      MenuRow 32px 行高/圆点 4px）——当前 egui 默认菜单皮肤
+- [x] 菜单浮层像素皮肤 ✅（2026-09-17 完成）：menuFill 实底 + hairline +
+      menu_row_style 32px 行高 + 自定义圆点/勾选 + menu_caption 小节头 +
+      menu_sub_button 二级菜单；DUO_SHOT_MENU=tile-sub 自动出图链路就绪
 
 ### P4 设置页像素移植（✅ 2026-09-17 完成，像素带对拍通过）
 
@@ -182,6 +183,11 @@ duo/                       # 仓库根（不变）
       佐证；GLM 暗色 DPI 残迹报告经三重像素扫描证伪）
 - [x] 单测：SettingsPageModel 草稿↔settings 写入路径 5 项（load/
       save roundtrip、非法枚举拒绝、数值钳制、扩展字段、坏文件红条）
+- [ ] 设置页开关与说明文字错位微调（真机实测反馈，高优）：
+      - 现场证据：`字体错位.png` / `开关错位.png`（`docs/validation/assets/settings-switch-font-misaligned.png`）；
+      - 根因：`tso_caption` 累加了双重间距（`ROW_H + SP` 后再 `+ 9.0`），导致说明文字与标题脱节，开关视觉悬空偏高；
+      - 对策：依据 `scripts/geom_probe.py` dump 的 QML 真实几何树逐项核准 y/h/spacing；
+      - 验证：消除脱节悬浮感，光暗两主题像素级对齐。
 - [ ] 遗留（P5）：控件软阴影（QML MultiEffect blur24——egui painter
       无 blur，视觉差异仅卡外围）
 
@@ -212,3 +218,10 @@ duo/                       # 仓库根（不变）
 - 2026-09-17：菜单毛玻璃（MenuGlassPlate 三明治）不移植——面板
   用 egui 原生 popup + menuFill 不透明回退（Style.qml 的软件回退
   路径本就是不透明实底，视觉合同一致）。
+- 2026-09-17：宿主窗口架构收敛回 C# overlay——实验性 Rust win32 SetParent
+  宿主（host.rs）退役，统一复用真机验证充分的 C# overlay（chrome.rs +
+  chrome_overlay.cs）；duo-core 移去 --embed 旗标，保留 --chrome；所有 Windows
+  子进程统一走 quiet_command（CREATE_NO_WINDOW），杜绝控制台黑窗弹跳；
+  增加 flex 会话 orientation_lock（wm set-ignore-orientation-request 1）。
+- 2026-09-17：菜单皮肤全量落地——skin_menus 注入 menuFill 不透明底色 +
+  hairline 分隔线 + 32px 行高 + 4px 圆点，实现右键菜单与 QML 逐像素对齐。

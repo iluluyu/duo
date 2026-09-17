@@ -1,6 +1,6 @@
 # duo-core Windows 最终验收（TODO 0.2.2/0.2.3 收尾；标准见 TODO.md §0）
 # 在 Windows 侧真机执行：powershell -File C:\duo\src\rustduo\scripts\accept_windows.ps1
-# 验收链 = exe 存在 → devices 真机识别 → 手动跑 embed 会话 → 无孤儿进程。
+# 验收链 = exe 存在 → devices 真机识别 → 手动跑 chrome 会话 → 无孤儿进程。
 $ErrorActionPreference = "Stop"
 
 $exe = "C:\Users\Administrator\.local\share\duo\tools\duo-core.exe"
@@ -32,12 +32,12 @@ if (-not $ok2) {
     exit 1
 }
 
-# ③ 手动验收 embed 会话（TODO 0.1/0.2.3 链路：duo-core host + SetParent 嵌入）
+# ③ 手动验收 chrome 会话（真机验证过的路径：scrcpy 无边框 + C# overlay 贴窗）
 Write-Host ""
 Write-Host "===== 手动验收（docs/window-experience.md §14 清单）=====" -ForegroundColor Cyan
 Write-Host "请另开终端执行："
-Write-Host "  cd C:\duo; .venv\Scripts\duo mirror --app com.tencent.mobileqq --embed --duo-core-host" -ForegroundColor Yellow
-Write-Host "检查：视频渲染 / 鼠标键盘 / 拖宿主缩放跟随 / 任务栏单条目。"
+Write-Host "  C:\Users\Administrator\.local\share\duo\tools\duo-core.exe mirror --app com.tencent.mobileqq --chrome" -ForegroundColor Yellow
+Write-Host "检查：视频渲染 / 鼠标键盘 / 顶部胶囊悬停露出 / 下巴 / 拖动缩放。"
 Write-Host "全部窗口关闭、会话彻底退出后回到这里继续。"
 Read-Host "按 Enter 继续（先关掉上面所有窗口）"
 

@@ -5,12 +5,14 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::quiet::quiet_command;
 
 /// display id 只在日志尾部 64KiB 里找（对译 _LOG_TAIL_BYTES）。
 const LOG_TAIL_BYTES: u64 = 64 * 1024;
@@ -34,6 +36,11 @@ pub struct SessionSpec {
     /// 额外环境变量（如 ADB pin），覆盖在继承环境之上。
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// flex 会话方向锁：Some(adb) = 解析 scrcpy 日志的 virtual display
+    /// id 后一次性下发 `wm set-ignore-orientation-request -d <id> 1`
+    /// （防 APP 方向请求↔窗口形状乒乓风暴；pyduo C# overlay 同款）。
+    #[serde(default)]
+    pub orientation_lock: Option<String>,
 }
 
 fn default_max_restarts() -> u32 {
@@ -132,27 +139,58 @@ fn spawn_and_wait(spec: &SessionSpec, abort: &AtomicBool) -> i32 {
     let Some(program) = spec.command.first() else {
         return 127;
     };
-    let mut cmd = Command::new(program);
+    let mut cmd = quiet_command(program);
     cmd.args(&spec.command[1..]);
-    match open_append(&spec.log_path) {
-        Ok(log) => {
-            let err = log
-                .try_clone()
-                .ok()
-                .map(Stdio::from)
-                .unwrap_or_else(Stdio::null);
-            cmd.stdout(Stdio::from(log)).stderr(err);
-        }
-        Err(_) => {
-            cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        }
-    }
+    // stderr 走读行线程：落盘 + flex 会话解析 display id 下发方向锁
+    // （scrcpy 仅在日志打一次 "New display: virtual display id N"）。
+    let log_file = open_append(&spec.log_path).ok();
+    cmd.stdout(match log_file.as_ref() {
+        Some(f) => Stdio::from(f.try_clone().unwrap()),
+        None => Stdio::null(),
+    });
+    cmd.stderr(if spec.orientation_lock.is_some() || log_file.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
     let Ok(mut child) = cmd.spawn() else {
         return 127;
     };
+    if let Some(stderr) = child.stderr.take() {
+        let log_path = spec.log_path.clone();
+        let adb = spec.orientation_lock.clone();
+        let flex_argv = spec.command.iter().any(|a| a == "--flex-display");
+        let lock_needed = adb.is_some() && flex_argv;
+        thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&log_path)
+                        {
+                            use std::io::Write;
+                            let _ = writeln!(f, "{}", line.trim_end());
+                        }
+                        if lock_needed {
+                            if let Some(id) = parse_display_id(&line) {
+                                lock_orientation(&adb.clone().unwrap(), id);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.code().unwrap_or(127),
@@ -169,6 +207,20 @@ fn spawn_and_wait(spec: &SessionSpec, abort: &AtomicBool) -> i32 {
 
 fn open_append(log_path: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(log_path)
+}
+
+/// 一次性方向忽略锁（"1" 而非 "true"：wm 按 int 解析，真机实测）。
+fn lock_orientation(adb: &str, display_id: u32) {
+    let mut cmd = quiet_command(adb);
+    cmd.args([
+        "shell",
+        "wm",
+        "set-ignore-orientation-request",
+        "-d",
+        &display_id.to_string(),
+        "1",
+    ]);
+    let _ = cmd.output();
 }
 
 #[cfg(test)]
@@ -198,6 +250,7 @@ mod tests {
             max_restarts: 3,
             restart_delay_s: 0.05,
             env: BTreeMap::new(),
+            orientation_lock: None,
         }
     }
 
@@ -288,6 +341,7 @@ mod tests {
             max_restarts: 5,
             restart_delay_s: 0.25,
             env,
+            orientation_lock: None,
         };
         let json = spec.to_json();
         assert_eq!(SessionSpec::from_json(&json).unwrap(), spec);
