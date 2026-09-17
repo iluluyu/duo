@@ -10,6 +10,7 @@ use std::time::Duration;
 use egui::{Pos2, Rect, Sense, Vec2};
 
 use crate::paint;
+use crate::theme::ThemeKind;
 use crate::{app::PanelApp, model::AppEntry};
 
 /// 页面左右留白（Main.qml x: 20）。
@@ -26,7 +27,7 @@ pub struct HomeLayout {
 }
 
 impl HomeLayout {
-    pub fn compute(w: f32, h: f32, has_pinned: bool, has_chips: bool) -> Self {
+    pub fn compute_with_chips_height(w: f32, h: f32, has_pinned: bool, chips_h: f32) -> Self {
         let inner = w - 2.0 * MARGIN;
         let mut y = 64.0; // 胶囊（16+32）下 16 间距（Main.qml deviceCard y:64）
         let device = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 76.0));
@@ -39,9 +40,8 @@ impl HomeLayout {
         y += 64.0 + 12.0;
         let search = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 36.0));
         y += 36.0 + 16.0;
-        // 网格底：芯片区可见时让位（chipsZone.y − 14），否则到页面底 −40
-        let grid_bottom = if has_chips {
-            (h - 56.0 - 14.0).max(y)
+        let grid_bottom = if chips_h > 0.0 {
+            (h - 56.0 - chips_h - 14.0).max(y)
         } else {
             (h - 40.0).max(y)
         };
@@ -54,15 +54,21 @@ impl HomeLayout {
             grid,
         }
     }
+
+    pub fn compute(w: f32, h: f32, has_pinned: bool, has_chips: bool) -> Self {
+        Self::compute_with_chips_height(w, h, has_pinned, if has_chips { 56.0 } else { 0.0 })
+    }
 }
 
 /// 主页面（app.rs update 调度；胶囊在 app.rs 顶部已画）。
 pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
-    let layout = HomeLayout::compute(
+    let chips = app.running_chips();
+    let chips_h = running_card_height(ui.max_rect().width(), &chips, ui);
+    let layout = HomeLayout::compute_with_chips_height(
         ui.max_rect().width(),
         ui.max_rect().height(),
         app.has_pinned(),
-        !app.running_chips().is_empty(),
+        chips_h,
     );
     device_card(app, ui, layout.device);
     if app.has_pinned() {
@@ -71,8 +77,7 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     mirror_card(app, ui, layout.mirror);
     search_capsule(app, ui, layout.search);
     grid(app, ui, layout.grid);
-    running_card(app, ui, ui.max_rect());
-    // 消耗整页命中域（绝对布局下 egui 光标不动）
+    running_card(app, ui, ui.max_rect(), chips_h);
     ui.allocate_rect(ui.max_rect(), Sense::hover());
 }
 
@@ -159,8 +164,9 @@ fn pinned_icon(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, rect: Re
 }
 
 fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
-    // Main.qml mirrorCard：左标题 + 扬声器 + 音量条 + 右「投屏」主按钮
     let t = app.tokens;
+    let card_resp = ui.allocate_rect(rect, Sense::click());
+    card_resp.context_menu(|ui| app.mirror_menu(ui));
     paint::card(ui.painter(), rect, &t);
     paint::text_left_weight(
         ui.painter(),
@@ -184,14 +190,12 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
                 Pos2::new(btn.left() - 14.0, rect.bottom()),
             ),
         );
-        // 扬声器在滑杆左侧 x78（Main.qml volumeGlyph anchors.leftMargin: 78）
         paint::speaker(
             ui.painter(),
             Pos2::new(rect.left() + 78.0, rect.center().y - 7.0),
             t.ink2,
         );
         let resp = ui.allocate_rect(btn, Sense::click());
-        paint::rounded_fill(ui.painter(), btn, 16.0, t.accent);
         let alpha = if resp.hovered() { 0.9 } else { 1.0 };
         paint::rounded_fill(ui.painter(), btn, 16.0, mul_alpha(t.accent, alpha));
         paint::text_centered(
@@ -206,7 +210,6 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             app.start_mirror();
         }
     } else {
-        // 禁用 40%（Main.qml opacity: enabled ? ... : 0.4）
         paint::rounded_fill(ui.painter(), btn, 16.0, mul_alpha(t.accent, 0.4));
         paint::text_centered(
             ui.painter(),
@@ -218,9 +221,6 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         );
         ui.allocate_rect(btn, Sense::hover());
     }
-    // 右键卡本体 = 镜像菜单（tile_menu 复用镜像分支）
-    let resp = ui.allocate_rect(rect, Sense::click());
-    resp.context_menu(|ui| app.mirror_menu(ui));
 }
 
 /// 音量条（Main.qml mediaVolumeSlider 直译：4px 轨、未知中性、12px 拇指、
@@ -382,6 +382,7 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     // 驱动 grid_scroll 偏移；绘制走 with_clip_rect（绝对坐标在 UI 光标
     // 之外，ScrollArea 的光标式裁剪裁不到，实测会截断——改显式裁剪）。
     let max_scroll = (content_h - rect.height()).max(0.0);
+    app.grid_scroll = app.grid_scroll.clamp(0.0, max_scroll);
     let scroll_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), rect.height()));
     if ui.rect_contains_pointer(scroll_rect) {
         let dy = ui.input(|i| i.raw_scroll_delta.y);
@@ -415,7 +416,10 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
     let painter = ui.painter().with_clip_rect(viewport);
     let resp = ui.allocate_rect(cell, Sense::click());
     let icon = Rect::from_min_size(
-        Pos2::new(cell.center().x - 30.0, cell.top() + 10.0),
+        Pos2::new(
+            (cell.center().x - 30.0).round(),
+            (cell.top() + 10.0).round(),
+        ),
         Vec2::splat(60.0),
     );
     let wash = if resp.hovered() && entry.installed {
@@ -428,7 +432,7 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
     paint_glyph(app, ui, &painter, entry, icon, 60.0, alpha);
     paint::text_centered(
         &painter,
-        Pos2::new(cell.center().x, cell.top() + 76.0 + 7.0),
+        Pos2::new(cell.center().x.round(), (cell.top() + 76.0 + 7.0).round()),
         &paint::elide_6(&entry.label),
         12.0,
         false,
@@ -462,7 +466,7 @@ fn paint_glyph(
             let poll = ui.ctx().try_load_texture(
                 &uri,
                 egui::TextureOptions::LINEAR,
-                egui::load::SizeHint::Width(120),
+                egui::load::SizeHint::Size(240, 240),
             );
             if let Ok(egui::load::TexturePoll::Ready { texture }) = poll {
                 // painter.image 而非 Image widget：网格区必须裁剪溢出
@@ -514,17 +518,13 @@ fn paint_glyph(
     paint::text_centered(painter, rect.center(), &ch, rect.width() * 0.32, true, ink);
 }
 
-/// 运行卡（Main.qml chipsZone：bottom 56、卡内 Flow 间距 8 芯片）。
-fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect) {
-    let chips: Vec<(String, String, bool)> = app.running_chips();
+pub fn running_card_height(w: f32, chips: &[(String, String, bool)], ui: &egui::Ui) -> f32 {
     if chips.is_empty() {
-        return;
+        return 0.0;
     }
-    let t = app.tokens;
-    // 芯片流布局（测量先行：行高 32 + 间距 8）
-    let inner_w = page.width() - 2.0 * MARGIN - 24.0;
+    let inner_w = w - 2.0 * MARGIN - 24.0;
     let mut rows: Vec<Vec<f32>> = vec![vec![]];
-    for (label, _, _) in &chips {
+    for (label, _, _) in chips {
         let w = chip_width(ui, label);
         let last = rows.last().unwrap();
         let used: f32 = last.iter().sum::<f32>() + 8.0 * last.len().max(1) as f32;
@@ -534,12 +534,41 @@ fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect) {
             rows.last_mut().unwrap().push(w);
         }
     }
-    let flow_h = rows.len() as f32 * 32.0 + (rows.len().saturating_sub(1)) as f32 * 8.0 + 24.0;
+    rows.len() as f32 * 32.0 + (rows.len().saturating_sub(1)) as f32 * 8.0 + 24.0
+}
+
+/// 运行卡（Main.qml chipsZone：bottom 56、卡内 Flow 间距 8 芯片）。
+fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect, flow_h: f32) {
+    if flow_h <= 0.0 {
+        return;
+    }
+    let chips: Vec<(String, String, bool)> = app.running_chips();
+    if chips.is_empty() {
+        return;
+    }
+    let t = app.tokens;
     let card = Rect::from_min_size(
         Pos2::new(MARGIN, page.bottom() - 56.0 - flow_h),
         Vec2::new(page.width() - 2.0 * MARGIN, flow_h),
     );
-    paint::card(ui.painter(), card, &t);
+    ui.allocate_rect(card, Sense::hover());
+    if app.settings.draft.glass_enabled {
+        let glass_bg = egui::Color32::from_rgba_unmultiplied(
+            t.card.r(),
+            t.card.g(),
+            t.card.b(),
+            if t.kind == ThemeKind::Dark { 200 } else { 220 },
+        );
+        paint::rounded_fill(ui.painter(), card, 12.0, glass_bg);
+        ui.painter().rect_stroke(
+            card,
+            egui::CornerRadius::same(12),
+            egui::Stroke::new(1.0_f32, t.card_border),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        paint::card(ui.painter(), card, &t);
+    }
     let mut x = card.left() + 12.0;
     let mut y = card.top() + 12.0;
     for (key, label, clickable) in chips.iter() {
@@ -578,7 +607,17 @@ fn chip_ui(
 ) {
     let t = app.tokens;
     let resp = ui.allocate_rect(rect, Sense::click());
-    paint::rounded_fill(ui.painter(), rect, 16.0, t.card);
+    let chip_bg = if app.settings.draft.glass_enabled {
+        egui::Color32::from_rgba_unmultiplied(
+            t.card.r(),
+            t.card.g(),
+            t.card.b(),
+            if t.kind == ThemeKind::Dark { 210 } else { 230 },
+        )
+    } else {
+        t.card
+    };
+    paint::rounded_fill(ui.painter(), rect, 16.0, chip_bg);
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(16),
@@ -690,8 +729,13 @@ mod tests {
     fn grid_bottom_stops_before_running_zone() {
         let with_chips = HomeLayout::compute(420.0, 660.0, false, true);
         assert!(
-            (with_chips.grid.bottom() - (660.0 - 70.0)).abs() < 0.01,
-            "有芯片时网格底让位 56-14"
+            (with_chips.grid.bottom() - (660.0 - 56.0 - 56.0 - 14.0)).abs() < 0.01,
+            "有芯片时网格底让位 56 + chips_h + 14"
+        );
+        let custom_chips = HomeLayout::compute_with_chips_height(420.0, 660.0, false, 80.0);
+        assert!(
+            (custom_chips.grid.bottom() - (660.0 - 56.0 - 80.0 - 14.0)).abs() < 0.01,
+            "自定义芯片高时按实际高度让位"
         );
         let no_chips = HomeLayout::compute(420.0, 660.0, false, false);
         assert!(

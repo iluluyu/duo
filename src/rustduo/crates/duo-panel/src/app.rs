@@ -500,8 +500,12 @@ impl PanelApp {
                     egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
                 },
             );
-            st.visuals.menu_corner_radius = 12.into();
-            st.visuals.popup_shadow = Default::default();
+            st.visuals.popup_shadow = egui::epaint::Shadow {
+                offset: [0, 8],
+                blur: 24,
+                spread: 2,
+                color: egui::Color32::from_black_alpha(if is_dark { 90 } else { 45 }),
+            };
             st.spacing.menu_margin = egui::Margin::same(4);
             st.spacing.menu_width = 128.0; // QML ctxMenu width: 128
             st.visuals.widgets.hovered.weak_bg_fill = hover;
@@ -910,13 +914,24 @@ impl PanelApp {
     /// 顶栏胶囊（Main.qml topCapsule 通栏；页面之上常驻）。
     fn top_capsule(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
+        let full = ui.max_rect();
         let rect = egui::Rect::from_min_size(
-            egui::pos2(20.0, 16.0),
-            Vec2::new(ui.max_rect().width() - 40.0, 32.0),
+            egui::pos2(full.left() + 20.0, full.top() + 16.0),
+            Vec2::new(full.width() - 40.0, 32.0),
         );
         ui.allocate_rect(rect, Sense::hover());
+        let cap_bg = if self.settings.draft.glass_enabled {
+            egui::Color32::from_rgba_unmultiplied(
+                t.capsule.r(),
+                t.capsule.g(),
+                t.capsule.b(),
+                if t.kind == ThemeKind::Dark { 200 } else { 220 },
+            )
+        } else {
+            t.capsule
+        };
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(16), t.capsule);
+            .rect_filled(rect, egui::CornerRadius::same(16), cap_bg);
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(16),
@@ -924,17 +939,19 @@ impl PanelApp {
             egui::StrokeKind::Inside,
         );
         let mut clicked = None;
+        let seg_w = ((rect.width() - 8.0) / 2.0).floor();
         for (i, (page, label)) in [(Page::Home, "首页"), (Page::Settings, "设置")]
             .into_iter()
             .enumerate()
         {
-            // 分段 x2 / width/2-4 / height-4（QML CapsuleSegment 几何）
+            let seg_x = if i == 0 {
+                rect.left() + 2.0
+            } else {
+                rect.right() - 2.0 - seg_w
+            };
             let seg = egui::Rect::from_min_size(
-                egui::pos2(
-                    rect.left() + 2.0 + i as f32 * (rect.width() / 2.0 - 4.0),
-                    rect.top() + 2.0,
-                ),
-                Vec2::new(rect.width() / 2.0 - 4.0, 28.0),
+                egui::pos2(seg_x, rect.top() + 2.0),
+                Vec2::new(seg_w, 28.0),
             );
             let selected = self.page == page;
             if selected {
@@ -1292,15 +1309,23 @@ impl PanelApp {
 impl eframe::App for PanelApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.tokens.bg;
+        let a = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
+            0.85_f32
+        } else {
+            1.0_f32
+        };
         [
             c.r() as f32 / 255.0,
             c.g() as f32 / 255.0,
             c.b() as f32 / 255.0,
-            c.a() as f32 / 255.0,
+            a,
         ]
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.settings.draft.glass_enabled {
+            crate::blur::apply_glass(frame, self.tokens.blur_tint());
+        }
         if self.shot.is_some() {
             ctx.request_repaint(); // 出图模式：静态画面也推进帧计数
         }
@@ -1330,7 +1355,17 @@ impl eframe::App for PanelApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full = ui.max_rect();
-                ui.painter().rect_filled(full, 0, self.tokens.bg);
+                let bg = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
+                    egui::Color32::from_rgba_unmultiplied(
+                        self.tokens.bg.r(),
+                        self.tokens.bg.g(),
+                        self.tokens.bg.b(),
+                        216,
+                    )
+                } else {
+                    self.tokens.bg
+                };
+                ui.painter().rect_filled(full, 0, bg);
                 match self.page {
                     // 设置页自铺无斑底（QML Rectangle 盖色斑）+ 内容，
                     // 之后胶囊恒在最上（跨页常驻）

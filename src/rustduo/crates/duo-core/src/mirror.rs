@@ -312,7 +312,13 @@ pub fn plan_display(
         return Err(format!("render scale {render_scale} out of range 1.0-3.0"));
     }
     if args.display == DisplayMode::Mirror {
-        return Ok(DisplayPlan::default());
+        return Ok(DisplayPlan {
+            display: DisplaySpec {
+                mode: DisplayMode::Mirror,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
     }
     let mut dpi = args.dpi.or(settings.dpi);
     if dpi.is_none() && args.display == DisplayMode::Flex {
@@ -1019,7 +1025,8 @@ mod tests {
         let mut a = args();
         a.display = DisplayMode::Mirror;
         let plan = plan_display(&a, &settings(), AREA, None).unwrap();
-        assert_eq!(plan, DisplayPlan::default());
+        assert_eq!(plan.display.mode, DisplayMode::Mirror);
+        assert_eq!(plan.display.to_flags().unwrap(), Vec::<String>::new());
     }
 
     #[test]
