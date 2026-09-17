@@ -64,6 +64,11 @@ impl SettingsPageModel {
         }
     }
 
+    /// Esc 取消：放弃 draft 改动，从磁盘重载（QML cancelled 语义）。
+    pub fn reject(&mut self) {
+        *self = Self::load(self.data_dir.as_deref());
+    }
+
     pub fn dismiss_flash(&mut self) {
         self.flash = None;
     }

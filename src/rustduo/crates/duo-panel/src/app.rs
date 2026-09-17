@@ -12,8 +12,8 @@ use eframe::egui::{RichText, Sense, Vec2};
 
 use crate::sessions;
 use duo_core::aspects::{
-    aspect_presets, body_aspect_from_wm_size, preset_by_id, transposed, AspectPreset,
-    BODY_LANDSCAPE_ID, BODY_PORTRAIT_ID,
+    body_aspect_from_wm_size, preset_by_id, transposed, AspectPreset, BODY_LANDSCAPE_ID,
+    BODY_PORTRAIT_ID,
 };
 use duo_core::settings::resolve_adb_path;
 
@@ -36,6 +36,40 @@ use crate::theme::{rounding, ThemeKind, Tokens};
 pub enum Page {
     Home,
     Settings,
+}
+
+/// 「固定比例」记忆的校验与文案决策（pyduo setDisplayFixed 同构）：
+/// Ok(比例名) = 可落库；Err = toast 文案（不落库）。
+fn resolve_fixed_aspect(
+    aspect: &str,
+    body: Option<&duo_core::aspects::AspectPreset>,
+) -> Result<String, &'static str> {
+    if duo_core::aspects::preset_by_id(aspect).is_some() {
+        Ok(aspect.to_string())
+    } else if aspect == BODY_LANDSCAPE_ID || aspect == BODY_PORTRAIT_ID {
+        if body.is_some() {
+            Ok("机身".to_string())
+        } else {
+            Err("机身比例需连接设备后使用")
+        }
+    } else {
+        Err("未知比例")
+    }
+}
+
+/// 窗口栏记忆合并（pyduo setAppBar 同构）：两键全 None → 整条退场。
+fn bar_entry_after(
+    existing: Option<crate::prefs::BarChoice>,
+    which: bool,
+    mode: Option<&'static str>,
+) -> Option<crate::prefs::BarChoice> {
+    let mut choice = existing.unwrap_or_default();
+    if which {
+        choice.top = mode;
+    } else {
+        choice.bottom = mode;
+    }
+    (choice.top.is_some() || choice.bottom.is_some()).then_some(choice)
 }
 
 /// 已装探测后台任务结果（已装包名全集 + duo-core apps 行）。
@@ -225,52 +259,44 @@ impl PanelApp {
 
     /// 镜像卡右键菜单（Main.qml mirrorMenu：打开投屏 / 关屏 / 默认窗口栏）。
     pub(crate) fn mirror_menu(&mut self, ui: &mut egui::Ui) {
-        let turn_off = self.settings.draft.turn_screen_off;
+        // Main.qml mirrorContextMenu 逐行对齐：打开投屏 / hairline /
+        // 窗口栏直接一级平铺（上巴 沉浸/系统；下巴 沉浸/系统/不显示）
+        // ——设备镜像无应用包，直接写设置页默认（setDefaultBarMode）。
+        // 「镜像时关闭设备屏幕」不在 QML 菜单（设置页字段），已删。
         if ui.button("打开投屏").clicked() {
             self.start_mirror();
             ui.close_menu();
         }
-        if ui
-            .button(if turn_off {
-                "✓ 镜像时关闭设备屏幕"
-            } else {
-                "镜像时关闭设备屏幕"
-            })
-            .clicked()
-        {
-            self.settings.set_turn_screen_off(!turn_off);
-            ui.close_menu();
-        }
+        ui.separator();
         let top = self.settings.draft.top_bar_mode.clone();
         let bottom = self.settings.draft.bottom_bar_mode.clone();
-        ui.menu_button("默认上巴", |ui| {
-            for mode in BAR_CHOICES {
-                let label = bar_label(mode);
-                let text = if *mode == top {
-                    format!("● {label}")
-                } else {
-                    label
-                };
-                if ui.button(text).clicked() {
-                    self.settings.set_bar_mode(true, mode);
-                    ui.close_menu();
-                }
+        ui.weak("上巴");
+        for (mode, label) in [("immersive", "沉浸"), ("native", "系统")] {
+            if ui
+                .button(format!("{label}{}", if top == mode { "  ●" } else { "" }))
+                .clicked()
+            {
+                self.settings.set_bar_mode(true, mode);
+                ui.close_menu();
             }
-        });
-        ui.menu_button("默认下巴", |ui| {
-            for mode in BAR_CHOICES {
-                let label = bar_label(mode);
-                let text = if *mode == bottom {
-                    format!("● {label}")
-                } else {
-                    label
-                };
-                if ui.button(text).clicked() {
-                    self.settings.set_bar_mode(false, mode);
-                    ui.close_menu();
-                }
+        }
+        ui.weak("下巴");
+        for (mode, label) in [
+            ("immersive", "沉浸"),
+            ("native", "系统"),
+            ("none", "不显示"),
+        ] {
+            if ui
+                .button(format!(
+                    "{label}{}",
+                    if bottom == mode { "  ●" } else { "" }
+                ))
+                .clicked()
+            {
+                self.settings.set_bar_mode(false, mode);
+                ui.close_menu();
             }
-        });
+        }
     }
 
     pub(crate) fn toast_now(&mut self, text: impl Into<String>) {
@@ -549,16 +575,6 @@ impl PanelApp {
         save_pinned_prefs(&self.pinned.keys().cloned().collect::<Vec<_>>());
     }
 
-    fn toggle_portrait(&mut self, package: &str) {
-        let now = !self.sessions.portrait_of(package);
-        self.sessions.set_portrait(package, now);
-        self.toast_now(format!(
-            "{} 将以{}启动",
-            session_label(package),
-            if now { "竖屏" } else { "横屏" }
-        ));
-    }
-
     fn set_display_flex(&mut self, package: &str) {
         self.display_prefs
             .insert(package.to_string(), DisplayChoice::Flex);
@@ -567,6 +583,14 @@ impl PanelApp {
     }
 
     fn set_display_fixed(&mut self, package: &str, aspect: &str) {
+        let body = self.body_preset();
+        let label = match resolve_fixed_aspect(aspect, body.as_ref()) {
+            Ok(label) => label,
+            Err(msg) => {
+                self.toast_now(msg);
+                return;
+            }
+        };
         self.display_prefs.insert(
             package.to_string(),
             DisplayChoice::Fixed {
@@ -574,16 +598,18 @@ impl PanelApp {
             },
         );
         save_display_prefs(&self.display_prefs);
-        self.toast_now(format!("{} 将固定比例启动", session_label(package)));
+        self.toast_now(format!("{} 将以 {label} 常驻", session_label(package)));
     }
 
     fn set_bar(&mut self, package: &str, which: bool, mode: Option<&'static str>) {
-        let choice = self.bar_prefs.get(package).cloned().unwrap_or_default();
-        let entry = self.bar_prefs.entry(package.to_string()).or_insert(choice);
-        if which {
-            entry.top = mode;
-        } else {
-            entry.bottom = mode;
+        let merged = bar_entry_after(self.bar_prefs.get(package).copied(), which, mode);
+        match merged {
+            Some(choice) => {
+                self.bar_prefs.insert(package.to_string(), choice);
+            }
+            None => {
+                self.bar_prefs.remove(package);
+            }
         }
         save_bar_prefs(&self.bar_prefs);
     }
@@ -718,164 +744,175 @@ impl PanelApp {
     }
 
     pub(crate) fn tile_menu(&mut self, ui: &mut egui::Ui, entry: &AppEntry) {
+        // Main.qml appContextMenu 一级结构逐行对齐：打开 / 置顶到固定栏 /
+        // hairline / 自适应窗口 | 固定比例 ▸ / 窗口栏 ▸ / 音频独占（勾选
+        // 不收菜单）/ 断开保留画面（勾选不收菜单）/ DPI ▸ / 渲染倍率 ▸。
+        // 一次性按比例打开（startSessionWithAspect）不在 QML 菜单，已删。
         let package = entry.package.clone();
-        let label = session_label(&package);
-        if ui.button(format!("打开 {label}")).clicked() {
+        if ui.button("打开").clicked() {
             self.launch(&package, None);
             ui.close_menu();
         }
         let pin_text = if self.pinned.contains_key(&package) {
             "取消置顶"
         } else {
-            "置顶"
+            "置顶到固定栏"
         };
         if ui.button(pin_text).clicked() {
             self.toggle_pin(&package);
             ui.close_menu();
         }
-        let portrait = self.sessions.portrait_of(&package);
+        ui.separator();
+        let fixed_now = matches!(
+            self.display_prefs.get(&package),
+            Some(DisplayChoice::Fixed { .. })
+        );
         if ui
-            .button(if portrait {
-                "改为横屏启动"
-            } else {
-                "改为竖屏启动"
-            })
+            .button(format!("自适应窗口{}", if fixed_now { "" } else { "  ●" }))
             .clicked()
         {
-            self.toggle_portrait(&package);
+            self.set_display_flex(&package);
             ui.close_menu();
         }
-        ui.menu_button("按比例打开", |ui| {
-            self.aspect_menu(ui, &package, false);
-        });
         ui.menu_button("固定比例", |ui| {
-            self.aspect_menu(ui, &package, true);
+            // 二级：小节头 横屏（21:9..1:1 + 机身）/ 竖屏（3:4..9:16 +
+            // 机身），选中 = 当前 fixed 记忆（pyduo setDisplayFixed）
+            let current = self.display_prefs.get(&package).cloned();
+            let pick = |app: &mut Self, ui: &mut egui::Ui, id: &str, label: &str| {
+                let mark =
+                    matches!(&current, Some(DisplayChoice::Fixed { aspect }) if aspect == id);
+                if ui
+                    .button(format!("{label}{}", if mark { "  ●" } else { "" }))
+                    .clicked()
+                {
+                    app.set_display_fixed(&package, id);
+                    ui.close_menu();
+                }
+            };
+            ui.weak("横屏");
+            for preset in duo_core::aspects::aspect_presets()
+                .iter()
+                .filter(|p| p.landscape)
+            {
+                pick(self, ui, &preset.id, &preset.id);
+            }
+            pick(self, ui, BODY_LANDSCAPE_ID, "机身");
+            ui.weak("竖屏");
+            for preset in duo_core::aspects::aspect_presets()
+                .iter()
+                .filter(|p| !p.landscape)
+            {
+                pick(self, ui, &preset.id, &preset.id);
+            }
+            pick(self, ui, BODY_PORTRAIT_ID, "机身");
         });
         ui.menu_button("窗口栏", |ui| {
+            // 二级：上巴（跟随默认/沉浸/系统）、下巴（跟随默认/沉浸/
+            // 系统/不显示）；圆点 = explicit 记忆，跟随默认清 override
             let bars = self.bar_prefs.get(&package).cloned().unwrap_or_default();
-            for mode in BAR_CHOICES {
-                let top_mark = bars.top == Some(mode);
+            let row = |app: &mut Self,
+                       ui: &mut egui::Ui,
+                       which: bool,
+                       mode: Option<&'static str>,
+                       label: &str| {
+                let explicit = if which { bars.top } else { bars.bottom };
+                let mark = explicit == mode;
                 if ui
-                    .button(format!("上巴 {}{}", mode, if top_mark { " ✓" } else { "" }))
+                    .button(format!("{label}{}", if mark { "  ●" } else { "" }))
                     .clicked()
                 {
-                    self.set_bar(&package, true, Some(mode));
+                    app.set_bar(&package, which, mode);
                     ui.close_menu();
                 }
-            }
-            ui.separator();
-            for mode in BAR_CHOICES {
-                let bottom_mark = bars.bottom == Some(mode);
-                if ui
-                    .button(format!(
-                        "下巴 {}{}",
-                        mode,
-                        if bottom_mark { " ✓" } else { "" }
-                    ))
-                    .clicked()
-                {
-                    self.set_bar(&package, false, Some(mode));
-                    ui.close_menu();
-                }
-            }
+            };
+            ui.weak("上巴");
+            row(self, ui, true, None, "跟随默认");
+            row(self, ui, true, Some("immersive"), "沉浸");
+            row(self, ui, true, Some("native"), "系统");
+            ui.weak("下巴");
+            row(self, ui, false, None, "跟随默认");
+            row(self, ui, false, Some("immersive"), "沉浸");
+            row(self, ui, false, Some("native"), "系统");
+            row(self, ui, false, Some("none"), "不显示");
         });
         let exclusive = self.audio_prefs.get(&package).copied().unwrap_or(false);
         if ui
-            .button(format!("音频独占 {}", if exclusive { "✓" } else { "" }))
+            .button(format!("音频独占{}", if exclusive { "  ●" } else { "" }))
             .clicked()
         {
+            // QML 勾选行切换不收菜单（圆点即时可见）
             self.toggle_audio_exclusive(&package);
-            ui.close_menu();
         }
         let keep_vd = self.behavior_prefs.get(&package).copied().unwrap_or(false);
         if ui
-            .button(format!("断开保留画面 {}", if keep_vd { "✓" } else { "" }))
+            .button(format!("断开保留画面{}", if keep_vd { "  ●" } else { "" }))
             .clicked()
         {
             self.toggle_keep_vd(&package);
-            ui.close_menu();
         }
         ui.menu_button("DPI", |ui| {
-            if ui.button("跟随设置").clicked() {
+            // 跟随默认/160/240/320 + 自定义输入（−/+ 步进 10，120–640）
+            let dpi = self.density_prefs.get(&package).copied();
+            if ui
+                .button(format!(
+                    "跟随默认{}",
+                    if dpi.is_none() { "  ●" } else { "" }
+                ))
+                .clicked()
+            {
                 self.set_density(&package, None);
                 ui.close_menu();
             }
-            for dpi in [160i64, 240, 320, 356, 480] {
-                let mark = self.density_prefs.get(&package) == Some(&dpi);
+            for v in [160i64, 240, 320] {
                 if ui
-                    .button(format!("{dpi}{}", if mark { " ✓" } else { "" }))
+                    .button(format!("{v}{}", if dpi == Some(v) { "  ●" } else { "" }))
                     .clicked()
                 {
-                    self.set_density(&package, Some(dpi));
+                    self.set_density(&package, Some(v));
                     ui.close_menu();
                 }
+            }
+            let mut custom = dpi.unwrap_or(320);
+            let dv = egui::DragValue::new(&mut custom)
+                .range(120..=640)
+                .speed(10)
+                .prefix("自定义 ");
+            if ui.add(dv).changed() {
+                self.set_density(&package, Some(custom));
             }
         });
         ui.menu_button("渲染倍率", |ui| {
-            if ui.button("跟随设置").clicked() {
+            // 跟随默认/1×/1.4×/2×/3× + 微调（0.1 步进）
+            let scale = self.scale_prefs.get(&package).copied();
+            if ui
+                .button(format!(
+                    "跟随默认{}",
+                    if scale.is_none() { "  ●" } else { "" }
+                ))
+                .clicked()
+            {
                 self.set_scale(&package, None);
                 ui.close_menu();
             }
-            for scale in [1.5f64, 2.0, 2.5, 3.0] {
-                let mark = self.scale_prefs.get(&package) == Some(&scale);
+            for v in [1.0f64, 1.4, 2.0, 3.0] {
+                let mark = scale.map(|s| (s - v).abs() < 1e-9).unwrap_or(false);
                 if ui
-                    .button(format!("÷{scale}{}", if mark { " ✓" } else { "" }))
+                    .button(format!("{v}×{}", if mark { "  ●" } else { "" }))
                     .clicked()
                 {
-                    self.set_scale(&package, Some(scale));
+                    self.set_scale(&package, Some(v));
                     ui.close_menu();
                 }
+            }
+            let mut custom = scale.unwrap_or(1.0);
+            let sv = egui::DragValue::new(&mut custom)
+                .range(1.0..=4.0)
+                .speed(0.1)
+                .prefix("微调 ");
+            if ui.add(sv).changed() {
+                self.set_scale(&package, Some((custom * 10.0).round() / 10.0));
             }
         });
-    }
-
-    fn aspect_menu(&mut self, ui: &mut egui::Ui, package: &str, remember: bool) {
-        let presets = aspect_presets().to_vec();
-        let (landscape, portrait): (Vec<&AspectPreset>, Vec<&AspectPreset>) =
-            presets.iter().partition(|p| p.landscape);
-        for group in [landscape, portrait] {
-            for preset in group {
-                let button = if remember {
-                    let current = self.display_prefs.get(package);
-                    let mark = matches!(current,
-                        Some(DisplayChoice::Fixed { aspect }) if *aspect == preset.id);
-                    format!("{}{}", preset.id, if mark { " ✓" } else { "" })
-                } else {
-                    preset.id.clone()
-                };
-                if ui.button(button).clicked() {
-                    if remember {
-                        self.set_display_fixed(package, &preset.id);
-                    } else {
-                        self.launch(package, Some((preset.width, preset.height)));
-                    }
-                    ui.close_menu();
-                }
-            }
-        }
-        for (id, text) in [(BODY_LANDSCAPE_ID, "机身横"), (BODY_PORTRAIT_ID, "机身竖")] {
-            if ui.button(text).clicked() {
-                if let Some(body) = self.body_preset() {
-                    let preset = if id == BODY_LANDSCAPE_ID {
-                        body
-                    } else {
-                        transposed(&body)
-                    };
-                    if remember {
-                        self.set_display_fixed(package, id);
-                    } else {
-                        self.launch(package, Some((preset.width, preset.height)));
-                    }
-                } else {
-                    self.toast_now("机身比例需连接设备后使用");
-                }
-                ui.close_menu();
-            }
-        }
-        if remember && ui.button("自适应窗口").clicked() {
-            self.set_display_flex(package);
-            ui.close_menu();
-        }
     }
 
     fn toast(&mut self, ui: &mut egui::Ui, msg: &str) {
@@ -1258,6 +1295,15 @@ impl eframe::App for PanelApp {
         if self.tokens.kind != kind {
             self.tokens = Tokens::of(kind);
         }
+        // QML Shortcut：Ctrl+, 打开设置；Esc 在设置页 = 取消返回
+        // （SettingsPage cancelled，无焦点依赖）
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
+            self.page = Page::Settings;
+        }
+        if self.page == Page::Settings && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.settings.reject();
+            self.page = Page::Home;
+        }
         self.sync_visuals(ctx);
         self.pump_background();
         self.pump_volume_debounce();
@@ -1294,5 +1340,48 @@ impl eframe::App for PanelApp {
 impl Drop for PanelApp {
     fn drop(&mut self) {
         self.sessions.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use crate::prefs::BarChoice;
+
+    #[test]
+    fn fixed_aspect_resolution_matches_pyduo() {
+        // 冻结表 id 直接过（label = id）
+        assert_eq!(resolve_fixed_aspect("16:9", None).as_deref(), Ok("16:9"));
+        // 机身对：有设备 → 「机身」；无设备 → 报状态不落库
+        let body = duo_core::aspects::aspect_presets()[0].clone();
+        assert_eq!(
+            resolve_fixed_aspect(BODY_LANDSCAPE_ID, Some(&body)).as_deref(),
+            Ok("机身")
+        );
+        assert_eq!(
+            resolve_fixed_aspect(BODY_PORTRAIT_ID, None),
+            Err("机身比例需连接设备后使用")
+        );
+        // 未知 id 拒绝
+        assert_eq!(resolve_fixed_aspect("nope", None), Err("未知比例"));
+    }
+
+    #[test]
+    fn bar_entry_clears_when_both_sides_follow_default() {
+        // 上巴设沉浸 → 显式条目
+        let first = bar_entry_after(None, true, Some("immersive"));
+        assert_eq!(
+            first,
+            Some(BarChoice {
+                top: Some("immersive"),
+                bottom: None
+            })
+        );
+        // 上巴也清（跟随默认）→ 两键全 None 整条退场
+        let gone = bar_entry_after(first, true, None);
+        assert_eq!(gone, None);
+        // 单边清不退场
+        let kept = bar_entry_after(first, false, Some("none"));
+        assert!(kept.is_some());
     }
 }
