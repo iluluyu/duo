@@ -219,6 +219,75 @@ pub fn speaker(painter: &egui::Painter, top_left: Pos2, color: Color32) {
     }
 }
 
+/// 毛玻璃配方与算法见 docs/ui/glass-recipe.md
+pub fn paint_menu_glass(painter: &egui::Painter, rect: Rect, is_dark: bool) {
+    if rect.width() < 10.0 || rect.height() < 10.0 {
+        return;
+    }
+    let specular = if is_dark {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 55)
+    } else {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 120)
+    };
+    let top_y = rect.top() + 1.0;
+    painter.line_segment(
+        [
+            Pos2::new(rect.left() + 12.0, top_y),
+            Pos2::new(rect.right() - 12.0, top_y),
+        ],
+        Stroke::new(1.0_f32, specular),
+    );
+
+    let grad_h = (rect.height() * 0.35).min(40.0);
+    let grad_steps = 6;
+    for i in 0..grad_steps {
+        let frac = i as f32 / grad_steps as f32;
+        let y = rect.top() + frac * grad_h;
+        let alpha = if is_dark {
+            ((1.0 - frac) * 14.0).round() as u8
+        } else {
+            ((1.0 - frac) * 22.0).round() as u8
+        };
+        if alpha > 0 {
+            let color = Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
+            painter.line_segment(
+                [
+                    Pos2::new(rect.left() + 10.0, y),
+                    Pos2::new(rect.right() - 10.0, y),
+                ],
+                Stroke::new(grad_h / grad_steps as f32, color),
+            );
+        }
+    }
+
+    let dot_alpha = if is_dark { 8u8 } else { 6u8 };
+    let dot_color = if is_dark {
+        Color32::from_rgba_unmultiplied(255, 255, 255, dot_alpha)
+    } else {
+        Color32::from_rgba_unmultiplied(0, 0, 0, dot_alpha)
+    };
+    let step = 6.0_f32;
+    let mut y = rect.top() + 4.0;
+    while y < rect.bottom() - 4.0 {
+        let mut x = rect.left() + 4.0;
+        while x < rect.right() - 4.0 {
+            let h =
+                ((x as u32).wrapping_mul(374761393) ^ (y as u32).wrapping_mul(668265263)) & 0xFF;
+            if h > 110 {
+                let dx = ((h & 3) as f32) - 1.5;
+                let dy = (((h >> 2) & 3) as f32) - 1.5;
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(x + dx, y + dy), Vec2::splat(1.0)),
+                    CornerRadius::ZERO,
+                    dot_color,
+                );
+            }
+            x += step;
+        }
+        y += step;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +312,17 @@ mod tests {
         assert_eq!(elide_6("哔哩哔哩动画集"), "哔哩哔哩动画…");
         assert_eq!(elide_6("哔哩哔哩动画"), "哔哩哔哩动画");
         assert_eq!(elide_6("Chrome"), "Chrome");
+    }
+
+    #[test]
+    fn paint_menu_glass_produces_valid_shapes() {
+        let ctx = egui::Context::default();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("test"),
+        ));
+        let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::new(128.0, 200.0));
+        paint_menu_glass(&painter, rect, true);
+        paint_menu_glass(&painter, rect, false);
     }
 }

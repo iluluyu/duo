@@ -321,7 +321,7 @@ pub fn plan_display(
         });
     }
     let mut dpi = args.dpi.or(settings.dpi);
-    if dpi.is_none() && args.display == DisplayMode::Flex {
+    if dpi.is_none() {
         dpi = density_probe.or(Some(160)).map(|d| d as i64);
     }
     let mut display = DisplaySpec {
@@ -351,11 +351,6 @@ pub fn plan_display(
             if args.display == DisplayMode::Flex {
                 plan.window_x = Some(window.x as i32);
                 plan.window_y = Some(window.y as i32);
-            } else {
-                plan.window_x = Some(window.x as i32);
-                plan.window_y = Some(window.y as i32);
-                plan.window_width = Some(rec.display_width.unwrap_or(window.width) as u32);
-                plan.window_height = Some(rec.display_height.unwrap_or(window.height) as u32);
             }
         }
     } else {
@@ -367,6 +362,28 @@ pub fn plan_display(
                 height: display.height,
                 dpi: Some(rec.dpi as u32),
             };
+        }
+    }
+    if args.display == DisplayMode::Fixed {
+        if let (Some(dw), Some(dh)) = (display.width, display.height) {
+            let dw = dw as f64;
+            let dh = dh as f64;
+            let avail_w = (area.width - 40).max(320) as f64;
+            let avail_h = (area.height - 60).max(320) as f64;
+            let scale = (avail_w / dw).min(avail_h / dh).min(1.0);
+            let mut w = (dw * scale).round() as u32;
+            let mut h = (dh * scale).round() as u32;
+            w += w & 1;
+            h += h & 1;
+            plan.window_width = Some(w);
+            plan.window_height = Some(h);
+            if portrait {
+                plan.window_x = Some((area.width as i32 - w as i32).max(0));
+                plan.window_y = Some(((area.height as i32 - h as i32) / 2).max(0));
+            } else {
+                plan.window_x = Some(((area.width as i32 - w as i32) / 2).max(0));
+                plan.window_y = Some(((area.height as i32 - h as i32) / 2).max(0));
+            }
         }
     }
     let mut area_text = format!("work area {}x{}", area.width, area.height);
@@ -999,6 +1016,33 @@ mod tests {
         let plan = plan_display(&fixed, &settings(), AREA, Some(160)).unwrap();
         assert_eq!(plan.window_width, Some(1080));
         assert_eq!(plan.window_height, Some(1920));
+    }
+
+    #[test]
+    fn plan_display_fixed_aspect_preserves_proportions_on_1080p() {
+        let area_1080p = WorkArea {
+            width: 1920,
+            height: 1040,
+        };
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(1440);
+        a.height = Some(1920);
+        let plan = plan_display(&a, &settings(), area_1080p, Some(356)).unwrap();
+        let w = plan.window_width.unwrap() as f64;
+        let h = plan.window_height.unwrap() as f64;
+        assert!((w / h - 1440.0 / 1920.0).abs() < 0.01, "3:4 比例保持一致");
+        assert!(h <= 1040.0, "高度不超屏");
+
+        let mut a_sq = args();
+        a_sq.display = DisplayMode::Fixed;
+        a_sq.width = Some(1440);
+        a_sq.height = Some(1440);
+        let plan = plan_display(&a_sq, &settings(), area_1080p, Some(356)).unwrap();
+        let w = plan.window_width.unwrap() as f64;
+        let h = plan.window_height.unwrap() as f64;
+        assert_eq!(w, h, "1:1 正方形保持一致");
+        assert!(plan.window_x.unwrap() > 0, "居中 x > 0");
     }
 
     #[test]
