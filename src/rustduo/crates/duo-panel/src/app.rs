@@ -305,6 +305,11 @@ impl PanelApp {
             menu_row_style(ui);
             ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
             add_contents(self, ui);
+            if self.settings.draft.glass_enabled {
+                let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+                let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
+                crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
+            }
         });
         ui.style_mut().spacing.button_padding = prev_pad;
     }
@@ -338,6 +343,11 @@ impl PanelApp {
                 self.settings.set_bar_mode(false, mode);
                 ui.close_menu();
             }
+        }
+        if self.settings.draft.glass_enabled {
+            let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+            let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
+            crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
         }
     }
 
@@ -488,23 +498,31 @@ impl PanelApp {
         };
         let glass = self.settings.draft.glass_enabled;
         ctx.style_mut(|st| {
-            st.visuals.window_fill = if glass { t.menu_glass } else { t.menu_fill };
+            st.visuals.window_fill = if glass {
+                if is_dark {
+                    egui::Color32::from_rgba_unmultiplied(30, 30, 35, 175)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(246, 246, 250, 185)
+                }
+            } else {
+                t.menu_fill
+            };
             st.visuals.window_stroke = egui::Stroke::new(
                 1.0_f32,
                 if glass {
                     t.menu_glass_border
                 } else if is_dark {
-                    // Style.menuFillBorder：双主题均 10%（#1A…）
                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
                 } else {
                     egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
                 },
             );
+            st.visuals.window_corner_radius = egui::CornerRadius::same(12);
             st.visuals.popup_shadow = egui::epaint::Shadow {
                 offset: [0, 8],
-                blur: 24,
-                spread: 2,
-                color: egui::Color32::from_black_alpha(if is_dark { 90 } else { 45 }),
+                blur: 32,
+                spread: 3,
+                color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
             };
             st.spacing.menu_margin = egui::Margin::same(4);
             st.spacing.menu_width = 128.0; // QML ctxMenu width: 128
@@ -598,6 +616,34 @@ impl PanelApp {
             return;
         };
         self.sessions.reap();
+        let adb_for_init = self.adb.clone();
+        let serial_for_init = serial.clone();
+        std::thread::spawn(move || {
+            let mut cmd = winproc::quiet_command(&adb_for_init);
+            cmd.args([
+                "-s",
+                &serial_for_init,
+                "shell",
+                "settings",
+                "put",
+                "global",
+                "force_resizable_activities",
+                "1",
+            ]);
+            let _ = cmd.output();
+            let mut cmd = winproc::quiet_command(&adb_for_init);
+            cmd.args([
+                "-s",
+                &serial_for_init,
+                "shell",
+                "settings",
+                "put",
+                "global",
+                "enable_freeform_support",
+                "1",
+            ]);
+            let _ = cmd.output();
+        });
         if self.sessions.is_running(package) {
             self.move_app_to_display(package);
             return;
@@ -884,17 +930,41 @@ impl PanelApp {
 
     fn sync_visuals(&self, ctx: &egui::Context) {
         let t = self.tokens;
-        let mut visuals = if t.kind == ThemeKind::Light {
-            egui::Visuals::light()
-        } else {
+        let is_dark = matches!(t.kind, ThemeKind::Dark);
+        let mut visuals = if is_dark {
             egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
         };
-        // 玻璃开 = 画布半透明，透出 DWM blur；关 = 不透明。
-        let canvas = t.bg;
-        visuals.panel_fill = canvas;
-        visuals.window_fill = canvas;
+        visuals.panel_fill = t.bg;
+        let glass = self.settings.draft.glass_enabled;
+        visuals.window_fill = if glass {
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(30, 30, 35, 175)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(246, 246, 250, 185)
+            }
+        } else {
+            t.menu_fill
+        };
+        visuals.window_stroke = egui::Stroke::new(
+            1.0_f32,
+            if glass {
+                t.menu_glass_border
+            } else if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+            },
+        );
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
+        visuals.popup_shadow = egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 32,
+            spread: 3,
+            color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
+        };
         visuals.extreme_bg_color = t.bg;
-        // 控件层级：强调色选区、可见描边、hover 洗刷（滑轨/拖手不再隐形）。
         visuals.selection.bg_fill = t.accent;
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, t.ink);
         visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, t.ink2);
@@ -1109,6 +1179,11 @@ impl PanelApp {
                 app.set_scale(&package, Some((custom * 10.0).round() / 10.0));
             }
         });
+        if self.settings.draft.glass_enabled {
+            let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+            let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
+            crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
+        }
     }
 
     // -------------------------------------------------------------- 设置页

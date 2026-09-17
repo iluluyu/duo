@@ -162,8 +162,7 @@ fn spawn_and_wait(spec: &SessionSpec, abort: &AtomicBool) -> i32 {
     if let Some(stderr) = child.stderr.take() {
         let log_path = spec.log_path.clone();
         let adb = spec.orientation_lock.clone();
-        let flex_argv = spec.command.iter().any(|a| a == "--flex-display");
-        let lock_needed = adb.is_some() && flex_argv;
+        let lock_needed = adb.is_some();
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let mut reader = BufReader::new(stderr);
@@ -218,6 +217,16 @@ fn lock_orientation(adb: &str, display_id: u32) {
         "set-ignore-orientation-request",
         "-d",
         &display_id.to_string(),
+        "1",
+    ]);
+    let _ = cmd.output();
+    let mut cmd = quiet_command(adb);
+    cmd.args([
+        "shell",
+        "settings",
+        "put",
+        "global",
+        "force_resizable_activities",
         "1",
     ]);
     let _ = cmd.output();
