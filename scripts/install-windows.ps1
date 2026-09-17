@@ -1,9 +1,20 @@
-# Duo light installer: app folder + shortcuts + uninstall entry.
-# Dev-stage layout: no installer engine, just a clean app presence.
-# Rust 版：Duo.exe = duo-panel.exe，旁边摆 duo-core.exe（同目录探测）。
 $ErrorActionPreference = 'Stop'
 
-$src = if ($args[0]) { $args[0] } else { 'C:\duo\src\rustduo\target\release\duo-panel.exe' }
+Get-Process Duo, duo-core -ErrorAction SilentlyContinue | Stop-Process -Force
+
+$candidates = @(
+    $args[0],
+    "$PSScriptRoot\..\src\rustduo\target\x86_64-pc-windows-gnu\release\duo-panel.exe",
+    "$PSScriptRoot\..\src\rustduo\target\release\duo-panel.exe",
+    "C:\duo\src\rustduo\target\x86_64-pc-windows-gnu\release\duo-panel.exe",
+    "C:\duo\src\rustduo\target\release\duo-panel.exe"
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path $_) }
+
+$src = $candidates | Select-Object -First 1
+if (-not $src) {
+    throw "duo-panel.exe not found; please build or provide the executable path."
+}
+
 $core = Join-Path (Split-Path $src) 'duo-core.exe'
 $installDir = "$env:LOCALAPPDATA\Duo"
 $app = Join-Path $installDir 'Duo.exe'

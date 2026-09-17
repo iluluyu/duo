@@ -4,7 +4,7 @@
 固定产物 = ``C:\\Tools\\Duo.exe``（docs/windows-setup.md 的固化口径）：
 
     pyinstaller duo.spec --noconfirm        ->  dist\\Duo.exe
-    scripts/build_windows.ps1               ->  构建并部署到 C:\\Tools
+    scripts/build_pyduo.ps1                 ->  构建并部署到 C:\\Tools
 
 Build from the repo root on 64-bit Windows (PyInstaller always targets the
 running interpreter, so a win64 bundle needs 64-bit Windows Python).
