@@ -148,9 +148,14 @@ pub fn g2_squircle(rect: Rect, color: Color32) -> Shape {
     let size = rect.width().min(rect.height());
     let pts =
         duo_core::icons::g2_outline(f64::from(size), f64::from(size), f64::from(size / 2.0), 5.0);
-    let to_screen = |p: (f64, f64)| Pos2::new(rect.left() + p.0 as f32, rect.top() + p.1 as f32);
+    let to_screen = |p: (f64, f64)| {
+        Pos2::new(
+            (rect.left() + p.0 as f32).round(),
+            (rect.top() + p.1 as f32).round(),
+        )
+    };
     let path: Vec<Pos2> = pts.iter().map(|p| to_screen(*p)).collect();
-    Shape::convex_polygon(path, color, Stroke::NONE)
+    Shape::convex_polygon(path, color, Stroke::new(1.0_f32, color))
 }
 
 /// 标签 6 字截断（AppTile label.slice(0,6) + "…"）。

@@ -94,8 +94,24 @@ pub fn run() {
 
 /// 窗口形态：对齐 PyQt 面板（420×660，最小 360×520，标题 Duo）。
 pub fn viewport() -> egui::ViewportBuilder {
-    egui::ViewportBuilder::default()
+    let mut builder = egui::ViewportBuilder::default()
         .with_title("Duo")
         .with_inner_size([420.0, 660.0])
         .with_min_inner_size([360.0, 520.0])
+        .with_transparent(true);
+    if let Some(icon) = load_icon() {
+        builder = builder.with_icon(icon);
+    }
+    builder
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../../../../../assets/duo.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }
