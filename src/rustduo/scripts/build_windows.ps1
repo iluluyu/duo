@@ -1,9 +1,5 @@
-# duo Windows 构建（WSL mingw 交叉编译的 Windows 侧备选：本机 rustup msvc/gnu）。
-# 在 Windows 侧执行：C:\duo\rust\scripts\build_windows.ps1 [-Deploy]
-# 产物：target\release\duo-core.exe + duo-panel.exe；-Deploy 时
-#   duo-core.exe → %USERPROFILE%\.local\share\duo\tools\（duocore.py 第③查找位）
-#   duo-panel.exe → 同目录 Duo.exe（面板 exe 同目录探测 duo-core）。
-param([switch]$Deploy)
+# 在 Windows 侧执行：C:\duo\src\rustduo\scripts\build_windows.ps1 [-Deploy] [-Install]
+param([switch]$Deploy, [switch]$Install)
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -20,6 +16,9 @@ if ($Deploy) {
     Copy-Item "target\release\duo-core.exe" (Join-Path $dest "duo-core.exe") -Force
     Copy-Item "target\release\duo-panel.exe" (Join-Path $dest "Duo.exe") -Force
     Write-Host "deployed: $dest\duo-core.exe + $dest\Duo.exe"
+} elseif ($Install) {
+    $installer = Join-Path $PSScriptRoot "..\..\..\scripts\install-windows.ps1"
+    & powershell.exe -ExecutionPolicy Bypass -File $installer (Join-Path (Get-Location) "target\release\duo-panel.exe")
 } else {
     Write-Host "built: target\release\duo-core.exe + duo-panel.exe"
 }

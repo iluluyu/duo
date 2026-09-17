@@ -196,6 +196,12 @@ duo/                       # 仓库根（不变）
 - [x] 交叉构建部署双 exe（mingw；Duo.exe GUI 子系统 + 图标）——
       已于 2026-09-16 完成（本计划前完成，递补记录）
 - [x] accept_windows.ps1 扩展：面板启动/单实例/会话 spawn/退出拖树（✅ 2026-09-17 完成）
+- [x] 部署脚本全链健壮化（✅ 2026-09-17 完成）：
+      - `install-windows.ps1` 支持 GNU/MSVC 双 release 路径自动探测；安装前清理残留进程杜绝文件锁占用；
+      - `uninstall-windows.ps1` 补齐 `duo-core` 停止并支持目录递归彻底清除；
+      - `build_wsl.sh` 消除硬编码 Administrator 用户名，支持动态 Windows 路径解析与 `--install` 直装参数；
+      - `build_windows.ps1` 修正注释路径并提供 `-Install` 快速系统安装入口；
+      - Python 旧打包脚本重命名为 `build_pyduo.ps1`，彻底消除同名脚本歧义。
 - [ ] 真机跑通清单回填（见根 TODO.md「待 Windows 实测」）
 - [ ] libmpv 自接视频流（撞到 scrcpy 呈现天花板才启动，暂挂）
 
@@ -225,3 +231,6 @@ duo/                       # 仓库根（不变）
   增加 flex 会话 orientation_lock（wm set-ignore-orientation-request 1）。
 - 2026-09-17：菜单皮肤全量落地——skin_menus 注入 menuFill 不透明底色 +
   hairline 分隔线 + 32px 行高 + 4px 圆点，实现右键菜单与 QML 逐像素对齐。
+- 2026-09-17：部署脚本链路规范化——正式应用固定 `%LOCALAPPDATA%\Duo`，开发探测
+  固定 `%USERPROFILE%\.local\share\duo\tools`；全面防文件锁；消除 WSL 用户硬编码；
+  Python 打包与 Rust 打包脚本解耦重命名。

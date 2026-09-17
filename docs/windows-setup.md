@@ -44,10 +44,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -Deploy
 
 ### 方案 C：安装到系统应用目录
 
-将编译产物安装为标准桌面应用（创建桌面/开始菜单快捷方式与控制面板卸载项）：
+将编译产物安装为标准桌面应用（创建桌面/开始菜单快捷方式与控制面板卸载项，自动搜索编译产物）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 C:\duo\src\rustduo\target\x86_64-pc-windows-gnu\release\duo-panel.exe
+cd C:\duo
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
 
 - **安装目录**：`%LOCALAPPDATA%\Duo`
@@ -72,8 +73,8 @@ py -m venv .venv
 # 3. 启动 Python GUI 面板
 .venv\Scripts\duo --gui
 
-# 4. （可选）打包单文件 exe 产物
-powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+# 4. （可选）打包 Python 版单文件 exe 产物
+powershell -ExecutionPolicy Bypass -File scripts\build_pyduo.ps1
 ```
 
 ---

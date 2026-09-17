@@ -24,7 +24,7 @@ function Add-Result([string]$name, [bool]$ok, [string]$detail) {
 $ok1 = ($null -ne $exe) -and (Test-Path $exe)
 Add-Result "duo-core.exe 存在" $ok1 (if ($ok1) { $exe } else { "未找到 duo-core.exe" })
 if (-not $ok1) {
-    Write-Host "缺少 duo-core.exe —— 请先运行 build_wsl.sh --deploy 或 build_windows.ps1 -Deploy" -ForegroundColor Red
+    Write-Host "缺少 duo-core.exe —— 请先运行 build_wsl.sh --deploy 或 src\rustduo\scripts\build_windows.ps1 -Deploy" -ForegroundColor Red
     $results | ForEach-Object { Write-Host $_ }
     exit 1
 }
