@@ -1,9 +1,4 @@
-//! Windows 玻璃：真系统级 DWM blur（window-vibrancy），非 C# 手采样亚克力。
-//!
-//! 面板背景 = `theme.canvas(glass)` 的半透明色 + 窗口级 blur behind：
-//! 毛玻璃由系统合成器完成（对齐 Windows 11 材质秩序），退役旧 C# overlay
-//! 里逐像素采样的亚克力路线。Linux/非 Windows：恒 no-op（窗口保持
-//! 半透明纯色底，功能不阻塞）。
+// 窗口级 DWM 模糊合成配方见 docs/ui/glass-recipe.md
 
 /// 应用一次窗口级 blur（幂等：调用方保证只调一次）。
 #[cfg(target_os = "windows")]
