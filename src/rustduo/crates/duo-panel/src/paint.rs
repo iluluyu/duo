@@ -8,7 +8,7 @@ use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
 /// 卡片：fill + 1px cardBorder 亮边（Main.qml 各卡 Rectangle；零阴影）。
 pub fn card(painter: &egui::Painter, rect: Rect, t: &Tokens) {
-    painter.rect_filled(rect, CornerRadius::same(16), t.card_fill);
+    painter.rect_filled(rect, CornerRadius::same(16), t.card);
     painter.rect_stroke(
         rect,
         CornerRadius::same(16),
@@ -64,10 +64,21 @@ pub fn text_centered(
 
 /// 左对齐文本（QML Text 默认对齐）。
 pub fn text_left(painter: &egui::Painter, pos: Pos2, s: &str, px: f32, color: Color32) {
+    text_left_weight(painter, pos, s, px, color, false);
+}
+
+pub fn text_left_weight(
+    painter: &egui::Painter,
+    pos: Pos2,
+    s: &str,
+    px: f32,
+    color: Color32,
+    bold: bool,
+) {
     let galley = painter.ctx().fonts(|f| {
         f.layout_job(egui::text::LayoutJob::simple(
             s.to_owned(),
-            font_id(px, false),
+            font_id(px, bold),
             color,
             f32::INFINITY,
         ))
@@ -75,15 +86,29 @@ pub fn text_left(painter: &egui::Painter, pos: Pos2, s: &str, px: f32, color: Co
     painter.galley(pos, galley, Color32::WHITE);
 }
 
-/// 画布色斑：六枚同心衰减圆（Main.qml bgLayer 六个 Rectangle 照抄）。
+/// 半透明色叠在不透明底上（theme::over 的本地别名，语义同 QML）。
+fn blend_over(base: Color32, rgb: Color32, a: f32) -> Color32 {
+    crate::theme::over(base, rgb, a)
+}
+
+/// 画布色斑：六枚同心衰减圆（Main.qml bgLayer 照抄）。三层 alpha 预合成
+/// 为不透明色——egui 增量重绘不擦除，半透明逐帧叠加会饱和（实测教训）。
 pub fn canvas_spots(painter: &egui::Painter, t: &Tokens, canvas: Rect) {
+    let stack = |layers: [(Color32, f32); 3]| {
+        let c0 = blend_over(t.bg, layers[0].0, layers[0].1);
+        let c1 = blend_over(c0, layers[1].0, layers[1].1);
+        let c2 = blend_over(c1, layers[2].0, layers[2].1);
+        [c0, c1, c2]
+    };
+    let blues = stack(t.spot_blue);
+    let greens = stack(t.spot_green);
     for (i, (x, y, d)) in crate::theme::SPOTS_BLUE.iter().enumerate() {
         let r = Rect::from_min_size(canvas.left_top() + Vec2::new(*x, *y), Vec2::splat(*d));
-        painter.circle_filled(r.center(), d / 2.0, t.spot_blue[i]);
+        painter.circle_filled(r.center(), d / 2.0, blues[i]);
     }
     for (i, (x, y, d)) in crate::theme::SPOTS_GREEN.iter().enumerate() {
         let r = Rect::from_min_size(canvas.left_top() + Vec2::new(*x, *y), Vec2::splat(*d));
-        painter.circle_filled(r.center(), d / 2.0, t.spot_green[i]);
+        painter.circle_filled(r.center(), d / 2.0, greens[i]);
     }
 }
 

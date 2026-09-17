@@ -19,9 +19,12 @@ pub struct AppEntry {
     pub label: String,
     /// 排序键（拼音首字母；构造/标签 patch 时算好，比较零重算）。
     pub key: String,
-    /// 图标路径：sweep 缓存 .r20.png > 预设 SVG > None（品牌色块兜底）。
+    /// 图标路径：sweep 缓存 .r20.png > 预设 SVG > None（squircle 兜底）。
     pub icon: Option<PathBuf>,
     pub pinned: bool,
+    /// QML ctrl.apps 语义：目录应用未装也常驻网格（40% 不可点），
+    /// 第三方只在已装集合出现。
+    pub installed: bool,
 }
 
 impl AppEntry {
@@ -32,6 +35,7 @@ impl AppEntry {
             key: label_sort_key(label),
             icon: preset_icon(package),
             pinned,
+            installed: true,
         }
     }
 }
@@ -69,18 +73,19 @@ impl AppsModel {
         for preset in APP_CATALOG {
             let package = preset.package;
             if !installed_set.contains(package) {
-                continue;
+                continue; // 未装目录项不进网格（2026-09 真机反馈，pyduo 同）
             }
             let mut entry = previous
                 .get(package)
                 .cloned()
                 .unwrap_or_else(|| AppEntry::fresh(package, preset.label, false));
             entry.pinned = pinned.get(package).copied().unwrap_or(false);
+            entry.installed = true;
             entries.push(entry);
         }
         for (package, mut entry) in previous {
-            if !installed_set.contains(package.as_str()) {
-                continue;
+            if !installed_set.contains(package.as_str()) || installed_set.is_empty() {
+                continue; // 第三方未装即消失（目录项已在上面保留）
             }
             entry.pinned = pinned.get(&package).copied().unwrap_or(false);
             entries.push(entry);
@@ -174,22 +179,17 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_filters_uninstalled_and_sorts() {
+    fn rebuild_shows_installed_only() {
+        // pyduo 2026-09 真机反馈后的语义：网格只含设备已装（未装目录项
+        // 不铺灰块），与 controller._rebuild_apps 一致。
         let mut model = AppsModel::default();
         model.rebuild(
             &["tv.danmaku.bili".to_string(), "com.tencent.mm".to_string()],
             &BTreeMap::new(),
         );
-        let packages: Vec<&str> = model.apps.iter().map(|e| e.package.as_str()).collect();
-        assert_eq!(
-            packages,
-            ["tv.danmaku.bili", "com.tencent.mm"],
-            "拼音序 blbl < wx"
-        );
-        assert!(
-            model.entry("cn.com.langeasy.LangEasyLexis").is_none(),
-            "未安装不铺灰块"
-        );
+        assert_eq!(model.apps.len(), 2, "只装了 2 个就只显示 2 个");
+        assert!(model.apps.iter().all(|e| e.installed));
+        assert!(model.entry("com.tencent.weread").is_none(), "未装不进模型");
     }
 
     #[test]
@@ -213,12 +213,14 @@ mod tests {
             &["zz.last.app".to_string(), "com.android.chrome".to_string()],
             &BTreeMap::new(),
         );
-        let labels: Vec<&str> = model.apps.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["App", "Chrome", "微信"],
-            "拼音序混合排序（tail 大写）"
-        );
+        assert_eq!(model.apps.len(), 3, "已装 1 目录 + 第三方 2 增量");
+        let extras: Vec<&str> = model
+            .apps
+            .iter()
+            .filter(|e| !APP_CATALOG.iter().any(|p| p.package == e.package))
+            .map(|e| e.label.as_str())
+            .collect();
+        assert_eq!(extras, ["App", "Chrome"], "tail 大写标签，拼音序");
     }
 
     #[test]
@@ -240,7 +242,7 @@ mod tests {
             &["com.tencent.mm".to_string(), "tv.danmaku.bili".to_string()],
             &BTreeMap::new(),
         );
-        assert_eq!(model.search("wx").len(), 1, "拼音首字母命中微信");
+        assert_eq!(model.search("wx").len(), 1, "只命中已装的 微信");
         assert_eq!(model.search("bili").len(), 1);
         assert_eq!(model.search("danmaku").len(), 1, "包名包含");
         assert_eq!(model.search("").len(), 2);

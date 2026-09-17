@@ -30,15 +30,26 @@ pub fn hex(s: &str) -> Color32 {
     Color32::from_rgb(ch(1) as u8, ch(3) as u8, ch(5) as u8)
 }
 
-fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color32 {
-    Color32::from_rgba_unmultiplied(r, g, b, (a * 255.0).round() as u8)
+/// 半透明色叠在不透明底上（QML/Qt 同式 sRGB 直混；u8 域）。
+pub fn over(base: Color32, rgb: Color32, a: f32) -> Color32 {
+    let mix = |b: u8, t: u8| (f32::from(b) * (1.0 - a) + f32::from(t) * a).round() as u8;
+    Color32::from_rgb(
+        mix(base.r(), rgb.r()),
+        mix(base.g(), rgb.g()),
+        mix(base.b(), rgb.b()),
+    )
 }
 
-/// 一套主题令牌（DESIGN.md §2 表格逐行对译）。
+/// 一套主题令牌（DESIGN.md §2 / Style.qml 逐行对译）。
+///
+/// egui 0.31 Windows 着色管线的 alpha 混合是非线性病态（标定实测
+/// out = srgb(a^0.75)，见 docs/validation）；因此**所有静态半透明层
+/// 在此预合成为不透明色**（数学上恰为 QML 的 sRGB 直混结果），GPU
+/// 只画不透明矩形。设计 alpha 全部保留为字面量（禁发明数值）。
 #[derive(Debug, Clone, Copy)]
 pub struct Tokens {
     pub kind: ThemeKind,
-    pub bg: Color32,     // 画布（不含玻璃 alpha；玻璃版见 canvas）
+    pub bg: Color32,     // 画布
     pub ink: Color32,    // 主文字
     pub ink2: Color32,   // 次文字
     pub accent: Color32, // 唯一强调色
@@ -47,32 +58,62 @@ pub struct Tokens {
     pub running: Color32, // 在线绿
     pub warn: Color32,
     pub danger: Color32,
-    pub card_fill: Color32,    // 轻玻璃卡填充
-    pub card_border: Color32,  // 卡 1px 亮边
-    pub segment_fill: Color32, // 选中段
-    pub flyout_fill: Color32,  // 胶囊浮层
-    pub pill_fill: Color32,
-    pub hover_wash: Color32, // hover 提亮
-    pub press_wash: Color32,
-    pub hairline: Color32,
+    /// 卡（cardFill over bg）。
+    pub card: Color32,
+    /// 卡 hover（+hoverWash）。
+    pub card_hover: Color32,
+    /// 卡 1px 亮边（cardBorder over card）。
+    pub card_border: Color32,
+    /// 运行芯片（cardFill over card）。
+    pub chip: Color32,
+    /// 芯片 1px 边（cardBorder over chip）。
+    pub chip_border: Color32,
+    /// 滑轨/输入描边（hairline over card）。
+    pub hairline_on_card: Color32,
+    /// 顶栏胶囊底（flyoutFill over bg）。
+    pub capsule: Color32,
+    /// 胶囊 hover 段（hoverWash over capsule）。
+    pub capsule_hover: Color32,
+    /// 胶囊 1px 边（cardBorder over capsule）。
+    pub capsule_border: Color32,
+    /// 选中段（不透明：亮纯白 / 暗 #48484A）。
+    pub segment_fill: Color32,
+    /// 搜索胶囊（searchFill；暗色本就不透明 #28282A）。
+    pub search: Color32,
+    /// 搜索聚焦态（flyoutFill over bg）。
+    pub search_focus: Color32,
     /// 菜单浮层不透明回退底（Style.menuFill）。
     pub menu_fill: Color32,
     /// 输入框/次按钮实底槽（Style.controlFill）。
     pub control_fill: Color32,
-    /// 画布级搜索胶囊（Style.searchFill）。
-    pub search_fill: Color32,
-    /// 危险动作 hover 洗底（Style.dangerWash）。
-    pub danger_wash: Color32,
-    /// 画布色斑：蓝/绿各三层同心衰减（几何见 SPOTS_BLUE/GREEN）。
-    pub spot_blue: [Color32; 3],
-    pub spot_green: [Color32; 3],
+    /// Toast 深底胶囊（pillFill over bg）。
+    pub pill: Color32,
+    /// 磁贴/图标区 hover 洗色（hoverWash over bg）。
+    pub hover_on_canvas: Color32,
+    /// 卡内 hover 洗色（hoverWash over card）。
+    pub hover_on_card: Color32,
+    /// 卡内 press 洗色（pressWash over card）。
+    pub press_on_card: Color32,
+    /// 危险 hover 洗底（dangerWash over card）。
+    pub danger_on_card: Color32,
+    /// 投屏钮禁用态（accent@40% over bg，Main.qml opacity 0.4）。
+    pub btn_disabled: Color32,
+    pub btn_disabled_text: Color32,
+    /// 色斑原色（CPU 合成用：(色, 设计alpha) ×3 层同心）。
+    pub spot_blue: [(Color32, f32); 3],
+    pub spot_green: [(Color32, f32); 3],
 }
 
 impl Tokens {
     pub fn dark() -> Self {
+        let bg = hex("#1C1C1E");
+        let white = hex("#FFFFFF");
+        let card = over(bg, white, 0.10);
+        let capsule = over(bg, white, 0.07);
+        let chip = over(card, white, 0.10);
         Self {
             kind: ThemeKind::Dark,
-            bg: hex("#1C1C1E"),
+            bg,
             ink: hex("#F5F5F7"),
             ink2: hex("#98989D"),
             accent: hex("#0A84FF"),
@@ -81,35 +122,49 @@ impl Tokens {
             running: hex("#30D158"),
             warn: hex("#FF9F0A"),
             danger: hex("#FF453A"),
-            card_fill: rgba(255, 255, 255, 0.10),
-            card_border: rgba(255, 255, 255, 0.16),
+            card,
+            card_hover: over(card, white, 0.06),
+            card_border: over(card, white, 0.16),
+            chip,
+            chip_border: over(chip, white, 0.16),
+            hairline_on_card: over(card, white, 0.14),
+            capsule,
+            capsule_hover: over(capsule, white, 0.06),
+            capsule_border: over(capsule, white, 0.16),
             segment_fill: hex("#48484A"),
-            flyout_fill: rgba(255, 255, 255, 0.07),
-            pill_fill: rgba(72, 72, 74, 0.90),
-            hover_wash: rgba(255, 255, 255, 0.06),
-            press_wash: rgba(255, 255, 255, 0.12),
-            hairline: rgba(255, 255, 255, 0.14),
+            search: hex("#28282A"),
+            search_focus: capsule,
             menu_fill: hex("#2C2C2E"),
             control_fill: hex("#28282A"),
-            search_fill: hex("#28282A"),
-            danger_wash: rgba(255, 59, 48, 0.08),
+            pill: over(bg, hex("#48484A"), 0.90),
+            hover_on_canvas: over(bg, white, 0.06),
+            hover_on_card: over(card, white, 0.06),
+            press_on_card: over(card, white, 0.12),
+            danger_on_card: over(card, hex("#FF3B30"), 0.08),
+            btn_disabled: over(bg, hex("#0A84FF"), 0.40),
+            btn_disabled_text: over(bg, white, 0.40),
             spot_blue: [
-                rgba(0, 122, 255, 0.028),
-                rgba(0, 122, 255, 0.039),
-                rgba(0, 122, 255, 0.047),
+                (hex("#007AFF"), 0.028),
+                (hex("#007AFF"), 0.039),
+                (hex("#007AFF"), 0.071),
             ],
             spot_green: [
-                rgba(52, 199, 89, 0.020),
-                rgba(52, 199, 89, 0.035),
-                rgba(52, 199, 89, 0.063),
+                (hex("#34C759"), 0.020),
+                (hex("#34C759"), 0.035),
+                (hex("#34C759"), 0.063),
             ],
         }
     }
 
     pub fn light() -> Self {
+        let bg = hex("#F5F5F7");
+        let white = hex("#FFFFFF");
+        let card = over(bg, white, 0.72);
+        let capsule = over(bg, white, 0.60);
+        let chip = over(card, white, 0.72);
         Self {
             kind: ThemeKind::Light,
-            bg: hex("#F5F5F7"),
+            bg,
             ink: hex("#1D1D1F"),
             ink2: hex("#86868B"),
             accent: hex("#007AFF"),
@@ -118,27 +173,36 @@ impl Tokens {
             running: hex("#34C759"),
             warn: hex("#FF9F0A"),
             danger: hex("#FF3B30"),
-            card_fill: rgba(255, 255, 255, 0.72),
-            card_border: rgba(255, 255, 255, 0.65),
-            segment_fill: hex("#FFFFFF"),
-            flyout_fill: rgba(255, 255, 255, 0.60),
-            pill_fill: rgba(29, 29, 31, 0.90),
-            hover_wash: rgba(0, 0, 0, 0.04),
-            press_wash: rgba(0, 0, 0, 0.08),
-            hairline: rgba(0, 0, 0, 0.12),
+            card,
+            card_hover: over(card, hex("#000000"), 0.04),
+            card_border: over(card, white, 0.65),
+            chip,
+            chip_border: over(chip, white, 0.65),
+            hairline_on_card: over(card, hex("#000000"), 0.12),
+            capsule,
+            capsule_hover: over(capsule, hex("#000000"), 0.04),
+            capsule_border: over(capsule, white, 0.65),
+            segment_fill: white,
+            search: over(bg, white, 0.72),
+            search_focus: capsule,
             menu_fill: hex("#F7F7F9"),
-            control_fill: hex("#FFFFFF"),
-            search_fill: rgba(255, 255, 255, 0.72),
-            danger_wash: rgba(255, 59, 48, 0.08),
+            control_fill: white,
+            pill: over(bg, hex("#1D1D1F"), 0.90),
+            hover_on_canvas: over(bg, hex("#000000"), 0.04),
+            hover_on_card: over(card, hex("#000000"), 0.04),
+            press_on_card: over(card, hex("#000000"), 0.08),
+            danger_on_card: over(card, hex("#FF3B30"), 0.08),
+            btn_disabled: over(bg, hex("#007AFF"), 0.40),
+            btn_disabled_text: over(bg, white, 0.40),
             spot_blue: [
-                rgba(0, 122, 255, 0.035),
-                rgba(0, 122, 255, 0.055),
-                rgba(0, 122, 255, 0.086),
+                (hex("#007AFF"), 0.035),
+                (hex("#007AFF"), 0.055),
+                (hex("#007AFF"), 0.086),
             ],
             spot_green: [
-                rgba(52, 199, 89, 0.027),
-                rgba(52, 199, 89, 0.047),
-                rgba(52, 199, 89, 0.078),
+                (hex("#34C759"), 0.027),
+                (hex("#34C759"), 0.047),
+                (hex("#34C759"), 0.078),
             ],
         }
     }
@@ -150,35 +214,12 @@ impl Tokens {
         }
     }
 
-    /// 画布清屏色：玻璃开 = 画布带 alpha（透出 DWM blur 的系统毛玻璃）；
-    /// 玻璃关 = 不透明。alpha 取 DESIGN.md 菜单语义（近不透明底）。
-    pub fn canvas(&self, glass: bool) -> Color32 {
-        if glass {
-            match self.kind {
-                ThemeKind::Dark => rgba(28, 28, 30, 0.72),
-                ThemeKind::Light => rgba(245, 245, 247, 0.78),
-            }
-        } else {
-            self.bg
-        }
-    }
-
-    /// DWM blur 底染色（apply_blur 的 tint）：深色底系压暗，浅色提亮。
+    /// DWM blur 底染色（保留给未来真毛玻璃实验；当前窗口不透明）。
     pub fn blur_tint(&self) -> [u8; 4] {
         match self.kind {
             ThemeKind::Dark => [28, 28, 30, 255],
             ThemeKind::Light => [245, 245, 247, 255],
         }
-    }
-
-    /// 卡 hover 填充 = 卡填充叠 hover_wash（玻璃卡 hover 提亮）。
-    pub fn card_hover(&self) -> Color32 {
-        let mut c = self.card_fill;
-        let wash = self.hover_wash;
-        c[0] = c[0].saturating_add(wash[0] / 2);
-        c[1] = c[1].saturating_add(wash[1] / 2);
-        c[2] = c[2].saturating_add(wash[2] / 2);
-        c
     }
 }
 
@@ -246,14 +287,12 @@ mod tests {
         assert_eq!(t.ink, hex("#F5F5F7"));
         assert_eq!(t.accent, hex("#0A84FF"));
         assert_eq!(t.ink2, hex("#98989D"));
-        assert_eq!(
-            t.card_fill,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 26)
-        );
+        // 卡 = 10% 白 over bg（CPU 直混 = QML 结果）
+        assert_eq!(t.card, hex("#333335"));
         assert_eq!(t.segment_fill, hex("#48484A"));
-        // Style.qml 控件底材/搜索/菜单回退（像素对齐，禁发明数值）
+        // Style.qml 控件底材/搜索/菜单（不透明原值）
         assert_eq!(t.control_fill, hex("#28282A"));
-        assert_eq!(t.search_fill, hex("#28282A"));
+        assert_eq!(t.search, hex("#28282A"));
         assert_eq!(t.menu_fill, hex("#2C2C2E"));
     }
 
@@ -262,24 +301,37 @@ mod tests {
         let t = Tokens::light();
         assert_eq!(t.control_fill, hex("#FFFFFF"));
         assert_eq!(t.menu_fill, hex("#F7F7F9"));
-        assert_eq!(
-            t.search_fill,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 184)
-        );
+        // 搜索 = 72% 白 over #F5F5F7
+        assert_eq!(t.search, hex("#FCFCFD"));
     }
 
     #[test]
-    fn canvas_is_transparent_only_with_glass() {
+    fn precomputed_layers_are_opaque_and_ordered() {
         let t = Tokens::dark();
-        assert_eq!(t.canvas(false)[3], 255);
-        assert!(t.canvas(true)[3] < 255);
+        for c in [
+            t.card,
+            t.card_hover,
+            t.capsule,
+            t.chip,
+            t.search_focus,
+            t.pill,
+        ] {
+            assert_eq!(c.a(), 255, "预合成层必须不透明");
+        }
+        // hover 在卡之上再提亮：亮于卡、暗于纯白
+        assert!(t.card_hover.r() > t.card.r());
+        assert!(t.card_hover.r() < 255);
+        // 卡边比卡面更亮
+        assert!(t.card_border.r() > t.card.r());
+        assert!(t.hover_on_card.r() > t.card.r());
+        assert!(t.press_on_card.r() > t.hover_on_card.r());
     }
 
     #[test]
-    fn hover_lightens_card() {
-        let t = Tokens::dark();
-        let h = t.card_hover();
-        assert!(h.r() > t.card_fill.r() || h[0] > t.card_fill[0]);
+    fn light_spots_and_disabled_button() {
+        let t = Tokens::light();
+        // 投屏钮禁用 = accent@40% over bg
+        assert_eq!(t.btn_disabled, over(t.bg, hex("#007AFF"), 0.40));
     }
 
     #[test]

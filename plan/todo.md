@@ -74,27 +74,55 @@ duo/                       # 仓库根（不变）
 - [x] 单测：令牌对拍（暗/亮 control/search/menu fill）、fallback
       确定性、elide 6 字规则
 
-### P2 主面板骨架像素移植（未开始）
+### P2 主面板骨架像素移植（✅ 2026-09-17 完成，GLM 双主题对拍通过）
 
-- [ ] 顶栏胶囊：y16 h32 通栏、flyoutFill r16 + cardBorder、分段
+- [x] 顶栏胶囊：y16 h32 通栏、flyoutFill r16 + cardBorder、分段
       内缩 2、选中不透明段 r14（暗 #48484A）、13px 选中 DemiBold
-- [ ] 设备卡：y64 h76、Dot 8+1 白环（在线绿/有设备琥珀/无设备灰）、
+- [x] 设备卡：y64 h76、Dot 8+1 白环（在线绿/有设备琥珀/无设备灰）、
       15px DemiBold 状态 + 12px ink2 serial，左缘 14 间距 10
-- [ ] 固定应用卡：h68、Flow x12 y12 间距 12、44px 图标 r10 洗色
-- [ ] 镜像卡：h64、"设备镜像" 15px、扬声器矢量 14px@x78、音量条
-      （4px 轨 hairline + accent 填充 + 12px 拇指、未知中性态、
-      200ms 防抖）、"投屏" accent 68×32 r16 右缘 12、禁用 40%
-- [ ] 搜索胶囊：h36 r18、searchFill↔聚焦 flyoutFill、放大镜 16px
+- [x] 固定应用卡：h68、Flow x12 y12 间距 12、44px 图标 r10 洗色
+- [x] 镜像卡：h64、"设备镜像" 15px@左缘 12（DemiBold）、扬声器矢量
+      14px@x78、音量条（4px 轨 hairline + accent 填充 + 12px 拇指、
+      未知中性态、200ms 防抖）、"投屏" accent 68×32 r16 右缘 12、
+      禁用 40%
+- [x] 搜索胶囊：h36 r18、searchFill↔聚焦 flyoutFill、放大镜 16px
       @12、TextField 13px、清空钮 28×28
-- [ ] 应用网格：cellW = w/max(2,floor(w/92))、cellH 102、磁贴 60px
-      图标 r14 洗色 + 标签 12px@76、6 字 elide、未装 40%、
-      空态/无匹配文案与刷新按钮、网格区内部滚动
-- [ ] 运行卡：bottom 56、芯片 h32 r16（Dot 8+1 + 12px 标签 + ✕
-      hover 露出 danger 洗色）、Flow 间距 8
-- [ ] Toast：bottom 16 h36 r18 pillFill、13px 白字、2.5s 淡出
-- [ ] WSLg 对拍：qml-main(-dark).png vs egui 截图，GLM 视觉评审
-      通过（结构/间距/色值逐项核对）
-- [ ] 单测：布局 y 链计算（胶囊→设备→固定→镜像→搜索→网格）
+- [x] 应用网格：cellW = w/max(2,floor(w/92))、cellH 102、磁贴 60px
+      图标 r14 洗色 + 标签 12px@76、6 字 elide、未装 40%、空态/
+      无匹配文案与刷新按钮、网格区内部滚动（with_clip_rect 裁剪，
+      tile 内 painter 全部走 clip——widget 式 ui.put 不吃 clip 是实测坑）
+- [x] 网格语义跟齐 pyduo 2026-09 真机反馈：只显示已装（未装目录项
+      不铺灰块）；第三方随 installed 集合进出
+- [x] 运行卡：bottom 56、芯片 h32 r16、Flow 间距 8（无会话时网格
+      延伸到页面底-40，与 QML chipsZone.visible 三项式一致）
+- [x] Toast：bottom 16 h36 r18 pillFill、13px 白字、2.5s 淡出、
+      启动「就绪」初始态（QML _status_text 对译）
+- [x] 单测：布局 y 链计算 38 项（胶囊→设备→固定→镜像→搜索→网格，
+      有/无 pin × 有/无芯片四象限）
+
+**渲染管线关键发现（docs/validation 标定实测）**
+- egui 0.31 Windows 着色管线 alpha 混合非线性病态（有效 alpha =
+  a^0.75 级）→ theme.rs 所有静态半透明层 CPU 预合成不透明色
+  （theme::over = QML sRGB 直混数学等价），GPU 只画不透明矩形+文字
+- 增量重绘不擦除 → 半透明逐帧叠加饱和 → 色斑预合成不透明三层
+- usvg 无系统字体 → preset SVG v7 去掉 <text>（模板版本 6→7），
+  白字/glyph_ink 深字由面板层叠画（视觉与 Python 版等价；
+  parity 比对两端剥 <text> 后逐字节一致）
+- egui_extras 需 file+image+svg 三特性；Windows 路径须
+  file:/// 正斜杠 URI
+- 图标加载 Ready 门控失败走 G2 squircle 兜底（杜绝坏图三角）
+
+**截图回路（P2 起常备）**
+- Windows 侧桩：%USERPROFILE%\.local\share\duo\tools\duo-core-stub.{bat,py}
+  （watch=单设备在线、apps=27 目录全装中文标签、其余静默 rc0，
+  与 scripts/qml_shots.py 基线同状态）
+- 命令模板：cd tools 目录；env DUO_CORE_BIN=stub.bat
+  DUO_DATA_DIR=<临时隔离目录> WSLENV='DUO_CORE_BIN:DUO_DATA_DIR'
+  （冒号分隔！空格分隔整串失效——真机偏好会漏进来）
+  duo-panel.exe --shot <out.png> --page home|settings --theme light|dark
+- 归一化 630×990→525×825（PIL LANCZOS）后与 qml 基线同坐标系
+  （逻辑×1.25）像素采样对拍
+- GLM-5.3-flash 终验：light/dark 双主题主面板宣布像素级一致 ✅
 
 ### P3 交互语义移植（未开始）
 

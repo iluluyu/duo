@@ -75,26 +75,31 @@ pub fn install_fonts(ctx: &egui::Context) {
             list.push(name.clone());
         }
     }
-    // DemiBold 档：独立 family（QML Font.DemiBold 的近似，Segoe/雅黑粗体）
-    let bold_stack = ["duo-bold-segoe", "duo-bold-cjk"];
+    // DemiBold 档：独立 family（QML Font.DemiBold 的近似，Segoe/雅黑粗体）；
+    // 粗体不可得（Linux/WSL 出图）时回退常规栈——字重降档不缺字。
+    let mut bold_stack: Vec<String> = Vec::new();
     let segoe_b = r"C:\Windows\Fonts\segoeuib.ttf";
     if let Ok(bytes) = std::fs::read(segoe_b) {
         fonts.font_data.insert(
-            bold_stack[0].into(),
+            "duo-bold-segoe".into(),
             std::sync::Arc::new(egui::FontData::from_owned(bytes)),
         );
+        bold_stack.push("duo-bold-segoe".into());
     }
     let cjk_b = r"C:\Windows\Fonts\msyhbd.ttc";
     if let Ok(bytes) = std::fs::read(cjk_b) {
         fonts.font_data.insert(
-            bold_stack[1].into(),
+            "duo-bold-cjk".into(),
             std::sync::Arc::new(egui::FontData::from_owned(bytes)),
         );
+        bold_stack.push("duo-bold-cjk".into());
     }
-    fonts.families.insert(
-        egui::FontFamily::Name("duo-bold".into()),
-        bold_stack.iter().map(|s| s.to_string()).collect(),
-    );
+    if bold_stack.is_empty() {
+        bold_stack = stack.clone();
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("duo-bold".into()), bold_stack);
     ctx.set_fonts(fonts);
 }
 

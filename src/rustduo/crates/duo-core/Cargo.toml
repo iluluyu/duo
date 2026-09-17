@@ -27,3 +27,6 @@ windows = { version = "0.58", features = [
 [[bin]]
 name = "duo-core"
 path = "src/main.rs"
+
+[dev-dependencies]
+regex = "1"

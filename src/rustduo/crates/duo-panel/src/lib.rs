@@ -9,6 +9,7 @@ pub mod app;
 pub mod backend;
 pub mod blur;
 pub mod fonts;
+pub mod home;
 pub mod model;
 pub mod paint;
 pub mod pinyin;
@@ -20,9 +21,47 @@ pub mod winproc;
 
 use eframe::egui;
 
-/// 进程入口（main.rs 只留薄壳）：单实例守卫 + egui 运行。
+/// 截图模式参数（--shot PATH [--page home|settings] [--ppp N]）。
+pub struct ShotArgs {
+    pub path: String,
+    pub page: String,
+    pub ppp: f32,
+    pub theme: Option<String>,
+}
+
+fn parse_shot_args() -> Option<ShotArgs> {
+    let args: Vec<String> = std::env::args().collect();
+    let path = args.iter().position(|a| a == "--shot")?;
+    let path = args.get(path + 1)?.clone();
+    let page = args
+        .iter()
+        .position(|a| a == "--page")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "home".into());
+    let ppp = args
+        .iter()
+        .position(|a| a == "--ppp")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.25);
+    let theme = args
+        .iter()
+        .position(|a| a == "--theme")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    Some(ShotArgs {
+        path,
+        page,
+        ppp,
+        theme,
+    })
+}
+
+/// 进程入口（main.rs 只留薄壳）：单实例守卫 + egui 运行；--shot 出图后自退。
 pub fn run() {
-    if !winproc::single_instance("DuoPanel") {
+    let shot = parse_shot_args();
+    if shot.is_none() && !winproc::single_instance("DuoPanel") {
         winproc::notify_already_running("Duo 面板已在运行。");
         return;
     }
@@ -33,7 +72,19 @@ pub fn run() {
     if let Err(err) = eframe::run_native(
         "Duo",
         options,
-        Box::new(|cc| Ok(Box::new(app::PanelApp::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = app::PanelApp::new(cc);
+            if let Some(s) = &shot {
+                if s.page == "settings" {
+                    app.page = app::Page::Settings;
+                }
+                if let Some(theme) = &s.theme {
+                    app.settings.draft.theme = theme.clone();
+                }
+                app.shot = Some((s.path.clone(), 0, std::time::Instant::now()));
+            }
+            Ok(Box::new(app))
+        }),
     ) {
         eprintln!("duo-panel: {err}");
         std::process::exit(1);
@@ -46,6 +97,4 @@ pub fn viewport() -> egui::ViewportBuilder {
         .with_title("Duo")
         .with_inner_size([420.0, 660.0])
         .with_min_inner_size([360.0, 520.0])
-        // 透明画布：clear_color 带 alpha 才能透出系统 blur。
-        .with_transparent(true)
 }

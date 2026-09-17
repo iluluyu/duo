@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::catalog::{catalog_by_package, AppPreset};
 
 /// 模板修订号——SVG 模板变更时递增，缓存文件（带版本后缀）永不回供旧形状。
-const TEMPLATE_VERSION: u32 = 6;
+const TEMPLATE_VERSION: u32 = 7;
 
 /// #RRGGBB 向白色混合：0 = 原色，1 = 纯白（平铺顶部渐变端的“上方打光”）。
 pub fn lighten(hex_color: &str, fraction: f64) -> String {
@@ -64,48 +64,24 @@ fn g2_squircle_path(size: i64, radius: i64) -> String {
     path
 }
 
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 /// 字母基线让单字在 y=30 处光学居中。CJK 全高字形与无尾大写 ≈ 中线
 /// +0.36em；独立小写字母按 x 字高（37）；Q 的尾巴拖低包围盒（38）。
-fn glyph_baseline(glyph: &str) -> i64 {
-    if glyph.is_ascii() && glyph.chars().all(|c| c.is_ascii_lowercase()) {
-        return 37;
-    } else if glyph == "Q" {
-        return 38;
-    }
-    40
-}
-
-/// 一条目录预设的 60×60 squircle 平铺 SVG（竖向渐变 + 居中单字，
-/// 亮品牌色深字、否则白字；无描边）。
+/// 一条目录预设的 60×60 squircle 平铺 SVG（竖向渐变；无字符）。
+/// v7 起不含 <text>：resvg 无系统字体渲染不出，面板层在图标上叠画
+/// 白字（视觉与 Python 版含字 SVG 等价）。
 pub fn render_preset_svg(preset: &AppPreset) -> String {
     let gradient_top = lighten(preset.color, 0.08);
-    let ink = if preset.glyph_ink {
-        "#1D1D1F"
-    } else {
-        "#FFFFFF"
-    };
-    let baseline = glyph_baseline(preset.glyph);
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 60\">\n<defs><linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">\n<stop offset=\"0\" stop-color=\"{gradient_top}\"/><stop offset=\"1\" stop-color=\"{color}\"/>\n</linearGradient></defs>\n<path d=\"{path}\" fill=\"url(#bg)\"/>\n<text x=\"30\" y=\"{baseline}\" text-anchor=\"middle\"\n      font-family=\"Segoe UI, PingFang SC, Microsoft YaHei, sans-serif\"\n      font-size=\"28\" font-weight=\"600\" fill=\"{ink}\">{glyph}</text>\n</svg>\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 60\">
+<defs><linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">
+<stop offset=\"0\" stop-color=\"{gradient_top}\"/><stop offset=\"1\" stop-color=\"{color}\"/>
+</linearGradient></defs>
+<path d=\"{path}\" fill=\"url(#bg)\"/>
+</svg>
+",
         gradient_top = gradient_top,
         color = preset.color,
         path = g2_squircle_path(60, 30),
-        baseline = baseline,
-        ink = ink,
-        glyph = escape(preset.glyph),
     )
 }
 
@@ -141,7 +117,7 @@ mod tests {
         assert!(svg.trim_start().starts_with("<svg"));
         assert!(svg.trim_end().ends_with("</svg>"));
         assert_eq!(svg.matches("stop-color=").count(), 2);
-        assert!(svg.contains(">微</text>"));
+        assert!(!svg.contains("<text")); // v7：字符由面板层叠画
         assert!(svg.contains("viewBox=\"0 0 60 60\""));
         assert!(svg.contains("M0.00 30.00"));
         assert!(svg.contains("fill=\"url(#bg)\""));
@@ -157,18 +133,18 @@ mod tests {
 
     #[test]
     fn glyph_ink_flag_selects_dark_vs_white_fill() {
-        let dark = render_preset_svg(catalog_by_package("com.sankuai.meituan").unwrap());
-        let white = render_preset_svg(catalog_by_package("com.tencent.mm").unwrap());
-        assert!(dark.contains("fill=\"#1D1D1F\""));
-        assert!(!white.contains("fill=\"#1D1D1F\""));
-        assert!(white.contains("fill=\"#FFFFFF\""));
+        // v7：SVG 无字符，glyph_ink 决定面板层叠字用深字还是白字
+        let dark = catalog_by_package("com.sankuai.meituan").unwrap();
+        let white = catalog_by_package("com.tencent.mm").unwrap();
+        assert!(dark.glyph_ink);
+        assert!(!white.glyph_ink);
     }
 
     #[test]
     fn render_every_catalog_entry() {
         for preset in APP_CATALOG {
             let svg = render_preset_svg(preset);
-            assert!(svg.contains(preset.glyph), "{}", preset.package);
+            assert!(svg.contains("linearGradient"), "{}", preset.package);
         }
     }
 
@@ -177,9 +153,9 @@ mod tests {
         let base = std::env::temp_dir().join(format!("duo-core-icons-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let path = preset_icon_path(&base, "com.tencent.mm").unwrap();
-        assert_eq!(path, base.join("presets").join("com.tencent.mm.v6.svg"));
+        assert_eq!(path, base.join("presets").join("com.tencent.mm.v7.svg"));
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("微"));
+        assert!(content.contains("linearGradient"));
         let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         let again = preset_icon_path(&base, "com.tencent.mm").unwrap();
