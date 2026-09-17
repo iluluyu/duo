@@ -9,9 +9,6 @@ use std::process::{Child, Command};
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
 
 /// Windows：CREATE_NO_WINDOW（面板是窗口进程，adb 轮询不得闪控制台）。
@@ -23,12 +20,15 @@ pub fn creation_flags() -> u32 {
     }
 }
 
+/// CREATE_NO_WINDOW 命令构建（统一走 duo_core::quiet）。
+pub fn quiet_command(program: &str) -> Command {
+    duo_core::quiet::quiet_command(program)
+}
+
 /// spawn 配方：静默 + 不接管 stdio（mirror CLI 自管日志）。
 pub fn silent_command(program: &str, args: &[String]) -> Command {
-    let mut command = Command::new(program);
+    let mut command = quiet_command(program);
     command.args(args);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
     command
 }
 
@@ -171,7 +171,7 @@ pub fn single_instance(key: &str) -> bool {
             let Ok(handle) = CreateMutexW(None, false, w!("Local\\DuoPanelSingleInstance")) else {
                 return false;
             };
-            std::mem::forget(handle);
+            let _ = handle;
             GetLastError() != ERROR_ALREADY_EXISTS
         }
     }

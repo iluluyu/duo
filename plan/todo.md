@@ -195,7 +195,7 @@ duo/                       # 仓库根（不变）
 
 - [x] 交叉构建部署双 exe（mingw；Duo.exe GUI 子系统 + 图标）——
       已于 2026-09-16 完成（本计划前完成，递补记录）
-- [ ] accept_windows.ps1 扩展：面板启动/单实例/会话 spawn/退出拖树
+- [x] accept_windows.ps1 扩展：面板启动/单实例/会话 spawn/退出拖树（✅ 2026-09-17 完成）
 - [ ] 真机跑通清单回填（见根 TODO.md「待 Windows 实测」）
 - [ ] libmpv 自接视频流（撞到 scrcpy 呈现天花板才启动，暂挂）
 

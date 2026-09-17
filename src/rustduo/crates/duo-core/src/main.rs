@@ -14,7 +14,7 @@
 
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
-use std::process::{exit, Command, Stdio};
+use std::process::{exit, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -268,7 +268,7 @@ fn cmd_volume(adb: &Option<String>, serial: &Option<String>, index: &Option<Stri
     };
     let clamped = clamp_media_volume(index);
     let argv = media_volume_process_argv(&adb, &serial, clamped);
-    let mut child = match Command::new(&argv[0])
+    let mut child = match duo_core::quiet::quiet_command(&argv[0])
         .args(&argv[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
