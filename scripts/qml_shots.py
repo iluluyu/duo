@@ -74,8 +74,16 @@ class _StubMonitor:
 def patch_adb_boundary() -> None:
         """把 adb / 磁盘边界换掉：出图绝不触碰真实设备与真实用户数据。"""
         controller_mod.DeviceMonitor = _StubMonitor  # type: ignore[assignment]
+        # 与 duo-core-stub 的 apps 集合对齐（目录全装 + 4 个第三方），
+        # 保证 QML 基线与 egui --shot 同状态可比。
         controller_mod._resolve_installed = (  # type: ignore[assignment]
-                lambda adb, done: done({preset.package for preset in APP_CATALOG})
+                lambda adb, done: done(
+                        {preset.package for preset in APP_CATALOG}
+                        | {
+                                "com.android.chrome", "org.mozilla.firefox",
+                                "com.spotify.music", "com.discord",
+                        }
+                )
         )
         controller_mod._prefs_path = lambda: TMP / "gui_prefs.json"  # type: ignore[assignment]
         settings_mod.settings_path = lambda: TMP / "settings.json"  # type: ignore[assignment]

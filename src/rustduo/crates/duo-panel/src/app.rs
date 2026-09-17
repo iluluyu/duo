@@ -8,17 +8,16 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use eframe::egui::{Color32, RichText, Sense, Vec2};
+use eframe::egui::{RichText, Sense, Vec2};
 
+use crate::sessions;
 use duo_core::aspects::{
     aspect_presets, body_aspect_from_wm_size, preset_by_id, transposed, AspectPreset,
     BODY_LANDSCAPE_ID, BODY_PORTRAIT_ID,
 };
-use duo_core::catalog::catalog_by_package;
 use duo_core::settings::resolve_adb_path;
 
 use crate::backend::{self, Background, DeviceWatch};
-use crate::blur;
 use crate::model::{AppEntry, AppsModel};
 use crate::prefs::{
     load_audio_prefs, load_bar_prefs, load_behavior_prefs, load_density_prefs, load_display_prefs,
@@ -30,7 +29,7 @@ use crate::sessions::{panel_log_path, session_label, Sessions, MIRROR_KEY};
 use crate::settings_view::{
     SettingsPageModel, AUDIO_CHOICES, BAR_CHOICES, CODEC_CHOICES, CORNER_CHOICES, THEME_CHOICES,
 };
-use crate::theme::{rounding, ThemeKind, Tokens, PAGE_MARGIN};
+use crate::theme::{rounding, ThemeKind, Tokens};
 
 /// 两页常驻（胶囊即导航）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +79,14 @@ pub struct PanelApp {
 
     // UI 态
     pub search: String,
-    toast: Option<(String, Instant)>,
-    media_volume: i64,
-    blur_applied: bool,
+    pub(crate) toast: Option<(String, Instant)>,
+    pub(crate) media_volume: i64,
+    /// 网格滚动偏移（像素；QML interactive 网格的 egui 对应物）。
+    pub(crate) grid_scroll: f32,
+    pub(crate) volume_pending: Option<(i64, Instant)>,
+    /// 出图模式：(path, 已渲染帧数, 启动时刻)。帧数 ≥40 且满 1.6s（桩
+    /// duo-core 的 watch/apps 首行落位）才请求截图，收到即存盘退出。
+    pub(crate) shot: Option<(String, u32, Instant)>,
 }
 
 impl PanelApp {
@@ -116,11 +120,15 @@ impl PanelApp {
             scale_prefs: load_scale_prefs(),
             body_preset: None,
             body_probed_at: None,
+            volume_pending: None,
+            shot: None,
             search: String::new(),
             toast: None,
-            media_volume: 9,
-            blur_applied: false,
+            media_volume: -1,
+            grid_scroll: 0.0,
         };
+        // QML _status_text 初始「就绪」→ 启动即挂状态 toast
+        app.toast_now("就绪");
         app.ensure_watch();
         app.refresh_installed();
         app
@@ -141,7 +149,131 @@ impl PanelApp {
         self.watch_adb = self.adb.clone();
     }
 
-    fn toast_now(&mut self, text: impl Into<String>) {
+    // ---- home.rs 桥接（数据合同，全部薄转发） ----
+
+    pub(crate) fn has_pinned(&self) -> bool {
+        self.apps.pinned().iter().any(|e| e.installed)
+    }
+
+    pub(crate) fn pinned_entries(&self) -> Vec<AppEntry> {
+        self.apps
+            .pinned()
+            .into_iter()
+            .filter(|e| e.installed)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn grid_entries(&self) -> Vec<AppEntry> {
+        self.apps
+            .search(&self.search)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// QML device/fallbackDevice 语义：首个在线设备，回退首个任意设备。
+    pub(crate) fn device_summary(&self) -> (String, Option<String>, usize, bool) {
+        let Some(watch) = &self.watch else {
+            return ("设备监控未启动（缺 duo-core）".into(), None, 0, false);
+        };
+        let states = watch.states();
+        if states.is_empty() {
+            return ("未连接设备".into(), None, 0, false);
+        }
+        let online: Vec<&String> = states
+            .iter()
+            .filter(|(_, st)| st.as_str() == "device")
+            .map(|(k, _)| k)
+            .collect();
+        let (serial, state) = if let Some(first) = online.first() {
+            (*first, "在线")
+        } else {
+            states
+                .iter()
+                .next()
+                .map(|(k, v)| (k, Self::state_text(v)))
+                .unwrap()
+        };
+        (
+            state.to_string(),
+            Some(serial.to_string()),
+            online.len(),
+            !states.is_empty(),
+        )
+    }
+
+    pub(crate) fn running_chips(&self) -> Vec<(String, String, bool)> {
+        self.sessions
+            .running()
+            .into_iter()
+            .map(|(key, label)| {
+                let clickable = key != sessions::MIRROR_KEY;
+                (key, label, clickable)
+            })
+            .collect()
+    }
+
+    pub(crate) fn stop_session(&mut self, key: &str) {
+        self.sessions.stop(key);
+    }
+
+    pub(crate) fn volume_dragged(&mut self, index: i64) {
+        self.media_volume = index;
+        self.volume_pending = Some((index, Instant::now()));
+    }
+
+    /// 镜像卡右键菜单（Main.qml mirrorMenu：打开投屏 / 关屏 / 默认窗口栏）。
+    pub(crate) fn mirror_menu(&mut self, ui: &mut egui::Ui) {
+        let turn_off = self.settings.draft.turn_screen_off;
+        if ui.button("打开投屏").clicked() {
+            self.start_mirror();
+            ui.close_menu();
+        }
+        if ui
+            .button(if turn_off {
+                "✓ 镜像时关闭设备屏幕"
+            } else {
+                "镜像时关闭设备屏幕"
+            })
+            .clicked()
+        {
+            self.settings.set_turn_screen_off(!turn_off);
+            ui.close_menu();
+        }
+        let top = self.settings.draft.top_bar_mode.clone();
+        let bottom = self.settings.draft.bottom_bar_mode.clone();
+        ui.menu_button("默认上巴", |ui| {
+            for mode in BAR_CHOICES {
+                let label = bar_label(mode);
+                let text = if *mode == top {
+                    format!("● {label}")
+                } else {
+                    label
+                };
+                if ui.button(text).clicked() {
+                    self.settings.set_bar_mode(true, mode);
+                    ui.close_menu();
+                }
+            }
+        });
+        ui.menu_button("默认下巴", |ui| {
+            for mode in BAR_CHOICES {
+                let label = bar_label(mode);
+                let text = if *mode == bottom {
+                    format!("● {label}")
+                } else {
+                    label
+                };
+                if ui.button(text).clicked() {
+                    self.settings.set_bar_mode(false, mode);
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+
+    pub(crate) fn toast_now(&mut self, text: impl Into<String>) {
         self.toast = Some((text.into(), Instant::now()));
     }
 
@@ -155,26 +287,11 @@ impl PanelApp {
         }
     }
 
-    fn device_status(&self) -> String {
-        let Some(watch) = &self.watch else {
-            return "设备监控未启动（缺 duo-core）".into();
-        };
-        let states = watch.states();
-        if states.is_empty() {
-            return "等待设备…".into();
-        }
-        let parts: Vec<String> = states
-            .iter()
-            .map(|(serial, state)| format!("{serial} · {}", Self::state_text(state)))
-            .collect();
-        parts.join("  ")
-    }
-
-    fn serial(&self) -> Option<String> {
+    pub(crate) fn serial(&self) -> Option<String> {
         self.watch.as_ref().and_then(|w| w.online_serial())
     }
 
-    fn refresh_installed(&mut self) {
+    pub(crate) fn refresh_installed(&mut self) {
         let Some(binary) = self.duo_core.clone() else {
             return;
         };
@@ -223,7 +340,7 @@ impl PanelApp {
 
     // ------------------------------------------------------------- launch
 
-    fn launch(&mut self, package: &str, size: Option<(i64, i64)>) {
+    pub(crate) fn launch(&mut self, package: &str, size: Option<(i64, i64)>) {
         let Some(serial) = self.serial() else {
             self.toast_now("设备未连接");
             return;
@@ -311,7 +428,7 @@ impl PanelApp {
         preset
     }
 
-    fn move_app_to_display(&mut self, package: &str) {
+    pub(crate) fn move_app_to_display(&mut self, package: &str) {
         let Some(serial) = self.serial() else {
             self.toast_now("设备未连接");
             return;
@@ -385,7 +502,7 @@ impl PanelApp {
         }));
     }
 
-    fn start_mirror(&mut self) {
+    pub(crate) fn start_mirror(&mut self) {
         let Some(serial) = self.serial() else {
             self.toast_now("设备未连接");
             return;
@@ -517,10 +634,6 @@ impl PanelApp {
 
     // ------------------------------------------------------------- 渲染
 
-    fn glass_on(&self) -> bool {
-        self.settings.draft.glass_enabled
-    }
-
     fn sync_visuals(&self, ctx: &egui::Context) {
         let t = self.tokens;
         let mut visuals = if t.kind == ThemeKind::Light {
@@ -529,7 +642,7 @@ impl PanelApp {
             egui::Visuals::dark()
         };
         // 玻璃开 = 画布半透明，透出 DWM blur；关 = 不透明。
-        let canvas = t.canvas(self.glass_on());
+        let canvas = t.bg;
         visuals.panel_fill = canvas;
         visuals.window_fill = canvas;
         visuals.extreme_bg_color = t.bg;
@@ -537,33 +650,33 @@ impl PanelApp {
         visuals.selection.bg_fill = t.accent;
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, t.ink);
         visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, t.ink2);
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, t.hairline);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, t.card_border);
         visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, t.ink);
-        visuals.widgets.hovered.bg_fill = t.hover_wash;
+        visuals.widgets.hovered.bg_fill = t.hover_on_card;
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, t.card_border);
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, t.ink);
-        visuals.widgets.active.bg_fill = t.press_wash;
+        visuals.widgets.active.bg_fill = t.press_on_card;
         visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, t.ink);
-        visuals.widgets.open.bg_fill = t.flyout_fill;
+        visuals.widgets.open.bg_fill = t.capsule;
         ctx.set_visuals(visuals);
     }
 
     /// 顶栏胶囊分段导航：底胶囊手绘，两段用 ui.put 子区放按钮——文字
     /// 布局交给 egui，不做任何手工坐标（旧版手工居中有漂移 bug）。
+    /// 顶栏胶囊（Main.qml topCapsule 通栏；页面之上常驻）。
     fn top_capsule(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
-        let height = 34.0;
-        let width = ui.available_width();
-        let (pill, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        ui.painter().rect_filled(
-            pill,
-            egui::CornerRadius::same((height / 2.0) as u8),
-            t.flyout_fill,
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(20.0, 16.0),
+            Vec2::new(ui.max_rect().width() - 40.0, 32.0),
         );
+        ui.allocate_rect(rect, Sense::hover());
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(16), t.capsule);
         ui.painter().rect_stroke(
-            pill,
-            egui::CornerRadius::same((height / 2.0) as u8),
-            egui::Stroke::new(1.0_f32, t.hairline),
+            rect,
+            egui::CornerRadius::same(16),
+            egui::Stroke::new(1.0_f32, t.card_border),
             egui::StrokeKind::Inside,
         );
         let mut clicked = None;
@@ -571,230 +684,40 @@ impl PanelApp {
             .into_iter()
             .enumerate()
         {
-            let seg = egui::Rect::from_min_max(
-                egui::pos2(pill.left() + pill.width() * 0.5 * i as f32, pill.top()),
+            // 分段 x2 / width/2-4 / height-4（QML CapsuleSegment 几何）
+            let seg = egui::Rect::from_min_size(
                 egui::pos2(
-                    pill.left() + pill.width() * 0.5 * (i + 1) as f32,
-                    pill.bottom(),
+                    rect.left() + 2.0 + i as f32 * (rect.width() / 2.0 - 4.0),
+                    rect.top() + 2.0,
                 ),
-            )
-            .shrink2(Vec2::new(3.0, 2.0));
+                Vec2::new(rect.width() / 2.0 - 4.0, 28.0),
+            );
             let selected = self.page == page;
-            let text = RichText::new(label)
-                .size(13.0)
-                .color(if selected { t.ink } else { t.ink2 });
-            let btn = egui::Button::new(text)
-                .fill(if selected {
-                    t.segment_fill
-                } else {
-                    Color32::TRANSPARENT
-                })
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(egui::CornerRadius::same((seg.height() / 2.0) as u8));
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(seg).layout(
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-            ));
-            if child.add(btn).clicked() {
+            if selected {
+                crate::paint::rounded_fill(ui.painter(), seg, 14.0, t.segment_fill);
+            }
+            let resp = ui.allocate_rect(seg, Sense::click());
+            if !selected && resp.hovered() {
+                crate::paint::rounded_fill(ui.painter(), seg, 14.0, t.capsule_hover);
+            }
+            crate::paint::text_centered(
+                ui.painter(),
+                seg.center(),
+                label,
+                13.0,
+                selected,
+                if selected { t.ink } else { t.ink2 },
+            );
+            if resp.clicked() {
                 clicked = Some(page);
             }
         }
         if let Some(page) = clicked {
             self.page = page;
         }
-        ui.add_space(8.0);
     }
 
-    fn device_card(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        egui::Frame::NONE
-            .fill(t.card_fill)
-            .stroke(egui::Stroke::new(1.0_f32, t.card_border))
-            .corner_radius(rounding::CARD)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("设备").size(13.0).color(t.ink2));
-                    ui.label(RichText::new(self.device_status()).size(13.0).color(t.ink));
-                    let online = self.serial().is_some();
-                    let dot = if online { t.accent } else { t.ink2 };
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 4.0, dot);
-                    if online && ui.button(RichText::new("设备镜像").size(12.0)).clicked() {
-                        self.start_mirror();
-                    }
-                });
-            });
-        ui.add_space(8.0);
-    }
-
-    fn pinned_row(&mut self, ui: &mut egui::Ui) {
-        let pinned: Vec<String> = self
-            .apps
-            .apps
-            .iter()
-            .filter(|e| e.pinned)
-            .map(|e| e.package.clone())
-            .collect();
-        if pinned.is_empty() {
-            return;
-        }
-        let t = self.tokens;
-        egui::Frame::NONE
-            .fill(t.card_fill)
-            .stroke(egui::Stroke::new(1.0_f32, t.card_border))
-            .corner_radius(rounding::CARD)
-            .inner_margin(egui::Margin::same(8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let entries: Vec<AppEntry> = self
-                        .apps
-                        .apps
-                        .iter()
-                        .filter(|e| e.pinned)
-                        .cloned()
-                        .collect();
-                    for entry in entries {
-                        self.tile(ui, &entry, 44.0);
-                    }
-                });
-            });
-        ui.add_space(8.0);
-    }
-
-    fn home_page(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        self.device_card(ui);
-
-        let search = egui::TextEdit::singleline(&mut self.search)
-            .hint_text("搜索（拼音首字母 / 标签 / 包名）")
-            .desired_width(ui.available_width());
-        ui.add(search);
-        ui.add_space(8.0);
-
-        self.pinned_row(ui);
-
-        let entries: Vec<AppEntry> = self
-            .apps
-            .search(&self.search)
-            .into_iter()
-            .cloned()
-            .collect();
-        if entries.is_empty() {
-            ui.label(
-                RichText::new(if self.search.is_empty() {
-                    "未发现已装应用"
-                } else {
-                    "无匹配应用"
-                })
-                .size(13.0)
-                .color(t.ink2),
-            );
-        }
-        let gap = 8.0;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.with_layout(
-                egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
-                |ui| {
-                    for (i, entry) in entries.iter().enumerate() {
-                        if i > 0 {
-                            ui.add_space(gap);
-                        }
-                        self.tile(ui, entry, 92.0);
-                    }
-                },
-            );
-        });
-
-        self.running_card(ui);
-    }
-
-    fn tile(&mut self, ui: &mut egui::Ui, entry: &AppEntry, size: f32) {
-        let t = self.tokens;
-        let label_size = if size >= 92.0 { 13.0 } else { 10.0 };
-        let icon = if size >= 92.0 { 60.0 } else { 28.0 };
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(size, size + 20.0), Sense::click());
-        let fill = if response.hovered() {
-            t.card_hover()
-        } else {
-            t.card_fill
-        };
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(rounding::CARD as u8), fill);
-        if response.clicked() {
-            self.launch(&entry.package, None);
-        }
-        response.context_menu(|ui| {
-            self.tile_menu(ui, entry);
-        });
-
-        let icon_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.top() + 8.0 + icon / 2.0),
-            Vec2::splat(icon),
-        );
-        let mut painted = false;
-        if let Some(path) = &entry.icon {
-            if path.exists() {
-                let uri = format!("file://{}", path.display());
-                let loaded = ui
-                    .ctx()
-                    .try_load_image(&uri, egui::load::SizeHint::Width(120));
-                if matches!(loaded, Ok(egui::load::ImagePoll::Ready { .. })) {
-                    ui.put(
-                        icon_rect,
-                        egui::Image::from_uri(uri)
-                            .fit_to_exact_size(Vec2::splat(icon))
-                            .corner_radius(rounding::ICON),
-                    );
-                    painted = true;
-                }
-            }
-        }
-        if !painted {
-            let preset = catalog_by_package(&entry.package);
-            let color = preset
-                .map(|p| crate::theme::hex(p.color))
-                .unwrap_or_else(|| t.accent);
-            ui.painter().rect_filled(
-                icon_rect,
-                egui::CornerRadius::same(rounding::ICON as u8),
-                color,
-            );
-            let glyph = preset.map(|p| p.glyph.to_string()).unwrap_or_else(|| {
-                entry
-                    .label
-                    .chars()
-                    .next()
-                    .map(String::from)
-                    .unwrap_or_default()
-            });
-            let ink = preset
-                .map(|p| {
-                    if p.glyph_ink {
-                        crate::theme::hex("#1D1D1F")
-                    } else {
-                        Color32::WHITE
-                    }
-                })
-                .unwrap_or(Color32::WHITE);
-            ui.painter().text(
-                icon_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                &glyph,
-                egui::FontId::proportional(if size >= 92.0 { 24.0 } else { 14.0 }),
-                ink,
-            );
-        }
-        ui.painter().text(
-            egui::pos2(rect.center().x, rect.bottom() - 10.0),
-            egui::Align2::CENTER_CENTER,
-            &entry.label,
-            egui::FontId::proportional(label_size),
-            t.ink,
-        );
-    }
-
-    fn tile_menu(&mut self, ui: &mut egui::Ui, entry: &AppEntry) {
+    pub(crate) fn tile_menu(&mut self, ui: &mut egui::Ui, entry: &AppEntry) {
         let package = entry.package.clone();
         let label = session_label(&package);
         if ui.button(format!("打开 {label}")).clicked() {
@@ -955,40 +878,10 @@ impl PanelApp {
         }
     }
 
-    fn running_card(&mut self, ui: &mut egui::Ui) {
-        self.sessions.reap();
-        let running = self.sessions.running();
-        if running.is_empty() {
-            return;
-        }
-        let t = self.tokens;
-        egui::Frame::NONE
-            .fill(t.card_fill)
-            .stroke(egui::Stroke::new(1.0_f32, t.card_border))
-            .corner_radius(rounding::CARD)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                for (key, label) in running {
-                    ui.horizontal(|ui| {
-                        let dot_rect = ui
-                            .allocate_exact_size(Vec2::new(8.0, 8.0), Sense::hover())
-                            .0;
-                        ui.painter().circle_filled(dot_rect.center(), 3.0, t.accent);
-                        ui.label(RichText::new(&label).size(13.0).color(t.ink));
-                        if ui.button(RichText::new("✕").size(12.0)).clicked() {
-                            self.sessions.stop(&key);
-                            self.toast_now(format!("已关闭 {label}"));
-                        }
-                    });
-                }
-            });
-    }
-
     fn toast(&mut self, ui: &mut egui::Ui, msg: &str) {
         let t = self.tokens;
         egui::Frame::NONE
-            .fill(t.pill_fill)
+            .fill(t.pill)
             .corner_radius(14.0)
             .inner_margin(egui::Margin::symmetric(12, 6))
             .show(ui, |ui| {
@@ -1172,7 +1065,7 @@ impl PanelApp {
     ) {
         let t = self.tokens;
         egui::Frame::NONE
-            .fill(t.card_fill)
+            .fill(t.card)
             .stroke(egui::Stroke::new(1.0_f32, t.card_border))
             .corner_radius(rounding::CARD)
             .inner_margin(egui::Margin::same(12))
@@ -1183,6 +1076,64 @@ impl PanelApp {
                 body(ui, self);
             });
         ui.add_space(8.0);
+    }
+
+    /// 出图泵：帧数 ≥40 且 1.6s 就绪后请求 Screenshot；事件回包存盘即退。
+    fn pump_shot(&mut self, ctx: &egui::Context) {
+        let Some((path, frames, started)) = &mut self.shot else {
+            return;
+        };
+        *frames += 1;
+        let ready = *frames >= 40 && started.elapsed() >= Duration::from_millis(1600);
+        if ready {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        let shot = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = shot {
+            let size = [image.width() as u32, image.height() as u32];
+            let pixels: Vec<u8> = image
+                .pixels
+                .iter()
+                .flat_map(|c| [c.r(), c.g(), c.b()])
+                .collect();
+            match image::save_buffer(
+                path.as_str(),
+                &pixels,
+                size[0],
+                size[1],
+                image::ColorType::Rgb8,
+            ) {
+                Ok(()) => eprintln!("shot saved: {} ({}x{})", path, size[0], size[1]),
+                Err(err) => eprintln!("shot save FAILED: {path}: {err}"),
+            }
+            self.shot = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// 音量命令 200ms 防抖（QML volumeDebounce）。
+    fn pump_volume_debounce(&mut self) {
+        let Some((index, at)) = self.volume_pending else {
+            return;
+        };
+        if at.elapsed() < Duration::from_millis(200) {
+            return;
+        }
+        self.volume_pending = None;
+        let Some(binary) = self.duo_core.clone() else {
+            return;
+        };
+        let Some(serial) = self.serial() else { return };
+        let adb = self.adb.clone();
+        self.volume_bg = Some(Background::spawn(move || {
+            let bin = binary.display().to_string();
+            let _ = backend::set_volume(&bin, &adb, &serial, index);
+        }));
     }
 
     /// 后台结果收编（每帧轮询，非阻塞）。
@@ -1202,8 +1153,6 @@ impl PanelApp {
                             if !patched.is_empty() {
                                 self.toast_now("应用图标已更新");
                             }
-                        } else {
-                            self.toast_now("图标渲染不可用，沿用预设图标");
                         }
                     }
                     Err(err) => self.toast_now(format!("图标渲染失败：{err}")),
@@ -1292,7 +1241,7 @@ fn bar_label(mode: &str) -> String {
 
 impl eframe::App for PanelApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        let c = self.tokens.canvas(self.glass_on());
+        let c = self.tokens.bg;
         [
             c.r() as f32 / 255.0,
             c.g() as f32 / 255.0,
@@ -1301,10 +1250,9 @@ impl eframe::App for PanelApp {
         ]
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if !self.blur_applied && self.glass_on() {
-            blur::apply_glass(frame, self.tokens.blur_tint());
-            self.blur_applied = true;
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.shot.is_some() {
+            ctx.request_repaint(); // 出图模式：静态画面也推进帧计数
         }
         let kind = ThemeKind::from_settings(&self.settings.draft.theme);
         if self.tokens.kind != kind {
@@ -1312,37 +1260,34 @@ impl eframe::App for PanelApp {
         }
         self.sync_visuals(ctx);
         self.pump_background();
+        self.pump_volume_debounce();
+        self.pump_shot(ctx);
 
+        // 画布（bg + 六枚色斑）铺满；卡片自管边距（QML x:20 语义）
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(PAGE_MARGIN as i8, 12)))
+            .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                let full = ui.max_rect();
+                ui.painter().rect_filled(full, 0, self.tokens.bg);
+                crate::paint::canvas_spots(ui.painter(), &self.tokens, full);
                 self.top_capsule(ui);
                 match self.page {
-                    Page::Home => self.home_page(ui),
+                    Page::Home => crate::home::show(self, ui),
                     Page::Settings => self.settings_page(ui),
                 }
             });
-        // Toast 驻留 3s 自清。
+        // Toast（2.5s 淡出语义在 home::toast 内）
         if let Some((_, at)) = &self.toast {
-            if at.elapsed() > Duration::from_secs(3) {
+            if at.elapsed() > Duration::from_millis(2500) {
                 self.toast = None;
+            } else {
+                crate::home::toast(self, ctx);
             }
         }
-        if let Some((text, _)) = self.toast.clone() {
-            egui::Area::new(egui::Id::new("duo-toast"))
-                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
-                .show(ctx, |ui| {
-                    let t = self.tokens;
-                    egui::Frame::NONE
-                        .fill(t.pill_fill)
-                        .corner_radius(14.0)
-                        .inner_margin(egui::Margin::symmetric(14, 7))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(&text).size(13.0).color(t.ink));
-                        });
-                });
+        // Toast 计时需要重绘驱动
+        if self.toast.is_some() || self.volume_pending.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
-        ctx.request_repaint_after(Duration::from_millis(500));
     }
 }
 

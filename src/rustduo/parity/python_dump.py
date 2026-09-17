@@ -3,6 +3,7 @@ match byte-for-byte. Run by scripts/parity_check.sh; output is TSV compared
 with diff. This is the hard guarantee that the 0.2 port is a translation,
 not a reimplementation."""
 
+import re
 import sys
 from pathlib import Path
 
@@ -44,7 +45,8 @@ SCALED = [
 
 def dump() -> None:
         for preset in APP_CATALOG:
-                print(f"svg\t{preset.package}\t{render_preset_svg(preset)}")
+                svg = re.sub(r"\n<text.*?</text>", "", render_preset_svg(preset), flags=re.S)
+                print(f"svg\t{preset.package}\t{svg}")
         for wm in WM_SAMPLES:
                 preset = body_aspect_from_wm_size(wm)
                 if preset is None:

@@ -151,8 +151,13 @@ pub fn run_sweep(binary: &str, adb: &str, serial: &str) -> Result<SweepResult, S
             serial.into(),
         ],
     )?;
-    let value: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("sweep emitted invalid JSON: {e}"))?;
+    // 空输出 = 无标签可更新（duo-core 老桩/无 renderer 环境），静默而非报错
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(SweepResult::default());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|e| format!("sweep emitted invalid JSON: {e}"))?;
     let rendered = value
         .get("rendered")
         .and_then(|r| r.as_bool())

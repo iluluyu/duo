@@ -1,0 +1,702 @@
+//! 主面板像素移植（Main.qml panelComp ↔ 本文件，P2）。
+//!
+//! 布局链（QML 绝对坐标照抄）：胶囊(16..48) → 设备卡(y64 h76) →
+//! 固定卡(+12 h68，有置顶才出现) → 镜像卡(+12 h64) → 搜索(+12 h36)
+//! → 网格(+16) → 运行卡(bottom 56) → Toast(bottom 16)。
+//! 每个绘制函数头部注明 QML 出处；数值不发明（总则 1）。
+
+use std::time::Duration;
+
+use egui::{Pos2, Rect, Sense, Vec2};
+
+use crate::paint;
+use crate::{app::PanelApp, model::AppEntry};
+
+/// 页面左右留白（Main.qml x: 20）。
+pub const MARGIN: f32 = 20.0;
+
+/// 布局 y 链（纯函数，可测）：从面板宽高推出各卡矩形。
+#[derive(Debug, Clone, Copy)]
+pub struct HomeLayout {
+    pub device: Rect,
+    pub pinned: Rect,
+    pub mirror: Rect,
+    pub search: Rect,
+    pub grid: Rect,
+}
+
+impl HomeLayout {
+    pub fn compute(w: f32, h: f32, has_pinned: bool, has_chips: bool) -> Self {
+        let inner = w - 2.0 * MARGIN;
+        let mut y = 64.0; // 胶囊（16+32）下 16 间距（Main.qml deviceCard y:64）
+        let device = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 76.0));
+        y += 76.0 + 12.0;
+        let pinned = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 68.0));
+        if has_pinned {
+            y += 68.0 + 12.0;
+        } // 固定卡折叠时零高占位不多间距
+        let mirror = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 64.0));
+        y += 64.0 + 12.0;
+        let search = Rect::from_min_size(Pos2::new(MARGIN, y), Vec2::new(inner, 36.0));
+        y += 36.0 + 16.0;
+        // 网格底：芯片区可见时让位（chipsZone.y − 14），否则到页面底 −40
+        let grid_bottom = if has_chips {
+            (h - 56.0 - 14.0).max(y)
+        } else {
+            (h - 40.0).max(y)
+        };
+        let grid = Rect::from_min_max(Pos2::new(MARGIN, y), Pos2::new(w - MARGIN, grid_bottom));
+        Self {
+            device,
+            pinned,
+            mirror,
+            search,
+            grid,
+        }
+    }
+}
+
+/// 主页面（app.rs update 调度；胶囊在 app.rs 顶部已画）。
+pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
+    let layout = HomeLayout::compute(
+        ui.max_rect().width(),
+        ui.max_rect().height(),
+        app.has_pinned(),
+        !app.running_chips().is_empty(),
+    );
+    device_card(app, ui, layout.device);
+    if app.has_pinned() {
+        pinned_card(app, ui, layout.pinned);
+    }
+    mirror_card(app, ui, layout.mirror);
+    search_capsule(app, ui, layout.search);
+    grid(app, ui, layout.grid);
+    running_card(app, ui, ui.max_rect());
+    // 消耗整页命中域（绝对布局下 egui 光标不动）
+    ui.allocate_rect(ui.max_rect(), Sense::hover());
+}
+
+fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
+    // Main.qml deviceCard：Dot 8+1 白环；在线绿/有设备琥珀/无设备灰；
+    // 15px DemiBold 状态 + 12px ink2 serial
+    let t = app.tokens;
+    paint::card(ui.painter(), rect, &t);
+    let (state, serial, online_count, any_device) = app.device_summary();
+    let dot_color = if online_count > 0 {
+        t.running
+    } else if any_device {
+        t.warn
+    } else {
+        crate::theme::hex("#C7C7CC")
+    };
+    let dot_center = Pos2::new(rect.left() + 14.0 + 5.0, rect.center().y);
+    paint::dot(ui.painter(), dot_center, 8.0, 1.0, dot_color);
+    let text_x = rect.left() + 14.0 + 10.0 + 10.0;
+    paint::text_left(
+        ui.painter(),
+        Pos2::new(text_x, rect.center().y - 13.0),
+        &state,
+        15.0,
+        t.ink,
+    );
+    // DemiBold 档（字体栈 duo-bold）另画——text_left 是常规档
+    let sub = if serial.is_some() {
+        serial.unwrap_or_default()
+    } else {
+        "连接设备后可启动应用与投屏".into()
+    };
+    paint::text_left(
+        ui.painter(),
+        Pos2::new(text_x, rect.center().y + 5.0),
+        &sub,
+        12.0,
+        t.ink2,
+    );
+    ui.allocate_rect(rect, Sense::hover());
+}
+
+fn pinned_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
+    // Main.qml pinnedCard：Flow x12 y12 间距 12 的 44px 小图标
+    let t = app.tokens;
+    paint::card(ui.painter(), rect, &t);
+    let entries: Vec<AppEntry> = app.pinned_entries();
+    let mut x = rect.left() + 12.0;
+    let y = rect.top() + 12.0;
+    for entry in &entries {
+        let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::splat(44.0));
+        pinned_icon(app, ui, entry, cell);
+        x += 44.0 + 12.0;
+    }
+    ui.allocate_rect(rect, Sense::hover());
+}
+
+fn pinned_icon(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, rect: Rect) {
+    // Main.qml PinnedIcon：44px、r10 洗色、未装 40%
+    let t = app.tokens;
+    let resp = ui.allocate_rect(rect, Sense::click());
+    let fill = if resp.hovered() {
+        t.hover_on_canvas
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    paint::rounded_fill(ui.painter(), rect, 10.0, fill);
+    let alpha = if entry.installed { 1.0 } else { 0.4 };
+    paint_glyph(
+        app,
+        ui,
+        &ui.painter().with_clip_rect(ui.max_rect()),
+        entry,
+        rect,
+        44.0,
+        alpha,
+    );
+    if entry.installed {
+        if resp.clicked() {
+            app.launch(&entry.package, None);
+        }
+        resp.context_menu(|ui| app.tile_menu(ui, entry));
+    }
+}
+
+fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
+    // Main.qml mirrorCard：左标题 + 扬声器 + 音量条 + 右「投屏」主按钮
+    let t = app.tokens;
+    paint::card(ui.painter(), rect, &t);
+    paint::text_left_weight(
+        ui.painter(),
+        Pos2::new(rect.left() + 12.0, rect.center().y - 7.5),
+        "设备镜像",
+        15.0,
+        t.ink,
+        true,
+    );
+    let online = app.serial().is_some();
+    let btn = Rect::from_min_size(
+        Pos2::new(rect.right() - 12.0 - 68.0, rect.center().y - 16.0),
+        Vec2::new(68.0, 32.0),
+    );
+    if online {
+        volume_slider(
+            app,
+            ui,
+            Rect::from_min_max(
+                Pos2::new(rect.left() + 100.0, rect.top()),
+                Pos2::new(btn.left() - 14.0, rect.bottom()),
+            ),
+        );
+        // 扬声器在滑杆左侧 x78（Main.qml volumeGlyph anchors.leftMargin: 78）
+        paint::speaker(
+            ui.painter(),
+            Pos2::new(rect.left() + 78.0, rect.center().y - 7.0),
+            t.ink2,
+        );
+        let resp = ui.allocate_rect(btn, Sense::click());
+        paint::rounded_fill(ui.painter(), btn, 16.0, t.accent);
+        let alpha = if resp.hovered() { 0.9 } else { 1.0 };
+        paint::rounded_fill(ui.painter(), btn, 16.0, mul_alpha(t.accent, alpha));
+        paint::text_centered(
+            ui.painter(),
+            btn.center(),
+            "投屏",
+            13.0,
+            true,
+            egui::Color32::WHITE,
+        );
+        if resp.clicked() {
+            app.start_mirror();
+        }
+    } else {
+        // 禁用 40%（Main.qml opacity: enabled ? ... : 0.4）
+        paint::rounded_fill(ui.painter(), btn, 16.0, mul_alpha(t.accent, 0.4));
+        paint::text_centered(
+            ui.painter(),
+            btn.center(),
+            "投屏",
+            13.0,
+            true,
+            mul_alpha(egui::Color32::WHITE, 0.4),
+        );
+        ui.allocate_rect(btn, Sense::hover());
+    }
+    // 右键卡本体 = 镜像菜单（tile_menu 复用镜像分支）
+    let resp = ui.allocate_rect(rect, Sense::click());
+    resp.context_menu(|ui| app.mirror_menu(ui));
+}
+
+/// 音量条（Main.qml mediaVolumeSlider 直译：4px 轨、未知中性、12px 拇指、
+/// 拖动视觉先行 + 200ms 防抖落命令）。
+fn volume_slider(app: &mut PanelApp, ui: &mut egui::Ui, zone: Rect) {
+    let t = app.tokens;
+    let track = Rect::from_min_size(
+        Pos2::new(zone.left(), zone.center().y - 2.0),
+        Vec2::new(zone.width(), 4.0),
+    );
+    paint::rounded_fill(ui.painter(), track, 2.0, t.hairline_on_card);
+    let known = app.media_volume >= 0;
+    let resp = ui.allocate_rect(track.expand(6.0), Sense::click_and_drag());
+    let mut visual = app.media_volume as f32;
+    if resp.is_pointer_button_down_on() && resp.dragged() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let frac = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            visual = (frac * 15.0).round();
+            app.volume_dragged(visual as i64);
+        }
+    } else if known {
+        visual = app.media_volume as f32;
+    }
+    let filled = known || app.volume_pending.is_some();
+    if filled {
+        let w = track.width() * visual / 15.0;
+        paint::rounded_fill(
+            ui.painter(),
+            Rect::from_min_size(track.left_top(), Vec2::new(w, 4.0)),
+            2.0,
+            t.accent,
+        );
+        let cx = track.left() + w;
+        ui.painter()
+            .circle_filled(Pos2::new(cx, track.center().y), 6.0, t.accent);
+    }
+}
+
+fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
+    // Main.qml searchCapsule：h36 r18、searchFill↔聚焦 flyoutFill、
+    // 放大镜 16px@12、TextField 13px、清空钮 28×28
+    let t = app.tokens;
+    let focused = ui
+        .ctx()
+        .memory(|m| m.has_focus(egui::Id::new("duo-search")));
+    let fill = if focused { t.search_focus } else { t.search };
+    paint::rounded_fill(ui.painter(), rect, 18.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(18),
+        egui::Stroke::new(1.0_f32, t.card_border),
+        egui::StrokeKind::Inside,
+    );
+    let glass_center = Pos2::new(rect.left() + 12.0 + 8.0, rect.center().y);
+    paint::magnifier(ui.painter(), glass_center, t.ink2);
+    let field = Rect::from_min_max(
+        Pos2::new(rect.left() + 12.0 + 16.0 + 8.0, rect.top() + 4.0),
+        Pos2::new(rect.right() - 36.0, rect.bottom() - 4.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(field)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let edit = egui::TextEdit::singleline(&mut app.search)
+        .id(egui::Id::new("duo-search"))
+        .hint_text("搜索")
+        .font(egui::FontId::proportional(13.0))
+        .frame(false)
+        .desired_width(field.width());
+    let resp = child.add(edit);
+    // Esc 清空失焦（QML Keys.onEscapePressed）
+    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && !app.search.is_empty()
+    {
+        app.search.clear();
+        resp.surrender_focus();
+    }
+    // Ctrl+F 聚焦（Shortcut Ctrl+F）
+    if ui.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl) {
+        resp.request_focus();
+    }
+    // 清空钮
+    if !app.search.is_empty() {
+        let clear = Rect::from_min_size(
+            Pos2::new(rect.right() - 4.0 - 28.0, rect.center().y - 14.0),
+            Vec2::splat(28.0),
+        );
+        let cresp = ui.allocate_rect(clear, Sense::click());
+        let wash = if cresp.hovered() {
+            t.hover_on_canvas
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        paint::rounded_fill(ui.painter(), clear, 14.0, wash);
+        paint::x_mark(ui.painter(), clear.center(), t.ink2);
+        if cresp.clicked() {
+            app.search.clear();
+        }
+    }
+}
+
+/// 应用网格（Main.qml grid：cellW = w/max(2,floor(w/92))、cellH 102）。
+fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
+    let entries: Vec<AppEntry> = app.grid_entries();
+    let installed_count = entries.iter().filter(|e| e.installed).count();
+    if installed_count == 0 {
+        // 空态（Main.qml 无已装应用 Column）
+        let t = app.tokens;
+        let c = Pos2::new(rect.center().x, rect.top() + 24.0 + 8.0);
+        paint::text_centered(ui.painter(), c, "没有已安装的应用", 15.0, true, t.ink);
+        paint::text_centered(
+            ui.painter(),
+            Pos2::new(c.x, c.y + 22.0),
+            "在设备上安装应用后，点击刷新检查",
+            12.0,
+            false,
+            t.ink2,
+        );
+        let btn = Rect::from_min_size(Pos2::new(c.x - 60.0, c.y + 40.0), Vec2::new(120.0, 32.0));
+        let resp = ui.allocate_rect(btn, Sense::click());
+        let t2 = app.tokens;
+        let wash = if resp.hovered() {
+            t2.hover_on_canvas
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        paint::rounded_fill(ui.painter(), btn, 16.0, wash);
+        paint::text_centered(
+            ui.painter(),
+            btn.center(),
+            "刷新已装应用",
+            13.0,
+            false,
+            t2.accent,
+        );
+        if resp.clicked() {
+            app.refresh_installed();
+        }
+        return;
+    }
+    if entries.is_empty() {
+        let t = app.tokens;
+        paint::text_centered(
+            ui.painter(),
+            Pos2::new(rect.center().x, rect.top() + 24.0),
+            "无匹配应用",
+            13.0,
+            false,
+            t.ink2,
+        );
+        return;
+    }
+    let cols = ((rect.width() / 92.0).floor() as usize).max(2);
+    let cell_w = rect.width() / cols as f32;
+    let cell_h = 102.0;
+    let rows = entries.len().div_ceil(cols);
+    let content_h = rows as f32 * cell_h;
+    // 网格区内部滚动（QML interactive: contentHeight > height）：滚轮
+    // 驱动 grid_scroll 偏移；绘制走 with_clip_rect（绝对坐标在 UI 光标
+    // 之外，ScrollArea 的光标式裁剪裁不到，实测会截断——改显式裁剪）。
+    let max_scroll = (content_h - rect.height()).max(0.0);
+    let scroll_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), rect.height()));
+    if ui.rect_contains_pointer(scroll_rect) {
+        let dy = ui.input(|i| i.raw_scroll_delta.y);
+        if dy != 0.0 && max_scroll > 0.0 {
+            app.grid_scroll = (app.grid_scroll - dy).clamp(0.0, max_scroll);
+        }
+    }
+    let scroll = app.grid_scroll;
+    for (i, entry) in entries.iter().enumerate() {
+        let col = i % cols;
+        let row = i / cols;
+        let cell = Rect::from_min_size(
+            Pos2::new(
+                rect.left() + col as f32 * cell_w,
+                rect.top() + row as f32 * cell_h - scroll,
+            ),
+            Vec2::new(cell_w, cell_h),
+        );
+        if cell.bottom() < rect.top() || cell.top() > rect.bottom() {
+            continue; // 视口外跳过
+        }
+        tile(app, ui, entry, cell, rect);
+    }
+}
+
+/// 磁贴（Main.qml AppTile：60px 图标 r14 洗色、标签 12px@top76、6 字截断）。
+fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, viewport: Rect) {
+    let t = app.tokens;
+    // QML GridView clip:true——图标/标签超出网格区即裁（egui 绝对绘制
+    // 不会自动裁，须显式 clip painter）
+    let painter = ui.painter().with_clip_rect(viewport);
+    let resp = ui.allocate_rect(cell, Sense::click());
+    let icon = Rect::from_min_size(
+        Pos2::new(cell.center().x - 30.0, cell.top() + 10.0),
+        Vec2::splat(60.0),
+    );
+    let wash = if resp.hovered() && entry.installed {
+        t.hover_on_canvas
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    paint::rounded_fill(&painter, icon, 14.0, wash);
+    let alpha = if entry.installed { 1.0 } else { 0.4 };
+    paint_glyph(app, ui, &painter, entry, icon, 60.0, alpha);
+    paint::text_centered(
+        &painter,
+        Pos2::new(cell.center().x, cell.top() + 76.0 + 7.0),
+        &paint::elide_6(&entry.label),
+        12.0,
+        false,
+        t.ink,
+    );
+    if entry.installed {
+        if resp.clicked() {
+            app.launch(&entry.package, None);
+        }
+        resp.context_menu(|ui| app.tile_menu(ui, entry));
+    }
+}
+
+/// 图标：真图标（sweep 缓存/预设 SVG）优先，空则 G2 squircle + 首字白字
+/// （Main.qml AppGlyph；fallback 色 = 包名 charCode 和 % 12）。
+fn paint_glyph(
+    _app: &PanelApp,
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    entry: &AppEntry,
+    rect: Rect,
+    _size: f32,
+    alpha: f32,
+) {
+    if let Some(path) = &entry.icon {
+        if path.exists() {
+            // Windows 反斜杠不是合法 URL；需正斜杠 + file:/// 前缀，
+            // 否则 egui 加载器报错并画"坏图三角"。Ready 才上屏，失败走
+            // squircle 兜底（异步加载首帧也先兜底，就绪后自然替换）。
+            let uri = format!("file:///{}", path.display().to_string().replace('\\', "/"));
+            let poll = ui.ctx().try_load_texture(
+                &uri,
+                egui::TextureOptions::LINEAR,
+                egui::load::SizeHint::Width(120),
+            );
+            if let Ok(egui::load::TexturePoll::Ready { texture }) = poll {
+                // painter.image 而非 Image widget：网格区必须裁剪溢出
+                // （QML clip:true），widget 不吃 painter 的 clip rect
+                painter.image(
+                    texture.id,
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                // 预设 v7 SVG 只含渐变底（usvg 无系统字体），字符在此
+                // 叠画：白字或 glyph_ink 深字（与 Python 版 SVG 等价）。
+                if path.to_string_lossy().contains("presets") {
+                    if let Some(preset) = duo_core::catalog::catalog_by_package(&entry.package) {
+                        let ink = if preset.glyph_ink {
+                            egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
+                        } else {
+                            egui::Color32::WHITE
+                        };
+                        let ch: String = preset
+                            .glyph
+                            .chars()
+                            .next()
+                            .map(String::from)
+                            .unwrap_or_default();
+                        paint::text_centered(
+                            painter,
+                            rect.center(),
+                            &ch,
+                            rect.width() * 0.467,
+                            true,
+                            ink,
+                        );
+                    }
+                }
+                return;
+            }
+        }
+    }
+    let color = mul_alpha(crate::theme::fallback_color(&entry.package), alpha);
+    painter.add(paint::g2_squircle(rect, color));
+    let ch: String = entry
+        .label
+        .chars()
+        .next()
+        .map(String::from)
+        .unwrap_or_default();
+    let ink = mul_alpha(egui::Color32::WHITE, alpha);
+    paint::text_centered(painter, rect.center(), &ch, rect.width() * 0.32, true, ink);
+}
+
+/// 运行卡（Main.qml chipsZone：bottom 56、卡内 Flow 间距 8 芯片）。
+fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect) {
+    let chips: Vec<(String, String, bool)> = app.running_chips();
+    if chips.is_empty() {
+        return;
+    }
+    let t = app.tokens;
+    // 芯片流布局（测量先行：行高 32 + 间距 8）
+    let inner_w = page.width() - 2.0 * MARGIN - 24.0;
+    let mut rows: Vec<Vec<f32>> = vec![vec![]];
+    for (label, _, _) in &chips {
+        let w = chip_width(ui, label);
+        let last = rows.last().unwrap();
+        let used: f32 = last.iter().sum::<f32>() + 8.0 * last.len().max(1) as f32;
+        if !last.is_empty() && used + w > inner_w {
+            rows.push(vec![w]);
+        } else {
+            rows.last_mut().unwrap().push(w);
+        }
+    }
+    let flow_h = rows.len() as f32 * 32.0 + (rows.len().saturating_sub(1)) as f32 * 8.0 + 24.0;
+    let card = Rect::from_min_size(
+        Pos2::new(MARGIN, page.bottom() - 56.0 - flow_h),
+        Vec2::new(page.width() - 2.0 * MARGIN, flow_h),
+    );
+    paint::card(ui.painter(), card, &t);
+    let mut x = card.left() + 12.0;
+    let mut y = card.top() + 12.0;
+    for (key, label, clickable) in chips.iter() {
+        let w = chip_width(ui, label);
+        if x + w > card.right() - 12.0 {
+            x = card.left() + 12.0;
+            y += 32.0 + 8.0;
+        }
+        let chip = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, 32.0));
+        chip_ui(app, ui, chip, key, label, *clickable);
+        x += w + 8.0;
+    }
+}
+
+fn chip_width(ui: &egui::Ui, label: &str) -> f32 {
+    let galley = ui.ctx().fonts(|f| {
+        f.layout_job(egui::text::LayoutJob::simple(
+            label.to_owned(),
+            egui::FontId::proportional(12.0),
+            egui::Color32::WHITE,
+            f32::INFINITY,
+        ))
+    });
+    // Row: dot 8 + 间距 8 + 文本 + ✕ 24 + 左右 pad 12+12 + 间距 8
+    galley.size().x + 8.0 + 8.0 + 24.0 + 8.0 + 24.0
+}
+
+/// 芯片（Main.qml SessionChip：h32 r16、点+标签可点、✕ hover 露出）。
+fn chip_ui(
+    app: &mut PanelApp,
+    ui: &mut egui::Ui,
+    rect: Rect,
+    key: &str,
+    label: &str,
+    clickable: bool,
+) {
+    let t = app.tokens;
+    let resp = ui.allocate_rect(rect, Sense::click());
+    paint::rounded_fill(ui.painter(), rect, 16.0, t.card);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(16),
+        egui::Stroke::new(1.0_f32, t.card_border),
+        egui::StrokeKind::Inside,
+    );
+    paint::dot(
+        ui.painter(),
+        Pos2::new(rect.left() + 12.0 + 4.0, rect.center().y),
+        8.0,
+        1.0,
+        t.running,
+    );
+    paint::text_left(
+        ui.painter(),
+        Pos2::new(rect.left() + 12.0 + 8.0 + 8.0, rect.center().y - 6.0),
+        label,
+        12.0,
+        t.ink,
+    );
+    if resp.hovered() {
+        let stop = Rect::from_min_size(
+            Pos2::new(rect.right() - 12.0 - 24.0, rect.center().y - 12.0),
+            Vec2::splat(24.0),
+        );
+        let sresp = ui.allocate_rect(stop, Sense::click());
+        let wash = if sresp.hovered() {
+            t.danger_on_card
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        paint::rounded_fill(ui.painter(), stop, 12.0, wash);
+        let x_color = if sresp.hovered() { t.danger } else { t.ink2 };
+        paint::x_mark(ui.painter(), stop.center(), x_color);
+        if sresp.clicked() {
+            app.stop_session(key);
+        }
+    }
+    if clickable && resp.clicked() && !resp.hovered() {
+        // 绿点+标签整体可点 = 拉回该会话虚拟屏（镜像会话禁点）
+        app.move_app_to_display(key);
+    }
+}
+
+/// Toast（app.rs update 调用；Main.qml statusToast：bottom16 h36 r18 pillFill）。
+pub fn toast(app: &PanelApp, ctx: &egui::Context) {
+    let Some((text, at)) = &app.toast else {
+        return;
+    };
+    if at.elapsed() > Duration::from_millis(2500) {
+        return;
+    }
+    let screen = ctx.screen_rect();
+    let galley = ctx.fonts(|f| {
+        f.layout_job(egui::text::LayoutJob::simple(
+            text.clone(),
+            egui::FontId::proportional(13.0),
+            egui::Color32::WHITE,
+            f32::INFINITY,
+        ))
+    });
+    let w = galley.size().x + 32.0;
+    let rect = Rect::from_min_size(
+        Pos2::new(screen.center().x - w / 2.0, screen.bottom() - 16.0 - 36.0),
+        Vec2::new(w, 36.0),
+    );
+    egui::Area::new(egui::Id::new("duo-toast"))
+        .fixed_pos(rect.left_top())
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.set_min_size(rect.size());
+            let painter = ui.painter();
+            let t = app.tokens;
+            paint::rounded_fill(painter, rect, 18.0, t.pill);
+            painter.galley(
+                Pos2::new(rect.left() + 16.0, rect.center().y - galley.size().y / 2.0),
+                galley.clone(),
+                egui::Color32::WHITE,
+            );
+        });
+}
+
+fn mul_alpha(c: egui::Color32, a: f32) -> egui::Color32 {
+    let alpha = (f32::from(c.a()) * a).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_y_chain_matches_qml() {
+        // 无置顶：64 → 140 → 152(镜像) → 188(搜索) → 216+16=232 网格顶
+        let l = HomeLayout::compute(420.0, 660.0, false, false);
+        assert_eq!(l.device.top(), 64.0);
+        assert_eq!(l.device.height(), 76.0);
+        assert_eq!(l.mirror.top(), 152.0);
+        assert_eq!(l.search.top(), 228.0);
+        assert_eq!(l.grid.top(), 280.0);
+        // 有置顶：固定卡占位 → 镜像 +80
+        let l2 = HomeLayout::compute(420.0, 660.0, true, true);
+        assert_eq!(l2.pinned.top(), 152.0);
+        assert_eq!(l2.mirror.top(), 232.0);
+        assert_eq!(l2.grid.top(), 360.0);
+    }
+
+    #[test]
+    fn grid_bottom_stops_before_running_zone() {
+        let with_chips = HomeLayout::compute(420.0, 660.0, false, true);
+        assert!(
+            (with_chips.grid.bottom() - (660.0 - 70.0)).abs() < 0.01,
+            "有芯片时网格底让位 56-14"
+        );
+        let no_chips = HomeLayout::compute(420.0, 660.0, false, false);
+        assert!(
+            (no_chips.grid.bottom() - (660.0 - 40.0)).abs() < 0.01,
+            "无芯片时网格底到页面底-40"
+        );
+    }
+}

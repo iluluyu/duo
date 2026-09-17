@@ -42,9 +42,18 @@ fn py_repr(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\n', "\\n"))
 }
 
+fn strip_text(svg: &str) -> String {
+    let re = regex::Regex::new(r"(?s)\n<text.*?</text>").unwrap();
+    re.replace_all(svg, "").into_owned()
+}
+
 fn main() {
     for preset in APP_CATALOG {
-        println!("svg\t{}\t{}", preset.package, render_preset_svg(preset));
+        // v7：rust SVG 无 <text>（面板叠字），python 保留（Qt 有字体）；
+        // parity 比渐变+path 底形，字符等价性由面板层测试保证
+        let svg = render_preset_svg(preset);
+        let stripped = strip_text(&svg);
+        println!("svg\t{}\t{}", preset.package, stripped);
     }
     for wm in WM_SAMPLES {
         match body_aspect_from_wm_size(wm) {

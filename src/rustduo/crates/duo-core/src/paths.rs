@@ -7,7 +7,14 @@ const BASE_NAME: &str = "duo";
 
 /// Python duo.core.paths.data_dir 的对译：Windows 用 %USERPROFILE%，否则
 /// $HOME；两者都取不到时退回当前目录。恒创建目录。
+/// 覆盖优先级：DUO_DATA_DIR 环境变量 > --data-dir 基准 > 家目录。
+/// 环境 主要服务测试/截图回路（隔离真机偏好，保证与 QML 基线同状态）。
 pub fn home_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("DUO_DATA_DIR") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
+    }
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let base = std::env::var_os(key)
         .map(PathBuf::from)
