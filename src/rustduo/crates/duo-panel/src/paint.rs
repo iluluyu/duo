@@ -67,6 +67,21 @@ pub fn text_left(painter: &egui::Painter, pos: Pos2, s: &str, px: f32, color: Co
     text_left_weight(painter, pos, s, px, color, false);
 }
 
+/// 圆角描边（1px，Inside 语义）。
+pub fn rounded_stroke(painter: &egui::Painter, rect: Rect, radius: f32, color: Color32) {
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(radius as u8),
+        egui::Stroke::new(1.0_f32, color),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// 圆描边（1px）。
+pub fn circle_stroke(painter: &egui::Painter, center: Pos2, radius: f32, color: Color32) {
+    painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, color));
+}
+
 pub fn text_left_weight(
     painter: &egui::Painter,
     pos: Pos2,

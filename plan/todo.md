@@ -156,15 +156,34 @@ duo/                       # 仓库根（不变）
 - [ ] 遗留（并入 P4）：菜单浮层像素皮肤（menuFill 实底 + hairline +
       MenuRow 32px 行高/圆点 4px）——当前 egui 默认菜单皮肤
 
-### P4 设置页像素移植（未开始）
+### P4 设置页像素移植（✅ 2026-09-17 完成，像素带对拍通过）
 
-- [ ] SettingsPage.qml 逐组移植：投屏质量/音频/窗口栏/外观/显示/
-      工具路径（尺寸/间距/控件样式照抄）
-- [ ] 控件皮肤：行/滑杆/开关/组合框 = QML 控件观感（实底 controlFill
-      槽 + hairline 描边），不用 egui 默认皮肤
-- [ ] 保存语义：accepted → resolveAdb 刷新；Esc/cancelled 直接返回
-- [ ] 对拍 qml-settings(-dark).png 通过
-- [ ] 单测：设置草稿 ↔ gui_prefs/settings 写入路径
+- [x] settings.rs 全新像素渲染层（SettingsPage.qml 逐组照抄）：
+      引擎卡（scrcpy/adb PathRow：标题行+检测胶囊+输入框+浏览/检测；
+      会话运行锁提示；FPS/码率 NumberCell 两格）→ 投屏质量卡（编码
+      ModeButton×4 / 音频×3 / 镜像关屏 GlassSwitch + 说明 / DPI 跟随
+      开关 + NumberCell（禁用 45% 淡化）+ 说明 / 渲染倍率标签行 +
+      滑杆）→ 窗口栏（默认）卡（上巴×2/下巴×3）→ 外观卡（主题×3/
+      玻璃开关）；底部保存 PrimaryButton（w76 h32 r10 accent）
+- [x] 控件皮肤全自绘：ModeButton（选中 accent14% 底+45% 边+DemiBold）、
+      GlassSwitch（40×24 r12 轨+白圆）、NumberBox（−/+ 28px 步进 +
+      居中可键入、focus accent 描边）、Slider（4px 轨+16px 白 thumb
+      accent 描边）、SecButton、PrimaryButton——零 egui 默认皮肤
+- [x] 布局常量逐值：卡缘 16+8（shadowHost 内缩）、卡高 3+24+内容+10
+      （阴影宿主上下边）、内容起点 pad+3、caption 21/title 19（Qt
+      字体行高校准）、卡间 12、滚区 x16 top64、视口底 footer+8+2
+- [x] 保存语义：保存→save_settings→空问题=回主页+resolveAdb 重找
+      adb（QML accepted 同构）；Esc/胶囊返回=reject 放弃草稿重载
+- [x] 引擎检测：Background 异步 --version（空路径=PATH 扫描），结果
+      胶囊 ✓/✗ 文案对齐 pyduo，2.5s 淡出；浏览=rfd native 对话框
+- [x] 对拍 qml-settings(-dark).png：文本带序列对齐（9 带中心差
+      ≤4.4 DIP=字体 metrics 级）、尾区空带一致、保存按钮像素级
+      相同（95px 宽扫描）、GLM light 结构验收通过（dark 尾区带扫描
+      佐证；GLM 暗色 DPI 残迹报告经三重像素扫描证伪）
+- [x] 单测：SettingsPageModel 草稿↔settings 写入路径 5 项（load/
+      save roundtrip、非法枚举拒绝、数值钳制、扩展字段、坏文件红条）
+- [ ] 遗留（P5）：控件软阴影（QML MultiEffect blur24——egui painter
+      无 blur，视觉差异仅卡外围）
 
 ### P5 Windows 真机验收 + 收尾（未开始；持续）
 
