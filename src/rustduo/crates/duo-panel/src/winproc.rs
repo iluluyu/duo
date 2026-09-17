@@ -1,7 +1,4 @@
-//! Windows 子进程管道（winproc.py 对译）：静默 spawn（CREATE_NO_WINDOW）、
-//! 树杀（taskkill /T /F）、面板退出拖走整树的 kill-on-close Job Object。
-//! 非 Windows 降级 POSIX 语义（terminate + 显式清单杀）。
-
+// Windows 子进程与 Job Object 进程生命周期契约见 docs/window-experience.md §12
 #![allow(clippy::disallowed_types)]
 
 use std::process::{Child, Command};
@@ -20,21 +17,17 @@ pub fn creation_flags() -> u32 {
     }
 }
 
-/// CREATE_NO_WINDOW 命令构建（统一走 duo_core::quiet）。
 pub fn quiet_command(program: &str) -> Command {
     duo_core::quiet::quiet_command(program)
 }
 
-/// spawn 配方：静默 + 不接管 stdio（mirror CLI 自管日志）。
 pub fn silent_command(program: &str, args: &[String]) -> Command {
     let mut command = quiet_command(program);
     command.args(args);
     command
 }
 
-/// 终止 proc 及其全部后代。Windows 裸 kill 是 TerminateProcess：会话 CLI
-/// 的 SIGTERM 清理器从不执行，scrcpy/宿主窗会孤儿化——taskkill 整树；
-/// POSIX 走 SIGTERM（处理器有机会跑）。
+/// 终止 proc 及其全部后代整树。
 pub fn terminate_tree(child: &mut Child) {
     #[cfg(windows)]
     {
@@ -51,9 +44,7 @@ pub fn terminate_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// kill-on-close 容器（Windows Job Object；非 Windows 透明空操作，由
-/// Sessions 显式树杀兜底）。add 失败静默：没进 job 的会话照常工作，只是
-/// 失去崩溃安全网。
+/// Windows kill-on-close Job Object 容器。
 #[derive(Default)]
 pub struct ChildJob {
     #[cfg(windows)]
