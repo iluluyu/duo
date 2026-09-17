@@ -84,6 +84,16 @@ pub struct Tokens {
     pub search_focus: Color32,
     /// 菜单浮层不透明回退底（Style.menuFill）。
     pub menu_fill: Color32,
+    /// 菜单浮层「假玻璃」填充（rgba，含设计 alpha）。egui popup 是独立
+    /// Area 层、打开期间整层重绘，半透明只做一次 GPU 合成（无静态层
+    /// 逐帧叠加问题）。取值 = MenuGlassPlate 在平画布上的光学输出
+    /// （glass-recipe §1：blur/sat 对无彩画布无贡献，brightness+
+    /// contrast 数学）反解的高 alpha menuFill：暗 bg#1C1C1E → 目标
+    /// (34,34,36)；亮 bg#F5F5F7 → 目标 (250,250,252)；有效 alpha 0.90
+    /// （10% 透出背后内容 = 假玻璃降噪档）。
+    pub menu_glass: Color32,
+    /// 假玻璃 1px 亮边（Style.menuBorder 字面：暗白 14% / 亮黑 12%）。
+    pub menu_glass_border: Color32,
     /// 输入框/次按钮实底槽（Style.controlFill）。
     pub control_fill: Color32,
     /// Toast 深底胶囊（pillFill over bg）。
@@ -135,6 +145,10 @@ impl Tokens {
             search: hex("#28282A"),
             search_focus: capsule,
             menu_fill: hex("#2C2C2E"),
+            // X=(34-0.10*28)/0.90=35 → #232324；alpha 字节=0.8688*255
+            // （Windows 着色 alpha 非线性 a^0.75，0.8688^0.75≈0.90 有效）
+            menu_glass: Color32::from_rgba_unmultiplied(35, 35, 36, 221),
+            menu_glass_border: Color32::from_rgba_unmultiplied(255, 255, 255, 36),
             control_fill: hex("#28282A"),
             pill: over(bg, hex("#48484A"), 0.90),
             hover_on_canvas: over(bg, white, 0.06),
@@ -186,6 +200,9 @@ impl Tokens {
             search: over(bg, white, 0.72),
             search_focus: capsule,
             menu_fill: hex("#F7F7F9"),
+            // X=(250-0.10*245)/0.90=251 → #FBFBFF；同 0.8688 原始 alpha
+            menu_glass: Color32::from_rgba_unmultiplied(251, 251, 255, 221),
+            menu_glass_border: Color32::from_rgba_unmultiplied(0, 0, 0, 31),
             control_fill: white,
             pill: over(bg, hex("#1D1D1F"), 0.90),
             hover_on_canvas: over(bg, hex("#000000"), 0.04),
@@ -332,6 +349,47 @@ mod tests {
         let t = Tokens::light();
         // 投屏钮禁用 = accent@40% over bg
         assert_eq!(t.btn_disabled, over(t.bg, hex("#007AFF"), 0.40));
+    }
+
+    #[test]
+    fn menu_glass_lands_on_flat_canvas_recipe() {
+        // 假玻璃 = menuFill 高 alpha 档：设计 rgb 在平画布上直混应落在
+        // MenuGlassPlate 光学输出（暗 (34,34,36) / 亮 (250,250,255)——亮
+        // B 通道对比度钳到白），±1 容差；推导见 Tokens::menu_glass 注释
+        let mix =
+            |b: u8, v: u8, a: f32| (f32::from(b) * (1.0 - a) + f32::from(v) * a).round() as u8;
+        // Color32 存 gamma 预乘，设计 rgb 用字面元组对拍（token 等值断言）
+        let cases = [
+            (
+                Tokens::dark(),
+                (35u8, 35, 36),
+                hex("#1C1C1E"),
+                (34u8, 34, 36),
+            ),
+            (
+                Tokens::light(),
+                (251, 251, 255),
+                hex("#F5F5F7"),
+                (250, 250, 255),
+            ),
+        ];
+        for (t, rgb, bg, target) in cases {
+            let a = 221.0_f32 / 255.0;
+            let wants = [target.0, target.1, target.2];
+            let outs = [
+                mix(bg.r(), rgb.0, a),
+                mix(bg.g(), rgb.1, a),
+                mix(bg.b(), rgb.2, a),
+            ];
+            for (o, want) in outs.into_iter().zip(wants) {
+                assert!((i32::from(o) - i32::from(want)).abs() <= 1, "{o} vs {want}");
+            }
+            assert_eq!(
+                t.menu_glass,
+                egui::Color32::from_rgba_unmultiplied(rgb.0, rgb.1, rgb.2, 221)
+            );
+            assert_eq!(t.menu_glass.a(), 221);
+        }
     }
 
     #[test]

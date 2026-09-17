@@ -9,8 +9,6 @@
 //!   volume   --adb <path> --serial <s> --index <n>  设备媒体音量写入
 //!   apps     --adb <path> --serial <s>   已装应用枚举 + 目录合并
 //!   audio-lock --data-dir <dir> acquire|release|status  单音频仲裁锁
-//!   host --spec <session-json> --title <t> [--embed-style immersive|native]
-//!         [--serial <s>]（仅 Windows）沉浸式宿主窗口 + 引擎同进程监督
 //!
 //! 协议合同见 duo/core/duocore.py（Python 面板侧客户端）与 TODO.md §0。
 
@@ -37,8 +35,7 @@ const USAGE: &str = "usage: duo-core <command> [options]
   apps     --adb <path> --serial <serial>
   sweep    --adb <path> --serial <serial> [--data-dir <dir>] [--packages <json>]
   audio-lock --data-dir <dir> acquire|release|status
-  mirror [mirror flags]                 branded app session (duo mirror 对译)
-  host --spec <json> --title <title> [--embed-style immersive|native] [--serial <s>]";
+  mirror [mirror flags]                 branded app session (duo mirror 对译)";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -66,12 +63,6 @@ fn main() {
         ),
         "audio-lock" => cmd_audio_lock(&flag("--data-dir"), &argv[1..]),
         "mirror" => exit(duo_core::mirror::run(&argv[1..])),
-        "host" => cmd_host(
-            &flag("--spec"),
-            &flag("--title"),
-            &flag("--embed-style"),
-            &flag("--serial"),
-        ),
         _ => {
             eprintln!("{USAGE}");
             exit(2);
@@ -178,17 +169,6 @@ fn session_event_json(event: &SessionEvent) -> serde_json::Value {
         SessionEvent::Exited { code } => {
             serde_json::json!({"type": "session", "event": "exit", "code": code})
         }
-    }
-}
-
-#[cfg(windows)]
-fn host_event_json(event: &duo_core::host::HostEvent) -> serde_json::Value {
-    use duo_core::host::HostEvent;
-    match event {
-        HostEvent::Session(e) => session_event_json(e),
-        HostEvent::Embedded => serde_json::json!({"type": "host", "event": "embedded"}),
-        HostEvent::GiveUp => serde_json::json!({"type": "host", "event": "giveup"}),
-        HostEvent::ChildGone => serde_json::json!({"type": "host", "event": "child-gone"}),
     }
 }
 
@@ -421,51 +401,6 @@ fn cmd_sweep(
 /// 单音频仲裁锁（duo.core.audio_lock 合同）的跨进程入口。acquire 走库
 /// 语义（活锁主拒绝）；release 按 PID 存活回收陈锁——只有 owner 已死/
 /// 是本进程/无人持有时才删文件，绝不偷活锁主的锁。
-/// host --spec <json> --title <t> [--embed-style immersive|native] [--serial <s>]
-///
-/// 沉浸式宿主窗口（TODO 0.3，docs/window-experience.md §14）：同一进程里
-/// 引擎监督线程 spawn scrcpy，宿主窗口主线程 FindWindowW 等窗 → SetParent
-/// 嵌入为 WS_CHILD 铺满客户区。退出码透传引擎最终退出码。仅 Windows。
-fn cmd_host(
-    spec_json: &Option<String>,
-    title: &Option<String>,
-    embed_style: &Option<String>,
-    serial: &Option<String>,
-) {
-    let Some(spec_json) = spec_json else {
-        eprintln!("{USAGE}: --spec required");
-        exit(2);
-    };
-    let Some(title) = title else {
-        eprintln!("{USAGE}: --title required");
-        exit(2);
-    };
-    let spec = match SessionSpec::from_json(spec_json) {
-        Ok(spec) => spec,
-        Err(err) => {
-            eprintln!("bad session spec: {err}");
-            exit(2);
-        }
-    };
-    let opts = duo_core::host::HostOptions {
-        title: title.clone(),
-        style: duo_core::host::HostStyle::parse(&embed_style.as_deref()),
-        serial: serial.clone(),
-    };
-    #[cfg(windows)]
-    {
-        let code =
-            duo_core::host::run_host(&spec, &opts, &mut |ev| emit_json(&host_event_json(ev)));
-        exit(code);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (spec, opts);
-        eprintln!("host: requires Windows (TODO 0.3)");
-        exit(2);
-    }
-}
-
 fn cmd_audio_lock(data_dir: &Option<String>, args: &[String]) {
     let base = data_dir_required(data_dir);
     let pos = positionals(args);

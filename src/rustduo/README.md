@@ -53,4 +53,4 @@ Duo.exe 与 duo-core.exe 同目录装入 `%LOCALAPPDATA%\Duo`，桌面/开始
 
 ## Windows 验收
 
-真机跑 `powershell -File src\rustduo\scripts\accept_windows.ps1`：依次验 duo-core.exe 落位、`devices` 识别、手动 embed 会话、无孤儿 duo-core/scrcpy 进程，末行看 `结果: PASS`。
+真机跑 `powershell -File src\rustduo\scripts\accept_windows.ps1`：依次验 duo-core.exe 落位、`devices` 识别、手动 chrome 会话、无孤儿 duo-core/scrcpy 进程，末行看 `结果: PASS`。

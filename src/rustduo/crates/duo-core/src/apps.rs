@@ -5,11 +5,12 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::catalog::{catalog_by_package, APP_CATALOG};
+use crate::quiet::quiet_command;
 
 /// Python ``_RUN_TIMEOUT_S`` 合同：一次 ``pm list packages`` 往返的预算。
 pub const PM_LIST_TIMEOUT_S: f64 = 60.0;
@@ -204,7 +205,7 @@ pub fn merge_catalog(packages: &[String]) -> Vec<AppRow> {
 /// 一次 ``wm density`` 查询：生效密度（Override 优先）。失败/无数字回
 /// None（调用方回退 160，对译 device_density 的容错语义）。
 pub fn run_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
-    let output = std::process::Command::new(adb_binary)
+    let output = quiet_command(adb_binary)
         .args(["-s", serial, "shell", "wm", "density"])
         .output()
         .ok()?;
@@ -217,7 +218,7 @@ pub fn run_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
 /// 一次 ``pm list packages -3`` 查询 + 目录合并。失败（rc≠0/超时/无法
 /// 启动）返回 Err——查询失败与"无应用"必须可区分（devices.rs 同合同）。
 pub fn run_apps_query(adb_binary: &str, serial: &str) -> Result<Vec<AppRow>, String> {
-    let mut child = Command::new(adb_binary)
+    let mut child = quiet_command(adb_binary)
         .args(["-s", serial, "shell", "pm", "list", "packages", "-3"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

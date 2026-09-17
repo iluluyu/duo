@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::apps::{parse_renderer_meta, RendererMeta};
 use crate::devicon::finish_device_icon;
+use crate::quiet::quiet_command;
 
 pub const ICON_CACHE_SUFFIX: &str = ".r20.png";
 const DEX_BYTES: &[u8] = include_bytes!("../../../../pyduo/resources/duo_icons.dex");
@@ -63,7 +64,7 @@ impl DeviceTransport for AdbTransport {
 fn run_adb(adb: &str, serial: &str, args: &[&str]) -> Result<(), String> {
     let mut argv: Vec<&str> = vec!["-s", serial];
     argv.extend_from_slice(args);
-    let status = std::process::Command::new(adb)
+    let status = quiet_command(adb)
         .args(&argv)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -83,7 +84,7 @@ fn run_adb(adb: &str, serial: &str, args: &[&str]) -> Result<(), String> {
 fn run_adb_stdout(adb: &str, serial: &str, args: &[&str]) -> Result<String, String> {
     let mut argv: Vec<&str> = vec!["-s", serial];
     argv.extend_from_slice(args);
-    let output = std::process::Command::new(adb)
+    let output = quiet_command(adb)
         .args(&argv)
         .output()
         .map_err(|e| format!("adb failed to launch: {e}"))?;

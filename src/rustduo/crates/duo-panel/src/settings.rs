@@ -12,19 +12,38 @@ use crate::app::PanelApp;
 use crate::paint;
 use crate::theme::{over, ThemeKind, Tokens};
 
-/// 控件标签（CaptionText：12px ink2）。
+/// 左对齐、垂直居中于 pos.y 的文字（QML anchors.verticalCenter 对译；
+/// egui/Qt 字体度量差由居中锚定消化）。
+fn text_at(painter: &egui::Painter, pos: Pos2, text: &str, px: f32, color: egui::Color32) {
+    paint::text_left_at_center(painter, pos, text, px, color);
+}
+
+/// 控件标签（CaptionText：12px ink2）。pos = 行盒垂直中心。
 fn caption(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
-    paint::text_left_weight(painter, pos, text, 12.0, t.ink2, false);
+    text_at(painter, pos, text, 12.0, t.ink2);
 }
 
 /// 卡标题（13px DemiBold，QML letterSpacing 1 不做——字体度量差 1px 级）。
+/// pos = 标题盒（h19）垂直中心。
 fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
-    paint::text_left_weight(painter, pos, text, 13.0, t.ink, true);
+    let galley = painter.ctx().fonts(|f| {
+        f.layout_job(egui::text::LayoutJob::simple(
+            text.to_owned(),
+            paint::font_id(13.0, true),
+            t.ink,
+            f32::INFINITY,
+        ))
+    });
+    painter.galley(
+        Pos2::new(pos.x, pos.y - galley.size().y / 2.0),
+        galley,
+        egui::Color32::WHITE,
+    );
 }
 
-/// 正文行文字（13px ink）。
+/// 正文行文字（13px ink）。pos = 行盒垂直中心。
 fn row_label(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
-    paint::text_left_weight(painter, pos, text, 13.0, t.ink, false);
+    text_at(painter, pos, text, 13.0, t.ink);
 }
 
 /// ModeButton（分段单选）：h32 r10；选中 = accent 14% 底 + accent 45%
@@ -62,7 +81,7 @@ fn mode_button(
     resp.clicked()
 }
 
-/// GlassSwitch（纯开关，40×24 轨 r12 + 白圆 thumb h-4；点击整轨切换）。
+/// GlassSwitch（纯开关，40×24 轨 r12 + 白圆 thumb 20 居中；点击整轨切换）。
 #[must_use]
 fn glass_switch(ui: &mut Ui, t: &Tokens, id: egui::Id, center: Pos2, checked: bool) -> bool {
     let track = Rect::from_center_size(center, Vec2::new(40.0, 24.0));
@@ -70,27 +89,28 @@ fn glass_switch(ui: &mut Ui, t: &Tokens, id: egui::Id, center: Pos2, checked: bo
     let track_color = if checked {
         t.accent
     } else {
+        // QML：白 24% / 黑 16% 叠在卡上（非 bg）
         match t.kind {
-            ThemeKind::Dark => over(t.bg, egui::Color32::WHITE, 0.24),
-            ThemeKind::Light => over(t.bg, egui::Color32::BLACK, 0.16),
+            ThemeKind::Dark => over(t.card, egui::Color32::WHITE, 0.24),
+            ThemeKind::Light => over(t.card, egui::Color32::BLACK, 0.16),
         }
     };
     paint::rounded_fill(ui.painter(), track, 12.0, track_color);
-    let knob = track.height() - 4.0;
-    let x = if checked {
-        track.right() - knob - 2.0
+    let knob_radius = (track.height() - 4.0) / 2.0;
+    let knob_center_x = if checked {
+        track.right() - 2.0 - knob_radius
     } else {
-        track.left() + 2.0
+        track.left() + 2.0 + knob_radius
     };
     ui.painter().circle_filled(
-        Pos2::new(x, track.center().y),
-        knob / 2.0,
+        Pos2::new(knob_center_x, track.center().y),
+        knob_radius,
         egui::Color32::WHITE,
     );
     resp.clicked()
 }
 
-/// 文字行 + 右侧开关（h32；QML 镜像开关/DPI 跟随/玻璃材质行）。
+/// 文字行 + 右侧开关（h32；QML 开关行：文字 y6 h19 垂直中心 ≈ 行中心）。
 #[must_use]
 fn switch_row(
     ui: &mut Ui,
@@ -103,7 +123,7 @@ fn switch_row(
     row_label(
         ui.painter(),
         t,
-        Pos2::new(area.left(), area.center().y - 6.5),
+        Pos2::new(area.left(), area.center().y),
         label,
     );
     glass_switch(
@@ -157,10 +177,14 @@ fn number_box(
         .desired_width(rect.width() - 56.0)
         .horizontal_align(egui::Align::Center)
         .vertical_align(egui::Align::Center);
-    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
-        Pos2::new(rect.left() + 28.0, rect.top()),
-        Vec2::new(rect.width() - 56.0, rect.height()),
-    )));
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_size(
+                Pos2::new(rect.left() + 28.0, rect.top()),
+                Vec2::new(rect.width() - 56.0, rect.height()),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
     let eresp = inner.add(edit);
     let _ = eresp;
     if focused && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -200,7 +224,7 @@ fn number_cell(
     caption(
         ui.painter(),
         t,
-        Pos2::new(rect.left(), rect.top() + 8.0),
+        Pos2::new(rect.left(), rect.top() + 10.0),
         title,
     );
     let box_rect = Rect::from_min_size(
@@ -208,8 +232,8 @@ fn number_cell(
         Vec2::new(rect.width(), 32.0),
     );
     if !enabled {
-        // QML opacity 0.45（预合成近似：控件色向底色收）
-        let faded = |c: egui::Color32| over(t.bg, c, 0.55);
+        // QML opacity 0.45（合成底 = 卡，非 bg）：控件色向卡色收 45%
+        let faded = |c: egui::Color32| over(t.card, c, 0.45);
         let tt = fade_tokens(t, faded);
         number_box(ui, &tt, id, box_rect, value, range)
     } else {
@@ -299,7 +323,7 @@ fn path_row(
     caption(
         ui.painter(),
         t,
-        Pos2::new(rect.left(), rect.top() + 7.0),
+        Pos2::new(rect.left(), rect.top() + 13.0),
         &format!("{tool} 路径"),
     );
     // 检测结果胶囊（右侧，2.5s 淡出语义：这里只在时限内显示）
@@ -355,10 +379,14 @@ fn path_row(
     if locked {
         edit = edit.interactive(false);
     }
-    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
-        Pos2::new(field.left() + 10.0, field.top()),
-        Vec2::new(field_w - 20.0, 32.0),
-    )));
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_size(
+                Pos2::new(field.left() + 10.0, field.top()),
+                Vec2::new(field_w - 20.0, 32.0),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
     let eresp = inner.add(edit);
     if eresp.changed() {
         changed = Some(text.trim().to_string());
@@ -416,24 +444,28 @@ fn path_row(
 
 // ---------------------------------------------------------------- 布局
 
-/// 布局常量（SettingsPage.qml 逐值照抄）。
+/// 布局常量（SettingsPage.qml 逐值照抄；几何取证 = scripts/geom_probe.py
+/// dump QML item 树：标题 13px 盒高 19、行标签 Item h20、CaptionText
+/// 盒高 18、开关行 Item h32、NumberCell 20+6+32=58、Slider h24）。
 mod geom {
-    pub const PAD: f32 = 12.0; // GlassCard cardPad
+    /// 卡内容横 padding = shadowHost 8 + innerCol 12（对齐 QML 卡内区域）。
+    pub const PAD: f32 = 20.0;
     pub const SP: f32 = 9.0; // 卡内 Column spacing
     pub const CARD_SP: f32 = 12.0; // 卡间距
     pub const PATH_ROW_H: f32 = 64.0; // 标题 26 + 6 + 输入 32
     pub const CELL_H: f32 = 58.0; // 标签 20 + 6 + 数字框 32
-    pub const CAPTION_H: f32 = 21.0;
+    pub const CAPTION_H: f32 = 18.0; // CaptionText（12px 字盒高）
     pub const LABEL_H: f32 = 20.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
     pub const SLIDER_H: f32 = 24.0;
-    pub const TITLE_H: f32 = 19.0; // 卡标题 13px
+    pub const TITLE_H: f32 = 19.0; // 卡标题 13px 字盒高
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
     pub const MARGIN: f32 = 16.0; // 滚动区左右边距
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
-    pub const CARD_EXTRA: f32 = 3.0 + PAD * 2.0 + 10.0;
+    pub const CARD_EXTRA: f32 = 3.0 + 12.0 * 2.0 + 10.0;
     pub const TOP: f32 = 64.0; // 胶囊下让位
-    pub const FOOTER_H: f32 = 46.0; // footer 32 + 12 + 2（DPI 行跨界残迹根除）
+    /// footer（保存钮区）高：scroller 底 = footer.top − 8（探针 616/608）。
+    pub const FOOTER_H: f32 = 44.0;
 }
 
 /// 设置页布局（两遍绘制解耦：先算全部 rect，再画卡底，再画内容）。
@@ -558,26 +590,26 @@ impl SettingsLayout {
         let mut cy = quality.title.y + TITLE_H + SP;
         let codec_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
         cy += ROW_H + SP;
-        let audio_label = Pos2::new(x, cy + 8.0);
+        let audio_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
         let audio_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let tso_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
         cy += ROW_H + SP;
-        let tso_caption = Pos2::new(x, cy);
+        let tso_caption = Pos2::new(x, cy + 9.0);
         cy += CAPTION_H + SP;
         let dpi_switch = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
         cy += ROW_H + SP;
         let dpi_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, CELL_H));
         cy += CELL_H + SP;
-        let dpi_caption = Pos2::new(x, cy);
+        let dpi_caption = Pos2::new(x, cy + 9.0);
         cy += CAPTION_H + SP;
-        let rs_label = Pos2::new(x, cy + 4.0);
+        let rs_label = Pos2::new(x, cy + 10.0);
         let rs_value = Pos2::new(x + inner_w - 20.0, cy + 10.0);
         cy += LABEL_H + SP;
         let rs_slider = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, SLIDER_H));
         cy += SLIDER_H + SP;
-        let rs_caption = Pos2::new(x, cy);
+        let rs_caption = Pos2::new(x, cy + 9.0);
         y += quality_h + CARD_SP;
 
         // 窗口栏（默认）卡
@@ -586,15 +618,15 @@ impl SettingsLayout {
         let wb_h = CARD_EXTRA + wb_items;
         let windowbar = card_frame(Pos2::new(left, y), cw, wb_h);
         let mut cy = windowbar.title.y + TITLE_H + SP;
-        let top_label = Pos2::new(x, cy + 8.0);
+        let top_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
         let top_row: [Rect; 2] = seg_row(x, cy, inner_w, 2).try_into().unwrap();
         cy += ROW_H + SP;
-        let bottom_label = Pos2::new(x, cy + 8.0);
+        let bottom_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
         let bottom_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
-        let wb_caption = Pos2::new(x, cy);
+        let wb_caption = Pos2::new(x, cy + 9.0);
         y += wb_h + CARD_SP;
 
         // 外观卡
@@ -602,7 +634,7 @@ impl SettingsLayout {
         let ap_h = CARD_EXTRA + ap_items;
         let appearance = card_frame(Pos2::new(left, y), cw, ap_h);
         let mut cy = appearance.title.y + TITLE_H + SP;
-        let theme_label = Pos2::new(x, cy + 8.0);
+        let theme_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
         let theme_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
@@ -647,9 +679,12 @@ impl SettingsLayout {
 }
 
 fn card_frame(pos: Pos2, w: f32, h: f32) -> Card {
+    // 可见卡底 = shadowHost 内容（上缩 3 / 下缩 10，QML 阴影宿主边）；
+    // 内容坐标仍从 GlassCard 顶起（title = pos+3+12）
     Card {
-        bg: Rect::from_min_size(pos, Vec2::new(w, h)),
-        title: Pos2::new(pos.x + geom::PAD, pos.y + geom::PAD + 3.0),
+        bg: Rect::from_min_size(Pos2::new(pos.x, pos.y + 3.0), Vec2::new(w, h - 13.0)),
+        // 纵向内边 = shadowHost 3 + cardPad 12（PAD=20 只是横向：8+12）
+        title: Pos2::new(pos.x + geom::PAD, pos.y + 15.0),
         inner: Rect::from_min_size(
             Pos2::new(pos.x + geom::PAD, pos.y + geom::PAD),
             Vec2::new(w - geom::PAD * 2.0, h - geom::PAD * 2.0),
@@ -674,7 +709,9 @@ fn seg_row(x: f32, y: f32, w: f32, n: usize) -> Vec<Rect> {
 pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let t = app.tokens;
     let full = ui.max_rect();
-    ui.painter().rect_filled(full, 0, t.bg); // QML 页面 Rectangle 盖色斑
+    // QML SettingsPage 页面底色：不透明 Style.bg 盖住主面板（含色斑）
+    // ——设置页背景必须干净（SettingsPage.qml Rectangle 页面底色）
+    ui.painter().rect_filled(full, 0, t.bg);
 
     let problems = app.settings_problems();
     let engine_locked = app.engine_locked();
@@ -688,7 +725,11 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
     let scroll = app.settings_scroll;
 
-    // 视口内裁剪（clip 超出内容）
+    // 视口内裁剪（QML ScrollView clip：滚动底之下的控件——如 DPI 数字
+    // 框——不得溢出；footer 保存钮在视口外恒定，用未裁剪 painter）
+    let root_painter = ui.painter().clone();
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(full));
+    ui.set_clip_rect(layout.vp);
     let painter = ui.painter().with_clip_rect(layout.vp);
 
     // 卡底四张（先画，内容后画盖其上）
@@ -704,7 +745,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         card_title(
             &painter,
             &t,
-            Pos2::new(shifted.left() + geom::PAD, shifted.top() + geom::PAD),
+            Pos2::new(shifted.left() + geom::PAD, shifted.top() + 15.0 + 9.5),
             card_name(c, &layout),
         );
     }
@@ -731,7 +772,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let mut scrcpy = app.settings.draft.scrcpy_path.clone();
     let pill_scrcpy = app.probe_pill_for("scrcpy");
     let (chg, browse, detect) = path_row(
-        ui,
+        &mut ui,
         &t,
         "scrcpy",
         sy(layout.scrcpy_row),
@@ -754,7 +795,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let mut adb = app.settings.draft.adb_path.clone();
     let pill_adb = app.probe_pill_for("adb");
     let (chg, browse, detect) = path_row(
-        ui,
+        &mut ui,
         &t,
         "adb",
         sy(layout.adb_row),
@@ -787,7 +828,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     let fps = app.settings.draft.fps.unwrap_or(60);
     if let Some(v) = number_cell(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("fps"),
         sy(layout.fps_cell),
@@ -800,7 +841,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
     let bitrate = app.settings.draft.bitrate_mbps.unwrap_or(30);
     if let Some(v) = number_cell(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("bitrate"),
         sy(layout.bitrate_cell),
@@ -822,7 +863,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     for (i, (value, label)) in CODECS.iter().enumerate() {
         let r = sy(layout.codec_row[i]);
         if mode_button(
-            ui,
+            &mut ui,
             &t,
             egui::Id::new(("codec", i)),
             r,
@@ -841,7 +882,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     for (i, (value, label)) in AUDIOS.iter().enumerate() {
         let r = sy(layout.audio_row[i]);
         if mode_button(
-            ui,
+            &mut ui,
             &t,
             egui::Id::new(("audio", i)),
             r,
@@ -852,7 +893,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         }
     }
     if switch_row(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("tso"),
         sy(layout.tso_row),
@@ -871,7 +912,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     let dpi_auto = app.settings.draft.dpi.is_none();
     if switch_row(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("dpiauto"),
         sy(layout.dpi_switch),
@@ -883,7 +924,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
     let dpi_val = app.settings.draft.dpi.unwrap_or(160);
     if let Some(v) = number_cell(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("dpi"),
         sy(layout.dpi_cell),
@@ -912,7 +953,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         t.accent,
     );
     if let Some(v) = render_scale_slider(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("rscale"),
         sy(layout.rs_slider),
@@ -933,7 +974,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     for (i, (value, label)) in TOPS.iter().enumerate() {
         let r = sy(layout.top_row[i]);
         if mode_button(
-            ui,
+            &mut ui,
             &t,
             egui::Id::new(("topbar", i)),
             r,
@@ -952,7 +993,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     for (i, (value, label)) in BOTTOMS.iter().enumerate() {
         let r = sy(layout.bottom_row[i]);
         if mode_button(
-            ui,
+            &mut ui,
             &t,
             egui::Id::new(("botbar", i)),
             r,
@@ -970,7 +1011,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     for (i, (value, label)) in THEMES.iter().enumerate() {
         let r = sy(layout.theme_row[i]);
         if mode_button(
-            ui,
+            &mut ui,
             &t,
             egui::Id::new(("theme", i)),
             r,
@@ -981,7 +1022,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         }
     }
     if switch_row(
-        ui,
+        &mut ui,
         &t,
         egui::Id::new("glass"),
         sy(layout.glass_row),
@@ -1000,9 +1041,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     } else {
         t.accent
     };
-    paint::rounded_fill(ui.painter(), layout.save, 10.0, fill);
+    paint::rounded_fill(&root_painter, layout.save, 10.0, fill);
     paint::text_centered(
-        ui.painter(),
+        &root_painter,
         layout.save.center(),
         "保存",
         13.0,

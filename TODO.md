@@ -28,19 +28,21 @@
         渲染层（设备卡/固定卡/搜索/网格右键全菜单/运行卡/Toast/设置页）；
         gui_prefs.json 同文件兼容；单实例互斥体；会话 spawn 全走
         duo-core mirror（argv 等价 build_launch_argv）。cargo test
-        247 绿（core 214 + panel 33），clippy 零警告，pytest 488 绿。
-- [x] **0.3 1.5 完成 ✅（2026-09-16，代码层）**：沉浸式宿主窗口
-      （win32 crate）住进 duo-core 进程（--chrome/--embed 同一进程内
-      run_host），C# overlay 对应路径已不需要；真机行为待 Windows 验收
-      清单回填。
+        260 绿（core 219 + panel 41），clippy 零警告，pytest 488 绿。
+- [x] **0.3 架构收敛至 C# overlay ✅（2026-09-17，代码层）**：
+      实验性 Rust win32 SetParent 宿主窗口（host.rs）退役，全面统一回归
+      经真机验证的 C# overlay 机制（chrome.rs + chrome_overlay.cs）；duo-core
+      收敛 CLI 移除 --embed/--embed-style 旗标，维持 --chrome；全进程 spawn 增加
+      quiet_command（CREATE_NO_WINDOW），杜绝 Windows 侧黑窗闪烁；增加 flex
+      会话 orientation_lock（wm set-ignore-orientation-request 1）。
 - [x] **0.4 前置打包 ✅**：WSL mingw 交叉构建双 exe（duo-core.exe
       console + Duo.exe GUI 子系统/duo.ico 资源图标/单实例）；
       build_wsl.sh --deploy / build_windows.ps1 -Deploy / install 脚本；
       自接视频流（libmpv）仍按原条件：撞到 scrcpy 呈现天花板再启动。
 
-> **Rust 栈现状**：代码/测试/交叉构建全绿，但未在 Windows 真机跑过——
-> 下列声明到真机验收前都视为未决：面板渲染效果、宿主窗交互、图标渲染
-> 实效、音频仲裁行为。Python 栈保留为参考与对照（duo/ 目录未删）。
+> **Rust 栈现状**：代码/测试/交叉构建全绿（cargo 260 + pytest 488 + parity 234），
+> 但未在 Windows 真机跑过——下列声明到真机验收前都视为未决：面板渲染效果、
+> 宿主窗交互、图标渲染实效、音频仲裁行为。Python 栈保留为参考与对照（src/pyduo）。
 
 ## 边界
 
@@ -59,6 +61,11 @@
 
 ## 待 Windows 实测（收尾清单）
 
+- [ ] **设置页开关与说明文字错位微调（新，高优）**：根据真机反馈（见
+      `字体错位.png` / `开关错位.png` / `docs/validation/assets/settings-switch-font-misaligned.png`），
+      设置页「投屏质量」卡中的“镜像时关闭设备屏幕”（带“黑屏防误触；仅整机镜像有效”二级说明）
+      与“DPI 跟随设备”开关行存在垂直对齐与间距问题（`tso_caption` 双重间距累加导致说明文字与
+      开关脱节、视觉悬浮），需依据 `scripts/geom_probe.py` 探针数据校准并验证。
 - [ ] **Rust 栈验收（新，优先）**：deploy 双 exe 后真机跑：面板渲染（设备卡/
       固定卡/搜索/网格/右键全菜单/运行卡/Toast/设置页）、会话 spawn（mirror
       argv 与 Python 版一致）、图标 sweep、音频仲裁、单实例提示、退出拖树。

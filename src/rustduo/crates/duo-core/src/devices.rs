@@ -7,9 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
+
+use crate::quiet::quiet_command;
 
 /// 监督方在设备离线时使用的退出码（与 Python EXIT_DEVICE_LOST 一致）。
 pub const EXIT_DEVICE_LOST: i32 = 2;
@@ -39,7 +40,7 @@ pub fn parse_device_states(devices_output: &str) -> DeviceStates {
 /// “查询失败”与“无设备”必须可区分，否则一次抖动就清空面板列表。
 pub fn run_devices_query(adb_binary: &str) -> Result<DeviceStates, String> {
     // 超时轮询（Python 合同：挂死 10s 也是查询失败，不是空列表）。
-    let mut child = Command::new(adb_binary)
+    let mut child = quiet_command(adb_binary)
         .arg("devices")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

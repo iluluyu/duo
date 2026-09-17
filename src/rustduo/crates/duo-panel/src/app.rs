@@ -128,6 +128,10 @@ pub struct PanelApp {
     /// 出图模式：(path, 已渲染帧数, 启动时刻)。帧数 ≥40 且满 1.6s（桩
     /// duo-core 的 watch/apps 首行落位）才请求截图，收到即存盘退出。
     pub(crate) shot: Option<(String, u32, Instant)>,
+    /// DUO_SHOT_MENU=tile|tile-sub|mirror：--shot 模式注入合成右键自动
+    /// 开菜单（tile-sub 再悬停「固定比例」展开二级）。对拍回路常备开关
+    /// （菜单只能走 Windows exe 验：WSLg 下 popup 行为不同）。
+    pub(crate) shot_menu: Option<String>,
 }
 
 impl PanelApp {
@@ -170,6 +174,7 @@ impl PanelApp {
             settings_scroll: 0.0,
             probe_bg: None,
             probe_pill: None,
+            shot_menu: std::env::var("DUO_SHOT_MENU").ok(),
         };
         // QML _status_text 初始「就绪」→ 启动即挂状态 toast
         app.toast_now("就绪");
@@ -182,14 +187,7 @@ impl PanelApp {
         if self.watch.is_some() && self.watch_adb == self.adb {
             return;
         }
-        let Some(binary) = self.duo_core.clone() else {
-            return;
-        };
-        self.watch = Some(DeviceWatch::start(
-            &binary.display().to_string(),
-            &self.adb,
-            2.0,
-        ));
+        self.watch = Some(DeviceWatch::start(&self.adb, 2.0));
         self.watch_adb = self.adb.clone();
     }
 
@@ -268,41 +266,74 @@ impl PanelApp {
     }
 
     /// 镜像卡右键菜单（Main.qml mirrorMenu：打开投屏 / 关屏 / 默认窗口栏）。
+    /// 菜单行（QML MenuRow/MenuCheckRow：x4 w-8 h32 r10、文字 13px 左
+    /// 12 / 勾选行文字 x24 + 4px accent 点 x14、hover 洗色走 skin_menus 的
+    /// weak_bg_fill——不留显式 fill，hover 才能上洗色）。返回 clicked。
+    fn menu_item(&self, ui: &mut egui::Ui, label: &str, marked: Option<bool>) -> bool {
+        let t = self.tokens;
+        menu_row_style(ui);
+        let pad_x = if marked.is_some() { 20.0 } else { 8.0 };
+        let prev_pad = ui.spacing().button_padding;
+        ui.style_mut().spacing.button_padding = egui::vec2(pad_x, 0.0);
+        let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(t.ink))
+            .min_size(egui::vec2(ui.available_width() - 8.0, 32.0))
+            .stroke(egui::Stroke::NONE);
+        let resp = ui.add(btn);
+        ui.style_mut().spacing.button_padding = prev_pad;
+        if marked == Some(true) {
+            let dot = egui::pos2(resp.rect.min.x + 10.0, resp.rect.center().y);
+            ui.painter().circle_filled(dot, 2.0, t.accent);
+        }
+        resp.clicked()
+    }
+
+    /// 子菜单行（QML MenuSubmenuRow：同勾选行栅格 + 右 ›；行高由
+    /// interact_size 拾到 32）。ui.menu_button 在 popup 内自动切换为
+    /// hover 展开的 submenu。
+    fn menu_sub_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) {
+        let t = self.tokens;
+        menu_row_style(ui);
+        let prev_pad = ui.spacing().button_padding;
+        ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
+        ui.menu_button(egui::RichText::new(label).size(13.0).color(t.ink), |ui| {
+            menu_row_style(ui);
+            ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
+            add_contents(self, ui);
+        });
+        ui.style_mut().spacing.button_padding = prev_pad;
+    }
+
     pub(crate) fn mirror_menu(&mut self, ui: &mut egui::Ui) {
         // Main.qml mirrorContextMenu 逐行对齐：打开投屏 / hairline /
         // 窗口栏直接一级平铺（上巴 沉浸/系统；下巴 沉浸/系统/不显示）
         // ——设备镜像无应用包，直接写设置页默认（setDefaultBarMode）。
         // 「镜像时关闭设备屏幕」不在 QML 菜单（设置页字段），已删。
-        if ui.button("打开投屏").clicked() {
+        if self.menu_item(ui, "打开投屏", None) {
             self.start_mirror();
             ui.close_menu();
         }
-        ui.separator();
+        menu_hairline(ui, &self.tokens);
         let top = self.settings.draft.top_bar_mode.clone();
         let bottom = self.settings.draft.bottom_bar_mode.clone();
-        ui.weak("上巴");
+        menu_caption(ui, &self.tokens, "上巴");
         for (mode, label) in [("immersive", "沉浸"), ("native", "系统")] {
-            if ui
-                .button(format!("{label}{}", if top == mode { "  ●" } else { "" }))
-                .clicked()
-            {
+            if self.menu_item(ui, label, Some(top == mode)) {
                 self.settings.set_bar_mode(true, mode);
                 ui.close_menu();
             }
         }
-        ui.weak("下巴");
+        menu_caption(ui, &self.tokens, "下巴");
         for (mode, label) in [
             ("immersive", "沉浸"),
             ("native", "系统"),
             ("none", "不显示"),
         ] {
-            if ui
-                .button(format!(
-                    "{label}{}",
-                    if bottom == mode { "  ●" } else { "" }
-                ))
-                .clicked()
-            {
+            if self.menu_item(ui, label, Some(bottom == mode)) {
                 self.settings.set_bar_mode(false, mode);
                 ui.close_menu();
             }
@@ -426,6 +457,63 @@ impl PanelApp {
                 self.settings.set_adb_path(&text);
             }
         }
+    }
+
+    /// 菜单浮层皮肤（MenuGlassPlate 在 egui 约束下的忠实近似）：popup 是
+    /// 独立 Area 层、打开期间整层重绘，半透明 window_fill 只做一次 GPU
+    /// 合成——「假玻璃」= 高 alpha menuFill（背后内容 10% 透出）+ 1px
+    /// 亮边 + r12；玻璃关 = QML 软件回退路径（不透明 menuFill +
+    /// menuFillBorder）。行皮肤：行高 32 / r10 / hover 洗色（QML
+    /// hoverWash/pressWash 字面半透明）。egui popup frame 在内容闭包外
+    /// 构造，须在菜单打开期间改 ctx 级 style（二级菜单同根 BarState，
+    /// is_context_menu_open 覆盖全链）。
+    pub(crate) fn skin_menus(&self, ctx: &egui::Context) {
+        if !ctx.is_context_menu_open() {
+            return;
+        }
+        let t = self.tokens;
+        let is_dark = matches!(t.kind, ThemeKind::Dark);
+        // QML hoverWash/pressWash 令牌字面（rgba），叠在玻璃填充上
+        let (hover, press) = if is_dark {
+            (
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 15),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 31),
+            )
+        } else {
+            (
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10),
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20),
+            )
+        };
+        let glass = self.settings.draft.glass_enabled;
+        ctx.style_mut(|st| {
+            st.visuals.window_fill = if glass { t.menu_glass } else { t.menu_fill };
+            st.visuals.window_stroke = egui::Stroke::new(
+                1.0_f32,
+                if glass {
+                    t.menu_glass_border
+                } else if is_dark {
+                    // Style.menuFillBorder：双主题均 10%（#1A…）
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+                },
+            );
+            st.visuals.menu_corner_radius = 12.into();
+            st.visuals.popup_shadow = Default::default();
+            st.spacing.menu_margin = egui::Margin::same(4);
+            st.spacing.menu_width = 128.0; // QML ctxMenu width: 128
+            st.visuals.widgets.hovered.weak_bg_fill = hover;
+            st.visuals.widgets.hovered.corner_radius = 10.into();
+            st.visuals.widgets.active.weak_bg_fill = press;
+            st.visuals.widgets.active.corner_radius = 10.into();
+            // 二级展开中的触发行（widgets.open）保持洗色（QML active 联动）
+            st.visuals.widgets.open.weak_bg_fill = hover;
+            st.visuals.widgets.open.corner_radius = 10.into();
+            st.visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+            st.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            st.visuals.widgets.inactive.corner_radius = 10.into();
+        });
     }
 
     pub(crate) fn toast_now(&mut self, text: impl Into<String>) {
@@ -876,9 +964,9 @@ impl PanelApp {
         // Main.qml appContextMenu 一级结构逐行对齐：打开 / 置顶到固定栏 /
         // hairline / 自适应窗口 | 固定比例 ▸ / 窗口栏 ▸ / 音频独占（勾选
         // 不收菜单）/ 断开保留画面（勾选不收菜单）/ DPI ▸ / 渲染倍率 ▸。
-        // 一次性按比例打开（startSessionWithAspect）不在 QML 菜单，已删。
+        // 皮肤 = menu_item（13px 行 32 + painter 4px 勾选点）。
         let package = entry.package.clone();
-        if ui.button("打开").clicked() {
+        if self.menu_item(ui, "打开", None) {
             self.launch(&package, None);
             ui.close_menu();
         }
@@ -887,117 +975,88 @@ impl PanelApp {
         } else {
             "置顶到固定栏"
         };
-        if ui.button(pin_text).clicked() {
+        if self.menu_item(ui, pin_text, None) {
             self.toggle_pin(&package);
             ui.close_menu();
         }
-        ui.separator();
+        menu_hairline(ui, &self.tokens);
         let fixed_now = matches!(
             self.display_prefs.get(&package),
             Some(DisplayChoice::Fixed { .. })
         );
-        if ui
-            .button(format!("自适应窗口{}", if fixed_now { "" } else { "  ●" }))
-            .clicked()
-        {
+        if self.menu_item(ui, "自适应窗口", Some(!fixed_now)) {
             self.set_display_flex(&package);
             ui.close_menu();
         }
-        ui.menu_button("固定比例", |ui| {
-            // 二级：小节头 横屏（21:9..1:1 + 机身）/ 竖屏（3:4..9:16 +
-            // 机身），选中 = 当前 fixed 记忆（pyduo setDisplayFixed）
-            let current = self.display_prefs.get(&package).cloned();
+        self.menu_sub_button(ui, "固定比例", |app, ui| {
+            let current = app.display_prefs.get(&package).cloned();
             let pick = |app: &mut Self, ui: &mut egui::Ui, id: &str, label: &str| {
                 let mark =
                     matches!(&current, Some(DisplayChoice::Fixed { aspect }) if aspect == id);
-                if ui
-                    .button(format!("{label}{}", if mark { "  ●" } else { "" }))
-                    .clicked()
-                {
+                if app.menu_item(ui, label, Some(mark)) {
                     app.set_display_fixed(&package, id);
                     ui.close_menu();
                 }
             };
-            ui.weak("横屏");
+            menu_caption(ui, &app.tokens, "横屏");
             for preset in duo_core::aspects::aspect_presets()
                 .iter()
                 .filter(|p| p.landscape)
             {
-                pick(self, ui, &preset.id, &preset.id);
+                pick(app, ui, &preset.id, &preset.id);
             }
-            pick(self, ui, BODY_LANDSCAPE_ID, "机身");
-            ui.weak("竖屏");
+            pick(app, ui, BODY_LANDSCAPE_ID, "机身");
+            menu_hairline(ui, &app.tokens);
+            menu_caption(ui, &app.tokens, "竖屏");
             for preset in duo_core::aspects::aspect_presets()
                 .iter()
                 .filter(|p| !p.landscape)
             {
-                pick(self, ui, &preset.id, &preset.id);
+                pick(app, ui, &preset.id, &preset.id);
             }
-            pick(self, ui, BODY_PORTRAIT_ID, "机身");
+            pick(app, ui, BODY_PORTRAIT_ID, "机身");
         });
-        ui.menu_button("窗口栏", |ui| {
-            // 二级：上巴（跟随默认/沉浸/系统）、下巴（跟随默认/沉浸/
-            // 系统/不显示）；圆点 = explicit 记忆，跟随默认清 override
-            let bars = self.bar_prefs.get(&package).cloned().unwrap_or_default();
+        self.menu_sub_button(ui, "窗口栏", |app, ui| {
+            let bars = app.bar_prefs.get(&package).cloned().unwrap_or_default();
             let row = |app: &mut Self,
                        ui: &mut egui::Ui,
                        which: bool,
                        mode: Option<&'static str>,
                        label: &str| {
                 let explicit = if which { bars.top } else { bars.bottom };
-                let mark = explicit == mode;
-                if ui
-                    .button(format!("{label}{}", if mark { "  ●" } else { "" }))
-                    .clicked()
-                {
+                if app.menu_item(ui, label, Some(explicit == mode)) {
                     app.set_bar(&package, which, mode);
                     ui.close_menu();
                 }
             };
-            ui.weak("上巴");
-            row(self, ui, true, None, "跟随默认");
-            row(self, ui, true, Some("immersive"), "沉浸");
-            row(self, ui, true, Some("native"), "系统");
-            ui.weak("下巴");
-            row(self, ui, false, None, "跟随默认");
-            row(self, ui, false, Some("immersive"), "沉浸");
-            row(self, ui, false, Some("native"), "系统");
-            row(self, ui, false, Some("none"), "不显示");
+            menu_caption(ui, &app.tokens, "上巴");
+            row(app, ui, true, None, "跟随默认");
+            row(app, ui, true, Some("immersive"), "沉浸");
+            row(app, ui, true, Some("native"), "系统");
+            menu_caption(ui, &app.tokens, "下巴");
+            row(app, ui, false, None, "跟随默认");
+            row(app, ui, false, Some("immersive"), "沉浸");
+            row(app, ui, false, Some("native"), "系统");
+            row(app, ui, false, Some("none"), "不显示");
         });
         let exclusive = self.audio_prefs.get(&package).copied().unwrap_or(false);
-        if ui
-            .button(format!("音频独占{}", if exclusive { "  ●" } else { "" }))
-            .clicked()
-        {
+        if self.menu_item(ui, "音频独占", Some(exclusive)) {
             // QML 勾选行切换不收菜单（圆点即时可见）
             self.toggle_audio_exclusive(&package);
         }
         let keep_vd = self.behavior_prefs.get(&package).copied().unwrap_or(false);
-        if ui
-            .button(format!("断开保留画面{}", if keep_vd { "  ●" } else { "" }))
-            .clicked()
-        {
+        if self.menu_item(ui, "断开保留画面", Some(keep_vd)) {
             self.toggle_keep_vd(&package);
         }
-        ui.menu_button("DPI", |ui| {
-            // 跟随默认/160/240/320 + 自定义输入（−/+ 步进 10，120–640）
-            let dpi = self.density_prefs.get(&package).copied();
-            if ui
-                .button(format!(
-                    "跟随默认{}",
-                    if dpi.is_none() { "  ●" } else { "" }
-                ))
-                .clicked()
-            {
-                self.set_density(&package, None);
+        self.menu_sub_button(ui, "DPI", |app, ui| {
+            let dpi = app.density_prefs.get(&package).copied();
+            if app.menu_item(ui, "跟随默认", Some(dpi.is_none())) {
+                app.set_density(&package, None);
                 ui.close_menu();
             }
             for v in [160i64, 240, 320] {
-                if ui
-                    .button(format!("{v}{}", if dpi == Some(v) { "  ●" } else { "" }))
-                    .clicked()
-                {
-                    self.set_density(&package, Some(v));
+                if app.menu_item(ui, &v.to_string(), Some(dpi == Some(v))) {
+                    app.set_density(&package, Some(v));
                     ui.close_menu();
                 }
             }
@@ -1007,29 +1066,19 @@ impl PanelApp {
                 .speed(10)
                 .prefix("自定义 ");
             if ui.add(dv).changed() {
-                self.set_density(&package, Some(custom));
+                app.set_density(&package, Some(custom));
             }
         });
-        ui.menu_button("渲染倍率", |ui| {
-            // 跟随默认/1×/1.4×/2×/3× + 微调（0.1 步进）
-            let scale = self.scale_prefs.get(&package).copied();
-            if ui
-                .button(format!(
-                    "跟随默认{}",
-                    if scale.is_none() { "  ●" } else { "" }
-                ))
-                .clicked()
-            {
-                self.set_scale(&package, None);
+        self.menu_sub_button(ui, "渲染倍率", |app, ui| {
+            let scale = app.scale_prefs.get(&package).copied();
+            if app.menu_item(ui, "跟随默认", Some(scale.is_none())) {
+                app.set_scale(&package, None);
                 ui.close_menu();
             }
             for v in [1.0f64, 1.4, 2.0, 3.0] {
                 let mark = scale.map(|s| (s - v).abs() < 1e-9).unwrap_or(false);
-                if ui
-                    .button(format!("{v}×{}", if mark { "  ●" } else { "" }))
-                    .clicked()
-                {
-                    self.set_scale(&package, Some(v));
+                if app.menu_item(ui, &format!("{v}×"), Some(mark)) {
+                    app.set_scale(&package, Some(v));
                     ui.close_menu();
                 }
             }
@@ -1039,7 +1088,7 @@ impl PanelApp {
                 .speed(0.1)
                 .prefix("微调 ");
             if ui.add(sv).changed() {
-                self.set_scale(&package, Some((custom * 10.0).round() / 10.0));
+                app.set_scale(&package, Some((custom * 10.0).round() / 10.0));
             }
         });
     }
@@ -1051,12 +1100,18 @@ impl PanelApp {
     }
 
     /// 出图泵：帧数 ≥40 且 1.6s 就绪后请求 Screenshot；事件回包存盘即退。
+    /// 开菜单对拍时多留时间（菜单 + 二级稳定）。
     fn pump_shot(&mut self, ctx: &egui::Context) {
         let Some((path, frames, started)) = &mut self.shot else {
             return;
         };
         *frames += 1;
-        let ready = *frames >= 40 && started.elapsed() >= Duration::from_millis(2900);
+        let (need_frames, need_ms) = if self.shot_menu.is_some() {
+            (78, 4200)
+        } else {
+            (40, 2900)
+        };
+        let ready = *frames >= need_frames && started.elapsed() >= Duration::from_millis(need_ms);
         if ready {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
@@ -1086,6 +1141,70 @@ impl PanelApp {
             self.shot = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// DUO_SHOT_MENU 注入：帧 44/45 合成右键（press→release）打开菜单；
+    /// tile-sub 在帧 58 起把指针悬停到「固定比例」行（菜单几何 = 内边 4 +
+    /// 打开32+置顶32+发线9+自适应32 → 触发行中心 y+125）展开二级。
+    ///
+    /// egui 的 hover/click 判定读 PointerState，而 PointerState 只在 pass
+    /// 开头由 RawInput 推进：往 InputState.events 里塞事件对交互无效，须
+    /// 用合成 RawInput 重跑 begin_pass（走真机指针路径，非旁路渲染）。
+    fn pump_shot_menu(&mut self, ctx: &egui::Context) {
+        if self.shot.is_none() {
+            return;
+        }
+        let Some(mode) = self.shot_menu.clone() else {
+            return;
+        };
+        let frames = self.shot.as_ref().map(|(_, f, _)| *f).unwrap_or(0);
+        if frames < 44 {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        let layout = crate::home::HomeLayout::compute(
+            screen.width(),
+            screen.height(),
+            self.has_pinned(),
+            !self.running_chips().is_empty(),
+        );
+        let pos = if mode == "mirror" {
+            layout.mirror.center()
+        } else {
+            // 首个磁贴图标中心（60px 图标在 cell 内 y+10..70）
+            let cols = ((layout.grid.width() / 92.0).floor() as usize).max(2);
+            let cell_w = layout.grid.width() / cols as f32;
+            egui::pos2(layout.grid.left() + cell_w / 2.0, layout.grid.top() + 40.0)
+        };
+        // 二级展开后指针留在触发行（菜单不随指针离开关闭）
+        let at = if mode == "tile-sub" && frames >= 58 {
+            egui::pos2(pos.x + 64.0, pos.y + 125.0)
+        } else {
+            pos
+        };
+        if frames.is_multiple_of(20) || (44..=60).contains(&frames) {
+            eprintln!("[shot-menu] frames={frames} mode={mode} at={at:?}");
+        }
+        let mut events = vec![egui::Event::PointerMoved(at)];
+        if frames == 44 || frames == 45 {
+            events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed: frames == 44,
+                modifiers: Default::default(),
+            });
+        }
+        let options = ctx.options(|o| o.clone());
+        ctx.input_mut(|i| {
+            let raw = egui::RawInput {
+                events,
+                ..i.raw.clone()
+            };
+            let next = i
+                .clone()
+                .begin_pass(raw, true, i.pixels_per_point, &options);
+            *i = next;
+        });
     }
 
     /// 音量命令 200ms 防抖（QML volumeDebounce）。
@@ -1201,6 +1320,8 @@ impl eframe::App for PanelApp {
         self.pump_background();
         self.pump_volume_debounce();
         self.pump_probe();
+        self.skin_menus(ctx);
+        self.pump_shot_menu(ctx);
         self.pump_shot(ctx);
 
         // 画布（bg + 六枚色斑）铺满；卡片自管边距（QML x:20 语义）
@@ -1242,6 +1363,36 @@ impl Drop for PanelApp {
     fn drop(&mut self) {
         self.sessions.shutdown();
     }
+}
+
+/// 菜单行高栅格（QML MenuRow/SubmenuRow h32；SubMenuButton 高度取自
+/// interact_size，Button 行由 min_size 拉齐）。DragValue 同拾 32（QML
+/// NumberBox h32）。
+fn menu_row_style(ui: &mut egui::Ui) {
+    ui.style_mut().spacing.interact_size.y = 32.0;
+}
+
+/// 菜单小节头（QML MenuSectionLabel：h20、11px ink2、x4+8 左对齐）。
+pub(crate) fn menu_caption(ui: &mut egui::Ui, t: &Tokens, label: &str) {
+    let prev = ui.spacing().button_padding;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width() - 8.0, 20.0),
+        egui::Sense::hover(),
+    );
+    let pos = egui::pos2(rect.min.x + 12.0, rect.center().y);
+    crate::paint::text_left_at_center(ui.painter(), pos, label, 11.0, t.ink2);
+    ui.spacing_mut().button_padding = prev;
+}
+
+/// 菜单 hairline 分隔（QML：x12 w-24 h9 内 1px 线）。
+pub(crate) fn menu_hairline(ui: &mut egui::Ui, t: &Tokens) {
+    let w = ui.available_width() - 8.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 9.0), egui::Sense::hover());
+    let line = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 12.0, rect.min.y + 4.0),
+        egui::vec2(w - 24.0, 1.0),
+    );
+    ui.painter().rect_filled(line, 0, t.hairline_on_card);
 }
 
 #[cfg(test)]
