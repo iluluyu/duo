@@ -235,3 +235,11 @@ duo/                       # 仓库根（不变）
   固定 `%USERPROFILE%\.local\share\duo\tools`；全面防文件锁；消除 WSL 用户硬编码；
   Python 打包与 Rust 打包脚本解耦重命名。
 - 2026-09-17：面板细节打磨与投屏修复——设备镜像卡按钮交互层级与 Mirror 模式默认参数修正（杜绝错误拉起虚拟屏）；右键菜单挂载亚克力投影与半透明底；顶部胶囊锚点动态化；运行卡动态高度让位与悬浮阻断（解决应用开启时网格重叠跳动）；lib 载入 duo.png 图标并开启窗口透明度；G2 squircle 描边抗锯齿与磁贴坐标物理像素取整，消除高 DPI 下模糊。
+- 2026-09-18：玻璃 §8 增益链移植到 C# 上巴/下巴（chrome_overlay.cs
+  `BakeGlassPlate`，§8.6 完成态）+ **亮色单位档新增**（地板 0.66/天花
+  0.975：墨字 ≥4.5:1 构造性保证、平画布落点 251 锚 QML；右键菜单亮色档
+  同步生效——glass.rs `main_params(false)` 与 C# `GlassUnit.Light()` 同
+  源）。胶囊/下巴不透明板化；vibrancy 矩阵/顶光渐变/活底 alpha 退役；σ8
+  固定 device px 与面板同屏 parity（不乘 Dpi）。WSLg wgpu(dzn) 本会话不
+  可用，对拍改走 glass.rs PNG probe（`DUO_GLASS_PROBE=1 cargo test`）+
+  csc 真编译门禁；右键菜单全 UI 出图与真机观感验收挂 TODO.md 待实测。

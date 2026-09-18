@@ -8,7 +8,7 @@ pub(crate) const SNAPSHOT_MARGIN: f32 = 56.0;
 /// 蒙版圆角（逻辑 px，QML MenuGlassPlate radius 12）。
 pub(crate) const MASK_RADIUS: f32 = 12.0;
 
-/// 高光滚降软膝半宽（gamma 空间）：±13 级过渡带，C¹ 连续消 banding。
+/// 高光/阴影软膝半宽（gamma 空间）：±13 级过渡带，C¹ 连续消 banding。
 const HIGHLIGHT_KNEE: f32 = 0.05;
 
 /// 把逻辑矩形各边量化到设备像素网格（ppp 可为小数，如 1.25）：不量化时
@@ -45,36 +45,59 @@ pub(crate) struct GlassParams {
     pub(crate) tint: Option<(Color32, f32)>,
     pub(crate) highlight_ceiling: Option<f32>,
     pub(crate) highlight_slope: f32,
+    /// 阴影地板（亮色档护墨字）：暗底内容向 floor 收拢，墨字对比
+    /// 构造性保证（暗色档天花膝的镜像）。
+    pub(crate) shadow_floor: Option<f32>,
+    pub(crate) shadow_slope: f32,
     /// 纵向光泽渐变（顶 +sheen、底 −sheen，Liquid Glass/ColorOS 光感）。
     pub(crate) sheen: f32,
 }
 
+const DARK_SHEEN: f32 = 0.045;
+
+fn dark_unit(sigma: f32, bright: f32, cont: f32, ceiling: Option<f32>, slope: f32) -> GlassParams {
+    GlassParams {
+        sigma,
+        brightness: bright,
+        contrast: cont,
+        pivot: 0.11,
+        saturation: 1.65,
+        tint: None,
+        highlight_ceiling: ceiling,
+        highlight_slope: slope,
+        shadow_floor: None,
+        shadow_slope: 0.0,
+        sheen: DARK_SHEEN,
+    }
+}
+
 pub(crate) fn main_params(is_dark: bool) -> GlassParams {
     if !is_dark {
-        return GlassParams {
-            sigma: 6.5,
-            brightness: 0.02,
-            contrast: 0.06,
-            pivot: 0.5,
-            saturation: 1.45,
-            tint: None,
-            highlight_ceiling: None,
-            highlight_slope: 0.35,
-            sheen: 0.0,
+        return match std::env::var("DUO_GLASS_UNIT_LIGHT").as_deref() {
+            Ok("0") => GlassParams {
+                // 旧亮色配方对照：无膝无 sheen
+                sigma: 6.5,
+                brightness: 0.02,
+                contrast: 0.06,
+                pivot: 0.5,
+                saturation: 1.45,
+                tint: None,
+                highlight_ceiling: None,
+                highlight_slope: 0.35,
+                shadow_floor: None,
+                shadow_slope: 0.0,
+                sheen: 0.0,
+            },
+            Ok("1") => light_unit(0.62, 0.15, None, 0.0),
+            Ok("2") => light_unit(0.66, 0.15, Some((0.96, 0.30)), 0.0),
+            Ok("4") => light_unit(0.72, 0.12, Some((0.975, 0.35)), 0.0),
+            // sheen 0.02：0.045 会让顶行 251×1.045 钔白 7 级、底行 240
+            // 跌破底板；0.02 顶行仅 1 级钳位、底行 246 仍亮于底板（agy 裁决）
+            _ => light_unit(0.66, 0.15, Some((0.975, 0.35)), 0.02),
         };
     }
     match std::env::var("DUO_GLASS_UNIT").as_deref() {
-        Ok("0") => GlassParams {
-            sigma: 8.0,
-            brightness: 0.025,
-            contrast: 0.04,
-            pivot: 0.11,
-            saturation: 1.65,
-            tint: None,
-            highlight_ceiling: None,
-            highlight_slope: 0.35,
-            sheen: 0.045,
-        },
+        Ok("0") => dark_unit(8.0, 0.025, 0.04, None, 0.35),
         Ok("1") => GlassParams {
             sigma: 8.0,
             brightness: 0.02,
@@ -84,46 +107,39 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             tint: Some((Color32::from_rgb(36, 36, 40), 0.04)),
             highlight_ceiling: Some(0.42),
             highlight_slope: 0.12,
-            sheen: 0.045,
+            shadow_floor: None,
+            shadow_slope: 0.0,
+            sheen: DARK_SHEEN,
         },
-        Ok("2") => GlassParams {
-            sigma: 8.0,
-            brightness: 0.025,
-            contrast: 0.04,
-            pivot: 0.11,
-            saturation: 1.65,
-            tint: None,
-            highlight_ceiling: Some(0.36),
-            highlight_slope: 0.12,
-            sheen: 0.045,
-        },
-        Ok("4") => GlassParams {
-            sigma: 8.0,
-            brightness: 0.035,
-            contrast: 0.03,
-            pivot: 0.11,
-            saturation: 1.60,
-            tint: None,
-            highlight_ceiling: Some(0.44),
-            highlight_slope: 0.10,
-            sheen: 0.045,
-        },
-        _ => GlassParams {
-            // 候选 3（默认）：只拦 >102 级高光顶端（白底 ≤128 级 ≈4:1），
-            // 重模糊+彩度回注消雾蒙蒙（Apple/ColorOS 理念，见配方 §8）
-            sigma: 8.0,
-            brightness: 0.025,
-            contrast: 0.04,
-            pivot: 0.11,
-            saturation: 1.65,
-            tint: None,
-            highlight_ceiling: Some(0.40),
-            highlight_slope: 0.15,
-            sheen: 0.045,
-        },
+        Ok("2") => dark_unit(8.0, 0.025, 0.04, Some(0.36), 0.12),
+        Ok("4") => dark_unit(8.0, 0.035, 0.03, Some(0.44), 0.10),
+        _ => dark_unit(8.0, 0.025, 0.04, Some(0.40), 0.15),
     }
 }
 
+/// 亮色单位档（§8.4 亮表）：pivot 0.5、×1.45、sheen 同暗档；地板护墨
+/// 字（#1D1D1F ≥4.5:1 构造性保证），天花抗冲白并把平画布落点压回
+/// QML 假玻璃锚点 (250,250,252) 邻域。
+fn light_unit(
+    floor: f32,
+    floor_slope: f32,
+    ceiling: Option<(f32, f32)>,
+    sheen: f32,
+) -> GlassParams {
+    GlassParams {
+        sigma: 8.0,
+        brightness: 0.02,
+        contrast: 0.06,
+        pivot: 0.5,
+        saturation: 1.45,
+        tint: None,
+        highlight_ceiling: ceiling.map(|(c, _)| c),
+        highlight_slope: ceiling.map(|(_, s)| s).unwrap_or(0.35),
+        shadow_floor: Some(floor),
+        shadow_slope: floor_slope,
+        sheen,
+    }
+}
 
 /// 从全窗设备像素快照裁出菜单区域（含边距），模糊 + 增益 + 蒙版后上传
 /// 贴图。返回（贴图，屏幕矩形 = 贴图覆盖区域）。裁剪退化时返回 None。
@@ -228,8 +244,8 @@ fn sd_rounded_rect(px: f32, py: f32, half_w: f32, half_h: f32, r: f32) -> f32 {
     outside + qx.max(qy).min(0.0) - r
 }
 
-/// 高光软膝（三次 Hermite）：拐点两侧值与斜率双连续，保证单调无 banding；
-/// 膝外输出与硬拐点公式完全一致（尾线斜率同 slope）。
+/// 高光天花软膝（三次 Hermite）：拐点两侧值与斜率双连续，保证单调无
+/// banding；膝外输出与硬拐点公式完全一致（尾线斜率同 slope）。
 fn highlight_soft_knee(l: f32, ceiling: f32, slope: f32, half: f32) -> f32 {
     let a = ceiling - half;
     let b = ceiling + half;
@@ -250,6 +266,28 @@ fn highlight_soft_knee(l: f32, ceiling: f32, slope: f32, half: f32) -> f32 {
     h00 * a + h10 * (b - a) + h01 * r_b + h11 * (b - a) * slope
 }
 
+/// 阴影地板软膝（天花膝的镜像）：暗底向 floor 收拢，尾线斜率同 slope，
+/// 膝上回归恒等；值+斜率双连续同 highlight_soft_knee。
+fn shadow_soft_knee(l: f32, floor: f32, slope: f32, half: f32) -> f32 {
+    let a = floor - half;
+    let b = floor + half;
+    if l >= b {
+        return l;
+    }
+    if l <= a {
+        return floor - (floor - l) * slope;
+    }
+    let l_a = floor - (floor - a) * slope;
+    let x = (l - a) / (b - a);
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let h00 = 2.0 * x3 - 3.0 * x2 + 1.0;
+    let h10 = x3 - 2.0 * x2 + x;
+    let h01 = -2.0 * x3 + 3.0 * x2;
+    let h11 = x3 - x2;
+    h00 * l_a + h10 * (b - a) * slope + h01 * b + h11 * (b - a)
+}
+
 /// QML MultiEffect 光学增益的线性近似：brightness 加、contrast 绕 0.5
 /// 光学增益与暗色压暗 tint 处理。
 fn apply_gains(buf: &mut [f32], params: &GlassParams) {
@@ -257,7 +295,11 @@ fn apply_gains(buf: &mut [f32], params: &GlassParams) {
     for px in buf.chunks_exact_mut(3) {
         for c in px.iter_mut() {
             let delta = *c - params.pivot;
-            let expanded = if delta > 0.0 { delta * contrast_k } else { delta };
+            let expanded = if delta > 0.0 {
+                delta * contrast_k
+            } else {
+                delta
+            };
             *c = expanded + params.pivot + params.brightness;
         }
         let luma = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
@@ -267,7 +309,18 @@ fn apply_gains(buf: &mut [f32], params: &GlassParams) {
         if let Some(ceiling) = params.highlight_ceiling {
             let cur_luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
             if cur_luma > ceiling - HIGHLIGHT_KNEE {
-                let out = highlight_soft_knee(cur_luma, ceiling, params.highlight_slope, HIGHLIGHT_KNEE);
+                let out =
+                    highlight_soft_knee(cur_luma, ceiling, params.highlight_slope, HIGHLIGHT_KNEE);
+                let scale = out / cur_luma;
+                for c in px.iter_mut() {
+                    *c *= scale;
+                }
+            }
+        }
+        if let Some(floor) = params.shadow_floor {
+            let cur_luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
+            if cur_luma < floor + HIGHLIGHT_KNEE {
+                let out = shadow_soft_knee(cur_luma, floor, params.shadow_slope, HIGHLIGHT_KNEE);
                 let scale = out / cur_luma;
                 for c in px.iter_mut() {
                     *c *= scale;
@@ -431,6 +484,8 @@ mod tests {
                 tint: None,
                 highlight_ceiling: None,
                 highlight_slope: 0.35,
+                shadow_floor: None,
+                shadow_slope: 0.0,
                 sheen: 0.0,
             },
         );
@@ -447,6 +502,8 @@ mod tests {
                 tint: None,
                 highlight_ceiling: None,
                 highlight_slope: 0.35,
+                shadow_floor: None,
+                shadow_slope: 0.0,
                 sheen: 0.0,
             },
         );
@@ -458,11 +515,17 @@ mod tests {
 
         let mut bright = vec![0.9_f32; 3];
         apply_gains(&mut bright, &main_params(true));
-        assert!(bright[0] <= 0.52, "暗色模式高光图标应被滚降收进可读带（≤~132 级）");
+        assert!(
+            bright[0] <= 0.52,
+            "暗色模式高光图标应被滚降收进可读带（≤~132 级）"
+        );
 
         let mut white_bg = vec![1.0_f32; 3];
         apply_gains(&mut white_bg, &main_params(true));
-        assert!(white_bg[0] <= 0.52 && white_bg[0] >= 0.46, "纯白亮底压至 ≈128 级（≈4:1），非死灰板");
+        assert!(
+            white_bg[0] <= 0.52 && white_bg[0] >= 0.46,
+            "纯白亮底压至 ≈128 级（≈4:1），非死灰板"
+        );
 
         let mut mid = vec![0.5_f32; 3];
         apply_gains(&mut mid, &main_params(true));
@@ -480,6 +543,218 @@ mod tests {
             apply_gains(&mut px, &params);
             assert!(px[0] > prev, "膝部输出应单调递增 @{l:.3}");
             prev = px[0];
+        }
+    }
+
+    /// sRGB 通道值 → 线性光（WCAG 相对亮度定义）。
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// 墨字（亮主题 #1D1D1F）在玻璃输出亮度 L 上的 WCAG 对比度。
+    fn ink_contrast(l: f32) -> f32 {
+        let glass =
+            0.2126 * srgb_to_linear(l) + 0.7152 * srgb_to_linear(l) + 0.0722 * srgb_to_linear(l);
+        let ink = (29.0 * 0.2126 + 29.0 * 0.7152 + 31.0 * 0.0722) / 255.0;
+        let ink_lin = srgb_to_linear(ink);
+        let (hi, lo) = if glass > ink_lin {
+            (glass, ink_lin)
+        } else {
+            (ink_lin, glass)
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn light_unit_floors_dark_backdrops_for_ink() {
+        // 亮色档构造性保证：黑/深底透上来不再成「脏黑斑」，墨字 ≥4.5:1
+        for (name, l) in [("black", 0.0_f32), ("deep", 0.1), ("mid", 0.5)] {
+            let mut px = vec![l; 3];
+            apply_gains(&mut px, &main_params(false));
+            assert!(
+                px[0] >= 0.54,
+                "{name} 底应抬进地板带（≥138 级），实得 {}",
+                px[0] * 255.0
+            );
+            assert!(
+                ink_contrast(px[0]) >= 4.5,
+                "{name} 底墨字对比不足：{:.2}:1",
+                ink_contrast(px[0])
+            );
+        }
+    }
+
+    #[test]
+    fn light_unit_keeps_flat_canvas_anchor_and_caps_wash() {
+        // 平画布 #F5F5F7 落点 ≈ QML 假玻璃锚点 (250,250,252)：玻璃仍亮于
+        // 底板，且不再把 B 通道硬钳到白；纯白与亮彩顶端同样收进 ≤255。
+        let mut flat = vec![245.0 / 255.0, 245.0 / 255.0, 247.0 / 255.0];
+        apply_gains(&mut flat, &main_params(false));
+        assert!(
+            (flat[0] * 255.0 - 251.0).abs() <= 2.0,
+            "平画布落点偏离锚点：{}",
+            flat[0] * 255.0
+        );
+        assert!(flat[2] < 0.999, "B 通道不应硬钳白：{}", flat[2] * 255.0);
+        let mut white = vec![1.0_f32; 3];
+        apply_gains(&mut white, &main_params(false));
+        assert!(white[0] <= 1.0, "纯白不溢出");
+    }
+
+    #[test]
+    fn shadow_knee_blends_smoothly_and_continuous() {
+        // 地板膝过渡带单调，且膝点两侧值连续（C¹ 由构造保证，此处验值）
+        let (floor, slope, half) = (0.66_f32, 0.15_f32, HIGHLIGHT_KNEE);
+        let a = floor - half;
+        let b = floor + half;
+        let tail = shadow_soft_knee(a - 1e-4, floor, slope, half);
+        let knee = shadow_soft_knee(a + 1e-4, floor, slope, half);
+        assert!((tail - knee).abs() < 1e-3, "膝下沿值连续 {tail} vs {knee}");
+        let t2 = shadow_soft_knee(b + 1e-4, floor, slope, half);
+        assert!((t2 - (b + 1e-4)).abs() < 1e-3, "膝上沿回归恒等");
+        let mut prev = 0.0_f32;
+        for i in 0..80 {
+            let l = i as f32 * 0.01;
+            let out = shadow_soft_knee(l, floor, slope, half);
+            assert!(out > prev, "地板膝应单调递增 @{l:.2}");
+            prev = out;
+        }
+    }
+
+    /// 出图 probe（DUO_GLASS_PROBE=1 cargo test probe_dump_units）：
+    /// 暗色/亮色默认档对合成背景（平画布 + 色斑 + 黑白灰验垫）各烘
+    /// 一块菜单玻璃并合成落盘 /tmp/glass_probe/，供参数目验。
+    /// 原理与 build_texture 同链（blur→gains→sheen+蒙版），无 GPU。
+    #[test]
+    fn probe_dump_units() {
+        if std::env::var_os("DUO_GLASS_PROBE").is_none() {
+            return;
+        }
+        let (bw, bh) = (420usize, 300usize);
+        let mut bg = vec![0.0_f32; bw * bh * 3];
+        for row in 0..bh {
+            for col in 0..bw {
+                let i = (row * bw + col) * 3;
+                let v = 245.0 / 255.0;
+                bg[i] = v;
+                bg[i + 1] = v;
+                bg[i + 2] = 247.0 / 255.0;
+            }
+        }
+        // 色斑（蓝左上 / 绿右下，同心三层近似）+ 验垫带（黑/白/灰/棋盘）
+        paint_spot(&mut bg, bw, bh, 0.22, 0.24, 130.0, [0.40, 0.70, 1.00]);
+        paint_spot(&mut bg, bw, bh, 0.78, 0.72, 120.0, [0.30, 0.90, 0.55]);
+        for row in 220..260 {
+            for col in 12..bw - 12 {
+                let band = col / 52;
+                let v = match band {
+                    0 => 0.0,
+                    1 => 1.0,
+                    2 => 0.5,
+                    _ => {
+                        if (col / 4) % 2 == 0 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
+                let i = (row * bw + col) * 3;
+                bg[i] = v;
+                bg[i + 1] = v;
+                bg[i + 2] = v;
+            }
+        }
+        let _ = std::fs::create_dir_all("/tmp/glass_probe");
+        for (name, params) in [("dark", main_params(true)), ("light", main_params(false))] {
+            // 菜单矩形 (40,8)-(240,276) 外扩 56 裁剪 → blur → gains
+            let (mx0, my0, mx1, my1) = (40.0_f32, 8.0_f32, 240.0_f32, 276.0_f32);
+            let (cx0, cy0) = (
+                (mx0 - 56.0).max(0.0) as usize,
+                (my0 - 56.0).max(0.0) as usize,
+            );
+            let (cx1, cy1) = (
+                (mx1 + 56.0).min(bw as f32) as usize,
+                (my1 + 56.0).min(bh as f32) as usize,
+            );
+            let (w, h) = (cx1 - cx0, cy1 - cy0);
+            let mut buf = vec![0.0_f32; w * h * 3];
+            for row in 0..h {
+                for col in 0..w {
+                    let src = ((cy0 + row) * bw + cx0 + col) * 3;
+                    let dst = (row * w + col) * 3;
+                    buf[dst..dst + 3].copy_from_slice(&bg[src..src + 3]);
+                }
+            }
+            for r in boxes_for_gauss(params.sigma, 3) {
+                box_pass(&mut buf, w, h, r, true);
+                box_pass(&mut buf, w, h, r, false);
+            }
+            apply_gains(&mut buf, &params);
+            let mut out = vec![0u8; bw * bh * 3];
+            for row in 0..bh {
+                for col in 0..bw {
+                    let i = (row * bw + col) * 3;
+                    let inside = (col as f32) >= mx0
+                        && (col as f32) < mx1
+                        && (row as f32) >= my0
+                        && (row as f32) < my1;
+                    let (r, g, b2) = if inside {
+                        let grow = row as f32 - my0;
+                        let sheen = 1.0 + params.sheen * (0.5 - grow / (my1 - my0)) * 2.0;
+                        let gc = ((row - cy0) * w + (col - cx0)) * 3;
+                        let c = |v: f32| (v * sheen * 255.0).round().clamp(0.0, 255.0) as u8;
+                        (c(buf[gc]), c(buf[gc + 1]), c(buf[gc + 2]))
+                    } else {
+                        let c = |v: f32| (v * 255.0).round() as u8;
+                        (c(bg[i]), c(bg[i + 1]), c(bg[i + 2]))
+                    };
+                    out[i] = r;
+                    out[i + 1] = g;
+                    out[i + 2] = b2;
+                }
+            }
+            image::save_buffer(
+                format!("/tmp/glass_probe/{name}.png"),
+                &out,
+                bw as u32,
+                bh as u32,
+                image::ColorType::Rgb8,
+            )
+            .unwrap();
+        }
+    }
+
+    /// probe 用：同心三层矩形逼近径向色斑（近似 paint::canvas_spots）。
+    fn paint_spot(
+        bg: &mut [f32],
+        bw: usize,
+        bh: usize,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        rgb: [f32; 3],
+    ) {
+        let (px, py) = (cx * bw as f32, cy * bh as f32);
+        for layer in 0..3 {
+            let r = radius * (1.0 - 0.28 * layer as f32);
+            let alpha = 0.14 - 0.03 * layer as f32;
+            for row in 0..bh {
+                for col in 0..bw {
+                    let d =
+                        ((col as f32 + 0.5 - px).powi(2) + (row as f32 + 0.5 - py).powi(2)).sqrt();
+                    if d < r {
+                        let i = (row * bw + col) * 3;
+                        for c in 0..3 {
+                            bg[i + c] = bg[i + c] * (1.0 - alpha) + rgb[c] * alpha;
+                        }
+                    }
+                }
+            }
         }
     }
 }

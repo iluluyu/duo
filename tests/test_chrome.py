@@ -119,26 +119,24 @@ def test_native_sandwich_flags_and_parsing():
 
 def test_native_sandwich_paint_markers():
         """C1 native CHIN spec values stay (screen-sampled frost, adaptive
-        pill, 32px bar) while the TOP went real-system in C2 (see the
-        caption test below); immersive branches keep their markers.
-        2026-09-12 Opus 统一配方（docs/window-experience.md §11 下巴统一）：
-        真高斯 σ10 DIP + 1:2 预降采样路径；双态矩阵/活底/顶光/干底全部
-        与胶囊同值；亮度判据改原始采样（与胶囊同源）0.50±0.04 迟滞；
-        静止态零描边（去旧常驻 hairline）。"""
+        pill, 32px bar); C2 top stays real-system; immersive branches keep
+        their markers. 玻璃 = §8.6 增益链（glass-recipe.md §8.4 双单位档）。"""
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # Frost chin: BuildChinFrost (1:2 downsample -> Kovesi gaussian ->
-        # 2x bicubic upsample fused with the dual-state vibrancy matrix),
-        # NO flat tint; rest state has NO hairline (capsule family).
-        assert "NewVibrancyMatrix" in text
+        # Frost chin (§8.6 移植): BuildChinFrost -> BakeGlassPlate（3×box
+        # σ8 device px -> 增益链 -> sheen，不透明板）；旧 1:2 预降采样、
+        # vibrancy 矩阵、活底 alpha、顶光渐变全部退役；静止态无 hairline。
+        assert "BakeGlassPlate" in text
         assert "BuildChinFrost" in text
-        assert "private const float FrostSigma = 10.0f;" in text   # chin sigma
-        assert "GaussianBlur(half, FrostSigma * Dpi / 2f)" in text  # 1:2 path
-        assert "FrostSigma * Dpi / 2f" in text
-        assert "_barDark ? 0.90f : 0.98f" in text          # dual-state matrix
-        assert "_barDark ? 0.02f : 0.10f" in text
-        assert "cm.Matrix33 = _barDark ? 0.90f : 0.86f" in text  # true live-bed
-        assert "int topLit = _barDark ? 6 : 20;" in text   # backlight gradient
-        assert "1.2189f" in text and "ColorMatrix" in text
+        assert "GlassSigma = 8f" in text            # σ8 device px, panel parity
+        assert "GaussianBlur(behind, GlassSigma)" in text
+        assert "GlassUnit.Dark()" in text and "GlassUnit.Light()" in text
+        assert "u.Ceiling = 0.40f" in text          # 暗档天花（护白字 ≈4:1）
+        assert "u.CeilingSlope = 0.15f" in text
+        assert "u.Sheen = 0.045f" in text           # 全档共用 sheen
+        assert "dst[di + 3] = 255" in text          # 不透明板
+        assert "FrostSigma" not in text             # 旧 σ 常量退役
+        assert "ColorMatrix" not in text
+        assert "int topLit = _barDark ? 6 : 20;" not in text   # 顶光渐变退役
         assert "CopyFromScreen" in text
         assert "LogicalHeightNative = 32" in text
         # The retired milk tiers must not return: 82%/55% tints, the
@@ -319,59 +317,37 @@ def test_corner_round_matrix_and_chin_corner_ears():
 
 
 def test_immersive_capsule_acrylic_full_band_and_hold_move():
-        """用户反馈三件套 (immersive path only - the native C2 caption is
-        untouched) + 2026-09-10 毛玻璃化（gemini-3.8-flash 设计 ×
-        claude-opus 裁决，docs/window-experience.md §11 毛玻璃化）：
-
-        1. the hover capsule is TRUE frosted glass: overscanned backdrop
-           sample (capsule + 3-sigma margin) -> Gaussian frost (3x box,
-           sigma 8 DIP) -> 1:1 core blit through the vibrancy ColorMatrix
-           (sat x1.45, scale 0.90, lift +0.07, BT.709) - NO flat white tint
-           (user verdict: 55% 白仍判"很白、不是毛玻璃")；dry base = neutral
-           dark glass #1C1C1E @92% (opus: "glass at rest", never milk);
-           ink/rim/hover adaptive by sampled luminance (0.50 ± 0.04
-           hysteresis); close hover keeps #E81123 + 白 ✕；
-           2026-09-10 矩形伪影根因：1/8 重采样模糊仅 ~9px 坡，采样内
-           容的直边（等比适配视频的 letterbox 边界）以近乎全锐度存活
-           = "矩形色阶断层"；且采样落地不重绘 = 边框冻结波似 UI。修复
-           = 真高斯 + overscan + 1:1 直贴 + 采样即重绘。
-2. the caption move band spans the FULL top band (the old
-           central-half split is gone) - press+drag anywhere moves;
-        3. press-and-hold 250ms on the band (non-button area) enters
-           move-follow via the EXISTING move engine (BeginMoveAt).
-        """
+        """沉浸胶囊 = §8 增益链真毛玻璃（glass-recipe.md §8.6：overscan
+        采样 → 3×box σ8 → 双单位档 → sheen，不透明板；干底 #1C1C1E@92%；
+        字形/rim/hover 随采样亮度自适应，0.50±0.04 迟滞）+ 全带拖动 +
+        250ms 按住跟随移动（复用 BeginMoveAt 引擎）。"""
         text = chrome.OVERLAY_SOURCE.read_text(encoding="utf-8-sig")
-        # 1) capsule true-frost base plate: overscanned sample -> 3x box
-        #    Gaussian (sigma 8 DIP) -> 1:1 core blit through the vibrancy
-        #    matrix. The GDI+ lift lives in the FIFTH COLUMN
-        #    (Matrix04/14/24) - the Android fifth-row convention is wrong
-        #    here (Opus delivered it row-wise; transposed on adoption).
+        # 1) capsule true-frost base plate (§8.6 移植): overscanned sample
+        #    -> BakeGlassPlate（3×box σ8 device px -> 暗/亮单位档增益链 ->
+        #    sheen）；旧 vibrancy 矩阵/活底 alpha/顶光渐变不得回流。
         assert "DrawCapsuleAcrylic" in text
-        assert "cm.Matrix40 = lift; cm.Matrix41 = lift; cm.Matrix42 = lift" in text
-        assert "_capsuleDark ? 0.90f : 0.98f" in text   # bright near-white stays clean
-        assert "_capsuleDark ? 0.02f : 0.10f" in text   # bright readability without milkiness
-        assert "_capsuleDark ? 6 : 20;" in text         # backlight gradient dual-state
-        assert "FrostSigma = 6.0f" in text                   # visible blur, same in both states
-        assert "GaussianBlur(behind, FrostSigma * Dpi)" in text
-        assert "DarkGlassAlpha = 0.90f" in text
-        assert "BrightGlassAlpha = 0.86f" in text            # bright = 14% live bleed
+        assert "BakeGlassPlate(behind, core, _capsuleDark)" in text
+        assert "GlassUnit.Dark()" in text and "GlassUnit.Light()" in text
+        assert "u.Floor = 0.66f" in text            # 亮档地板（护墨字 ≥4.5:1）
+        assert "u.Ceiling = 0.975f" in text         # 亮档天花（抗冲白，锚点 ≈251）
+        assert "ShadowKnee" in text and "HighlightKnee" in text
+        assert "dst[di + 3] = 255" in text          # 不透明板
+        assert "FrostSigma" not in text
+        assert "DarkGlassAlpha" not in text
+        assert "BrightGlassAlpha" not in text
+        assert "1.2189f" not in text
+        assert "LinearGradientBrush" not in text    # 顶光渐变退役（sheen 内置）
         assert "if (_frost != null)\n                g.DrawImage(_frost" in text
         assert "Bitmap box = DownscaleNx(hi, Ss)" in text  # N-box: kills ringing; Ss=3
         assert "PushLayered(bmp, true);" in text   # premultiplied path (no double-premultiply)
         assert "|| _topPinned;" in text            # pin = 常驻: engaged while window visible
-        assert "1.2189f" in text                      # s=1.45 x k=0.90
-        # 2026-09-10 矩形伪影修复：真高斯（Kovesi 3x box，sigma 8 DIP）
-        #   + overscan（capsule + 3σ，模糊核永不触采样纹理边界）+
-        #   可见内容零重采样（core 1:1 直贴）+ 采样落地即重绘。
+        # 2026-09-10 矩形伪影修复：真高斯（Kovesi 3x box）+ overscan（胶囊
+        # + 3σ，模糊核永不触采样纹理边界）+ 零重采样 + 采样落地即重绘。
         assert "GaussianBlur" in text and "BoxesForGauss" in text
-        assert "FrostSigma = 6.0f" in text  # visual balance, same radius in both states
         assert "FrostMargin" in text
         assert "_top.FrostMargin, _top.FrostMargin" in text   # overscan crop
-        assert "DarkGlassAlpha = 0.90f" in text
-        assert "BrightGlassAlpha = 0.86f" in text  # 14% live bleed
         assert "Supersample = true;" in text     # 2x supersampled ghost render: pin-rim AA
         assert "MaskSurface(hi);" in text  # mask at supersampled res
-        assert "LinearGradientBrush" in text     # 顶光渐变: dark-backdrop glass luminance structure
         assert "if (IsHandleCreated) Render();" in text   # re-render on every sample
         assert "FromArgb(235, 28, 28, 30)" in text     # dry: dark glass @92% (opus)
         # 2026-09-10 边缘净化（真机反馈"边缘一层灰影"）：① rim 内缩只画在
