@@ -3212,6 +3212,11 @@ namespace DuoChrome
         // Texture（窗口先动、显示后到）不再设置（Win+左右 snap 被弹回的
         // 根因修复）。
         private int _videoChangedAt;
+        // 启动/换尺寸贴比武装（TickCount 死线；0 = 空闲）：Texture 落地时
+        // 由日志尾线程武装，UI 泵到点后做一次 ConvergeToVideoAspect。
+        // 旧路径只靠「外部矩形变化 + 稳定 350ms」触发收敛，而启动后矩形
+        // 不再变化——镜像/固定窗初开的 letterbox 只能靠手动拖拽消除。
+        private int _fitAt;
         private Thread _logThread;
         private volatile bool _disposed;
 
@@ -3796,6 +3801,24 @@ namespace DuoChrome
 
         // ---- aspect convergence (external changes, rotation, maximize) ----
 
+        /// <summary>One-shot aspect fit armed by the log tailer when a
+        /// video size lands. Bypasses the 500 ms post-change throttle (the
+        /// fit is deliberate, not a change echo) and fires early (+200 ms)
+        /// so the reshape happens while scrcpy is still painting its first
+        /// black frames instead of flashing on top of live video.
+        /// Abandoned if the user is already driving the window;
+        /// already-fitting windows no-op via the tolerance check inside
+        /// ConvergeToVideoAspect.</summary>
+        private void FitWhenArmed(Rectangle wr)
+        {
+            if (_fitAt == 0) return;
+            if (_resizing || _moving || _fakedMax) { _fitAt = 0; return; }
+            // 减法式比较：TickCount 回绕安全（与 _videoChangedAt 各处同构）
+            if (Environment.TickCount - _fitAt < 0) return;
+            _fitAt = 0;
+            if (RatioLock) ConvergeToVideoAspect(wr, true);
+        }
+
         /// <summary>Watch for window-rect changes we did not cause (window
         /// managers, scrcpy's own rotation re-layout, native maximize). Once
         /// the rect has been stable for SettleMs, ratio-locked windows are
@@ -3829,9 +3852,14 @@ namespace DuoChrome
         /// size change while scrcpy may still be re-laying out itself.</summary>
         private void ConvergeToVideoAspect(Rectangle wr)
         {
+            ConvergeToVideoAspect(wr, false);
+        }
+
+        private void ConvergeToVideoAspect(Rectangle wr, bool bypassThrottle)
+        {
             double a = VideoAspect();
             if (a <= 0) return;
-            if (Environment.TickCount - _videoChangedAt < 500) return;
+            if (!bypassThrottle && Environment.TickCount - _videoChangedAt < 500) return;
             Rectangle client = ClientRect();
             int cxL = client.Left - wr.Left;
             int cxT = client.Top - wr.Top;
@@ -4091,6 +4119,9 @@ namespace DuoChrome
             if (w == _videoW && h == _videoH) return;
             _videoW = w;
             _videoH = h;
+            // 首个/新尺寸 Texture：600ms 后把窗口贴到真实视频比例（含
+            // 镜像无 argv 种子的首尺寸；回声型 Texture 贴比容差内为空操作）
+            _fitAt = Environment.TickCount + 200;
             // 2026-09-09 钉扎武装判定（Win+左右 snap 被弹回的根因修复，
             // 见 EnforceFlexPin）：flex 的 Texture 大多是“显示跟随窗口”的
             // 回声（窗口先动、显示后到，视频比例 ≈ 当前客户区比例），它
@@ -4335,6 +4366,7 @@ namespace DuoChrome
             // region must settle even when the cursor is away, and the
             // aspect convergence must see external changes while idle.
             TrackExternalChange(wr);
+            FitWhenArmed(wr);      // startup/texture-change aspect fit
             ApplyCornerRegion();   // per-tick: settles the deferred region
             if (!engaged)
             {
