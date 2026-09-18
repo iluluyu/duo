@@ -78,6 +78,9 @@ pub struct Tokens {
     pub capsule_border: Color32,
     /// 选中段（不透明：亮纯白 / 暗 #48484A）。
     pub segment_fill: Color32,
+    /// 分段轨道底（2026-09-19 修订：亮色 iOS systemGray 填充 16%，
+    /// 灰轨道对白拇指形成对比；暗色 = 白 10% 即卡色）。
+    pub segment_track: Color32,
     /// 搜索胶囊（searchFill；暗色本就不透明 #28282A）。
     pub search: Color32,
     /// 搜索聚焦态（flyoutFill over bg）。
@@ -142,6 +145,7 @@ impl Tokens {
             capsule_hover: over(capsule, white, 0.06),
             capsule_border: over(capsule, white, 0.16),
             segment_fill: hex("#48484A"),
+            segment_track: over(bg, white, 0.10),
             search: hex("#28282A"),
             search_focus: capsule,
             menu_fill: hex("#2C2C2E"),
@@ -197,6 +201,7 @@ impl Tokens {
             capsule_hover: over(capsule, hex("#000000"), 0.04),
             capsule_border: over(capsule, white, 0.65),
             segment_fill: white,
+            segment_track: over(bg, hex("#787880"), 0.16),
             search: over(bg, white, 0.72),
             search_focus: capsule,
             menu_fill: hex("#F7F7F9"),

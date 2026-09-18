@@ -1510,57 +1510,68 @@ impl PanelApp {
         });
     }
 
-    /// 顶栏胶囊分段导航：底胶囊手绘，两段用 ui.put 子区放按钮——文字
-    /// 布局交给 egui，不做任何手工坐标（旧版手工居中有漂移 bug）。
-    /// 顶栏胶囊（Main.qml topCapsule 通栏；页面之上常驻）。
+    /// 顶栏分段导航（2026-09-19 修订，学 iOS UISegmentedControl /
+    /// COLOROS 17 分段控件）：紧凑居中胶囊轨道（不再通栏对半），拇指
+    /// 滑动动画 + 轻投影，亮色 = 灰轨道 vs 纯白拇指的强对比（旧版
+    /// 白上白零对比）。段内文字交给 egui 居中，坐标仅定段矩形。
     fn top_capsule(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         let full = ui.max_rect();
+        let cap_w = 232.0_f32.min(full.width() - 40.0).max(0.0);
         let rect = egui::Rect::from_min_size(
-            egui::pos2(full.left() + 20.0, full.top() + 16.0),
-            Vec2::new(full.width() - 40.0, 32.0),
+            egui::pos2(full.center().x - cap_w / 2.0, full.top() + 16.0),
+            Vec2::new(cap_w, 32.0),
         );
         ui.allocate_rect(rect, Sense::hover());
-        let cap_bg = if self.settings.draft.glass_enabled {
+        let is_dark = t.kind == ThemeKind::Dark;
+        let track = if self.settings.draft.glass_enabled {
             egui::Color32::from_rgba_unmultiplied(
-                t.capsule.r(),
-                t.capsule.g(),
-                t.capsule.b(),
-                if t.kind == ThemeKind::Dark { 200 } else { 220 },
+                t.segment_track.r(),
+                t.segment_track.g(),
+                t.segment_track.b(),
+                if is_dark { 200 } else { 220 },
             )
         } else {
-            t.capsule
+            t.segment_track
+        };
+        crate::paint::rounded_fill(ui.painter(), rect, 16.0, track);
+        let seg_w = ((rect.width() - 8.0) / 2.0).floor();
+        let target_x = if self.page == Page::Home {
+            rect.left() + 4.0
+        } else {
+            rect.right() - 4.0 - seg_w
+        };
+        let x = ui
+            .ctx()
+            .animate_value_with_time(egui::Id::new("duo-tab-thumb"), target_x, 0.18);
+        let thumb = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top() + 4.0),
+            Vec2::new(seg_w, 24.0),
+        );
+        let thumb_shadow = egui::Shadow {
+            offset: [0, 1],
+            blur: 3,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(if is_dark { 90 } else { 34 }),
         };
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(16), cap_bg);
-        ui.painter().rect_stroke(
-            rect,
-            egui::CornerRadius::same(16),
-            egui::Stroke::new(1.0_f32, t.card_border),
-            egui::StrokeKind::Inside,
-        );
+            .add(thumb_shadow.as_shape(thumb, egui::CornerRadius::same(12)));
+        crate::paint::rounded_fill(ui.painter(), thumb, 12.0, t.segment_fill);
         let mut clicked = None;
-        let seg_w = ((rect.width() - 8.0) / 2.0).floor();
         for (i, (page, label)) in [(Page::Home, "首页"), (Page::Settings, "设置")]
             .into_iter()
             .enumerate()
         {
             let seg_x = if i == 0 {
-                rect.left() + 2.0
+                rect.left() + 4.0
             } else {
-                rect.right() - 2.0 - seg_w
+                rect.right() - 4.0 - seg_w
             };
-            let seg = egui::Rect::from_min_size(
-                egui::pos2(seg_x, rect.top() + 2.0),
-                Vec2::new(seg_w, 28.0),
-            );
+            let seg = egui::Rect::from_min_size(egui::pos2(seg_x, rect.top() + 4.0), Vec2::new(seg_w, 24.0));
             let selected = self.page == page;
-            if selected {
-                crate::paint::rounded_fill(ui.painter(), seg, 14.0, t.segment_fill);
-            }
             let resp = ui.allocate_rect(seg, Sense::click());
             if !selected && resp.hovered() {
-                crate::paint::rounded_fill(ui.painter(), seg, 14.0, t.capsule_hover);
+                crate::paint::rounded_fill(ui.painter(), seg, 12.0, t.capsule_hover);
             }
             crate::paint::text_centered(
                 ui.painter(),

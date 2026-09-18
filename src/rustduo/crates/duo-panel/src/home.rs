@@ -454,7 +454,7 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
     }
 }
 
-/// 图标：真图标（sweep 缓存/预设 SVG）优先，空则 G2 squircle + 首字白字
+/// 图标：真图标（sweep 缓存/预设）优先，空则 G2 squircle + 首字白字
 /// （Main.qml AppGlyph；fallback 色 = 包名 charCode 和 % 12）。
 fn paint_glyph(
     app: &PanelApp,
@@ -465,6 +465,40 @@ fn paint_glyph(
     _size: f32,
     alpha: f32,
 ) {
+    // 目录预设（品牌渐变 squircle + 叠字）矢量直绘：不再走 SVG 240px
+    // 光栅 → LINEAR 缩到显示尺寸的采样路径（四周锯齿的根因，2026-09-19）。
+    // 仅当 entry.icon 就是预设 SVG（真图标 PNG 未描到时）才适用。
+    let preset_svg = matches!(&entry.icon, Some(p) if p.to_string_lossy().contains("presets"));
+    if preset_svg {
+        if let Some(preset) = duo_core::catalog::catalog_by_package(&entry.package) {
+            let bottom = mul_alpha(crate::theme::hex(preset.color), alpha);
+            let top = mul_alpha(
+                crate::theme::hex(&duo_core::icons::lighten(preset.color, 0.08)),
+                alpha,
+            );
+            painter.add(paint::g2_squircle_gradient(rect, bottom, top));
+            let ink = if preset.glyph_ink {
+                egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
+            } else {
+                egui::Color32::WHITE
+            };
+            let ch: String = preset
+                .glyph
+                .chars()
+                .next()
+                .map(String::from)
+                .unwrap_or_default();
+            paint::text_centered(
+                painter,
+                rect.center(),
+                &ch,
+                rect.width() * 0.467,
+                true,
+                mul_alpha(ink, alpha),
+            );
+            return;
+        }
+    }
     if let Some(path) = &entry.icon {
         // 光栅缓存统一走 icongen 规格（显示尺寸 LANCZOS + G2 蒙版）：
         // 裸/平角遗留缓存在此补蒙版，避免 288→60 LINEAR 缩出毛角。
@@ -500,31 +534,6 @@ fn paint_glyph(
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
-                // 预设 v7 SVG 只含渐变底（usvg 无系统字体），字符在此
-                // 叠画：白字或 glyph_ink 深字（与 Python 版 SVG 等价）。
-                if path.to_string_lossy().contains("presets") {
-                    if let Some(preset) = duo_core::catalog::catalog_by_package(&entry.package) {
-                        let ink = if preset.glyph_ink {
-                            egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
-                        } else {
-                            egui::Color32::WHITE
-                        };
-                        let ch: String = preset
-                            .glyph
-                            .chars()
-                            .next()
-                            .map(String::from)
-                            .unwrap_or_default();
-                        paint::text_centered(
-                            painter,
-                            rect.center(),
-                            &ch,
-                            rect.width() * 0.467,
-                            true,
-                            ink,
-                        );
-                    }
-                }
                 return;
             }
         }
@@ -542,14 +551,17 @@ fn paint_glyph(
 }
 
 /// 光栅图标贴图（panel 侧缓存；圆角一致性由 icongen::panel_icon_rgba
-/// 保证）。失败缓存 None 不重试。
+/// 保证）。失败缓存 None 不重试。贴图尺寸按物理像素（显示尺寸 ×
+/// pixels_per_point）生成，GPU 1:1 采样——逻辑像素贴图在 125%/150%
+/// 缩放下会被 GPU 双线性放大发虚。
 fn load_icon_texture(
     app: &PanelApp,
     ctx: &egui::Context,
     path: &std::path::Path,
     size: f32,
 ) -> Option<egui::TextureHandle> {
-    let px = (size.round() as u32).max(1);
+    let ppp = ctx.pixels_per_point();
+    let px = ((size * ppp).round() as u32).max(1);
     let key = (path.to_path_buf(), px);
     if let Some(cached) = app.icon_tex.borrow().get(&key) {
         return cached.clone();
