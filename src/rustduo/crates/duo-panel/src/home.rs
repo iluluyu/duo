@@ -159,14 +159,14 @@ fn pinned_icon(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, rect: Re
         if resp.clicked() {
             app.launch(&entry.package, None);
         }
-        resp.context_menu(|ui| app.tile_menu(ui, entry));
+        app.context_menu(&resp, |app, ui| app.tile_menu(ui, entry));
     }
 }
 
 fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let card_resp = ui.allocate_rect(rect, Sense::click());
-    card_resp.context_menu(|ui| app.mirror_menu(ui));
+    app.context_menu(&card_resp, |app, ui| app.mirror_menu(ui));
     paint::card(ui.painter(), rect, &t);
     paint::text_left_weight(
         ui.painter(),
@@ -430,10 +430,18 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
     paint::rounded_fill(&painter, icon, 14.0, wash);
     let alpha = if entry.installed { 1.0 } else { 0.4 };
     paint_glyph(app, ui, &painter, entry, icon, 60.0, alpha);
+    // 标签槽宽 = QML Text width: tile.width - 8（现有几何，不另设常量）；
+    // 运行时逐字量宽（字体栈内 CJK 兜底，中西混排按各自字形宽计），
+    // 塞不下才截断并补 "…"（elide_to_width 内含 "…" 预算）。
+    let label_font = paint::font_id(12.0, false);
+    let slot_w = cell.width() - 8.0;
+    let label = ui.ctx().fonts(|f| {
+        paint::elide_to_width(&entry.label, slot_w, &|ch| f.glyph_width(&label_font, ch))
+    });
     paint::text_centered(
         &painter,
         Pos2::new(cell.center().x.round(), (cell.top() + 76.0 + 7.0).round()),
-        &paint::elide_6(&entry.label),
+        &label,
         12.0,
         false,
         t.ink,
@@ -442,14 +450,14 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
         if resp.clicked() {
             app.launch(&entry.package, None);
         }
-        resp.context_menu(|ui| app.tile_menu(ui, entry));
+        app.context_menu(&resp, |app, ui| app.tile_menu(ui, entry));
     }
 }
 
 /// 图标：真图标（sweep 缓存/预设 SVG）优先，空则 G2 squircle + 首字白字
 /// （Main.qml AppGlyph；fallback 色 = 包名 charCode 和 % 12）。
 fn paint_glyph(
-    _app: &PanelApp,
+    app: &PanelApp,
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     entry: &AppEntry,
@@ -458,7 +466,22 @@ fn paint_glyph(
     alpha: f32,
 ) {
     if let Some(path) = &entry.icon {
-        if path.exists() {
+        // 光栅缓存统一走 icongen 规格（显示尺寸 LANCZOS + G2 蒙版）：
+        // 裸/平角遗留缓存在此补蒙版，避免 288→60 LINEAR 缩出毛角。
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        {
+            if let Some(texture) = load_icon_texture(app, ui.ctx(), path, rect.width()) {
+                painter.image(
+                    texture.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                return;
+            }
+        } else if path.exists() {
             // Windows 反斜杠不是合法 URL；需正斜杠 + file:/// 前缀，
             // 否则 egui 加载器报错并画"坏图三角"。Ready 才上屏，失败走
             // squircle 兜底（异步加载首帧也先兜底，就绪后自然替换）。
@@ -516,6 +539,37 @@ fn paint_glyph(
         .unwrap_or_default();
     let ink = mul_alpha(egui::Color32::WHITE, alpha);
     paint::text_centered(painter, rect.center(), &ch, rect.width() * 0.32, true, ink);
+}
+
+/// 光栅图标贴图（panel 侧缓存；圆角一致性由 icongen::panel_icon_rgba
+/// 保证）。失败缓存 None 不重试。
+fn load_icon_texture(
+    app: &PanelApp,
+    ctx: &egui::Context,
+    path: &std::path::Path,
+    size: f32,
+) -> Option<egui::TextureHandle> {
+    let px = (size.round() as u32).max(1);
+    let key = (path.to_path_buf(), px);
+    if let Some(cached) = app.icon_tex.borrow().get(&key) {
+        return cached.clone();
+    }
+    let loaded = std::fs::read(path).ok().and_then(|bytes| {
+        duo_core::icongen::panel_icon_rgba(&bytes, px)
+            .map_err(|err| eprintln!("duo-panel: 图标加载失败 {path:?}: {err}"))
+            .ok()
+    });
+    let tex = loaded.map(|rgba| {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([px as usize, px as usize], rgba.as_raw());
+        ctx.load_texture(
+            format!("duo-icon:{}#{px}", path.display()),
+            image,
+            egui::TextureOptions::LINEAR,
+        )
+    });
+    app.icon_tex.borrow_mut().insert(key, tex.clone());
+    tex
 }
 
 pub fn running_card_height(w: f32, chips: &[(String, String, bool)], ui: &egui::Ui) -> f32 {

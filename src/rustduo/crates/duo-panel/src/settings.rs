@@ -447,6 +447,7 @@ fn path_row(
 /// 布局常量（SettingsPage.qml 逐值照抄；几何取证 = scripts/geom_probe.py
 /// dump QML item 树：标题 13px 盒高 19、行标签 Item h20、CaptionText
 /// 盒高 18、开关行 Item h32、NumberCell 20+6+32=58、Slider h24）。
+/// 保存钮已移除（返回首页自动保存）：scroller 直达页底。
 mod geom {
     /// 卡内容横 padding = shadowHost 8 + innerCol 12（对齐 QML 卡内区域）。
     pub const PAD: f32 = 20.0;
@@ -464,8 +465,6 @@ mod geom {
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
     pub const CARD_EXTRA: f32 = 3.0 + 12.0 * 2.0 + 10.0;
     pub const TOP: f32 = 64.0; // 胶囊下让位
-    /// footer（保存钮区）高：scroller 底 = footer.top − 8（探针 616/608）。
-    pub const FOOTER_H: f32 = 44.0;
 }
 
 /// 设置页布局（两遍绘制解耦：先算全部 rect，再画卡底，再画内容）。
@@ -502,7 +501,6 @@ pub struct SettingsLayout {
     pub theme_label: Pos2,
     pub theme_row: [Rect; 3],
     pub glass_row: Rect,
-    pub save: Rect,
     pub content_h: f32,
 }
 
@@ -519,16 +517,9 @@ impl SettingsLayout {
         // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8
         let left = MARGIN + 8.0;
         let cw = w - (MARGIN + 8.0) * 2.0;
-        let vp = Rect::from_min_max(
-            Pos2::new(left, TOP),
-            Pos2::new(left + cw, h - FOOTER_H - 8.0),
-        );
+        let vp = Rect::from_min_max(Pos2::new(left, TOP), Pos2::new(left + cw, h));
         let inner_w = cw - PAD * 2.0;
         let x = left + PAD;
-        let save = Rect::from_min_size(
-            Pos2::new(w - MARGIN - 76.0, h - 12.0 - ROW_H),
-            Vec2::new(76.0, ROW_H),
-        );
         let mut y = vp.top();
 
         let problem = (!problems.is_empty()).then(|| {
@@ -668,7 +659,6 @@ impl SettingsLayout {
             theme_label,
             theme_row,
             glass_row,
-            save,
             content_h: y + ap_h,
         }
     }
@@ -722,8 +712,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let scroll = app.settings_scroll;
 
     // 视口内裁剪（QML ScrollView clip：滚动底之下的控件——如 DPI 数字
-    // 框——不得溢出；footer 保存钮在视口外恒定，用未裁剪 painter）
-    let root_painter = ui.painter().clone();
+    // 框——不得溢出）
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(full));
     ui.set_clip_rect(layout.vp);
     let painter = ui.painter().with_clip_rect(layout.vp);
@@ -1027,28 +1016,6 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     ) {
         app.settings.set_glass(!app.settings.draft.glass_enabled);
     }
-
-    // footer：保存主按钮（视口外恒定右下）
-    let resp = ui.interact(layout.save, egui::Id::new("settings-save"), Sense::click());
-    let fill = if resp.is_pointer_button_down_on() {
-        t.accent_press
-    } else if resp.hovered() {
-        t.accent_hover
-    } else {
-        t.accent
-    };
-    paint::rounded_fill(&root_painter, layout.save, 10.0, fill);
-    paint::text_centered(
-        &root_painter,
-        layout.save.center(),
-        "保存",
-        13.0,
-        true,
-        egui::Color32::WHITE,
-    );
-    if resp.clicked() {
-        app.save_settings_and_return();
-    }
 }
 
 /// 画卡标题时从引用反查名字（绘制循环需要；四次调用对应四卡）。
@@ -1074,7 +1041,8 @@ mod tests {
         assert!(layout.engine.bg.top() < layout.quality.bg.top());
         assert!(layout.quality.bg.top() < layout.windowbar.bg.top());
         assert!(layout.windowbar.bg.top() < layout.appearance.bg.top());
-        assert_eq!(layout.save.height(), 32.0);
+        // 保存钮已移除：无 footer，视口直达页底
+        assert!((layout.vp.bottom() - 660.0).abs() < 0.01);
 
         let title_to_caption = layout.tso_caption.y - layout.tso_row.center().y;
         let caption_to_next = layout.dpi_switch.center().y - layout.tso_caption.y;

@@ -64,9 +64,12 @@ impl SettingsPageModel {
         }
     }
 
-    /// Esc 取消：放弃 draft 改动，从磁盘重载（QML cancelled 语义）。
-    pub fn reject(&mut self) {
-        *self = Self::load(self.data_dir.as_deref());
+    /// 离开设置页自动保存：仅在有未保存修改时落盘（无修改不动磁盘、
+    /// 不闪 toast；Ok 清 dirty、Err 留页 + flash）。
+    pub fn save_if_dirty(&mut self) {
+        if self.dirty {
+            self.save();
+        }
     }
 
     pub fn dismiss_flash(&mut self) {
@@ -263,6 +266,25 @@ mod tests {
         assert_eq!(reloaded.draft.corner_mode, "g2");
         assert_eq!(reloaded.draft.corner_size_dip, 48);
         assert!(reloaded.draft.turn_screen_off);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_if_dirty_writes_only_when_dirty() {
+        let dir = base("auto-save");
+        let mut model = SettingsPageModel::load(Some(&dir));
+        // 无修改：不落盘、不闪 toast
+        model.save_if_dirty();
+        assert!(!model.dirty);
+        assert_eq!(model.flash, None);
+        assert!(!dir.join("settings.json").exists());
+        // 有修改：保存、清 dirty、flash「已保存」
+        model.set_fps(90);
+        model.save_if_dirty();
+        assert!(!model.dirty);
+        assert_eq!(model.flash.as_deref(), Some("已保存"));
+        let reloaded = SettingsPageModel::load(Some(&dir));
+        assert_eq!(reloaded.draft.fps, Some(90));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
