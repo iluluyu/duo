@@ -91,6 +91,20 @@ fn user_data_eq(ud: &egui::UserData, tag: &str) -> bool {
         .is_some_and(|s| s == tag)
 }
 
+/// Liquid Glass 顶部镜面棱线：暗色玻璃的高光边缘 cue（Apple/ColorOS 光感）。
+fn glass_top_rim(ui: &mut egui::Ui, rect: egui::Rect, dark: bool) {
+    if !dark {
+        return;
+    }
+    let r = crate::glass::MASK_RADIUS;
+    let y = rect.top() + 0.5;
+    let rim = egui::Color32::from_rgba_premultiplied(255, 255, 255, 46);
+    ui.painter().line_segment(
+        [egui::pos2(rect.left() + r, y), egui::pos2(rect.right() - r, y)],
+        egui::Stroke::new(1.0_f32, rim),
+    );
+}
+
 /// 引擎路径检测结果：。*/
 pub(crate) type ProbeResult = Result<(String, bool, String), String>;
 
@@ -690,6 +704,7 @@ impl PanelApp {
                 egui::Stroke::new(1.0_f32, self.tokens.menu_glass_border),
                 egui::StrokeKind::Inside,
             );
+            glass_top_rim(ui, effective, matches!(self.tokens.kind, ThemeKind::Dark));
         }
     }
 
@@ -748,6 +763,7 @@ impl PanelApp {
                     egui::Stroke::new(1.0_f32, self.tokens.menu_glass_border),
                     egui::StrokeKind::Inside,
                 );
+                glass_top_rim(ui, effective, matches!(self.tokens.kind, ThemeKind::Dark));
             }
         }
     }

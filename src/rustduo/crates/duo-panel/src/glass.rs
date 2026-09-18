@@ -46,6 +46,8 @@ pub(crate) struct GlassParams {
     pub(crate) tint: Option<(Color32, f32)>,
     pub(crate) highlight_ceiling: Option<f32>,
     pub(crate) highlight_slope: f32,
+    /// 纵向光泽渐变（顶 +sheen、底 −sheen，Liquid Glass/ColorOS 光感）。
+    pub(crate) sheen: f32,
 }
 
 pub(crate) fn main_params(is_dark: bool) -> GlassParams {
@@ -59,60 +61,66 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             tint: None,
             highlight_ceiling: None,
             highlight_slope: 0.35,
+            sheen: 0.0,
         };
     }
     match std::env::var("DUO_GLASS_UNIT").as_deref() {
         Ok("0") => GlassParams {
-            sigma: 6.5,
+            sigma: 11.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
-            saturation: 1.38,
+            saturation: 1.65,
             tint: None,
             highlight_ceiling: None,
             highlight_slope: 0.35,
+            sheen: 0.045,
         },
         Ok("1") => GlassParams {
-            sigma: 6.5,
+            sigma: 11.0,
             brightness: 0.02,
             contrast: 0.04,
             pivot: 0.11,
-            saturation: 1.38,
+            saturation: 1.65,
             tint: Some((Color32::from_rgb(36, 36, 40), 0.04)),
             highlight_ceiling: Some(0.42),
             highlight_slope: 0.12,
+            sheen: 0.045,
         },
         Ok("2") => GlassParams {
-            sigma: 6.5,
+            sigma: 11.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
-            saturation: 1.38,
+            saturation: 1.65,
             tint: None,
             highlight_ceiling: Some(0.36),
             highlight_slope: 0.12,
+            sheen: 0.045,
         },
         Ok("4") => GlassParams {
-            sigma: 6.5,
+            sigma: 11.0,
             brightness: 0.035,
             contrast: 0.03,
             pivot: 0.11,
-            saturation: 1.35,
+            saturation: 1.60,
             tint: None,
             highlight_ceiling: Some(0.44),
             highlight_slope: 0.10,
+            sheen: 0.045,
         },
         _ => GlassParams {
             // 候选 3（默认）：只拦 >102 级高光顶端（白底 ≤128 级 ≈4:1），
-            // 中间调零干预保透明结构；深压档会糊成死灰板（真机教训）
-            sigma: 6.5,
+            // 重模糊+彩度回注消雾蒙蒙（Apple/ColorOS 理念，见配方 §8）
+            sigma: 11.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
-            saturation: 1.38,
+            saturation: 1.65,
             tint: None,
             highlight_ceiling: Some(0.40),
             highlight_slope: 0.15,
+            sheen: 0.045,
         },
     }
 }
@@ -170,6 +178,8 @@ pub(crate) fn build_texture(
     let radius = MASK_RADIUS * ppp;
     let mut pixels = Vec::with_capacity(w * h);
     for row in 0..h {
+        // 纵向光泽：顶部略亮底部略暗（玻璃被上方环境照亮的真实感）
+        let sheen = 1.0 + params.sheen * (0.5 - row as f32 / h as f32) * 2.0;
         for col in 0..w {
             let px = col as f32 + 0.5 - (m_left + half_w);
             let py = row as f32 + 0.5 - (m_top + half_h);
@@ -177,9 +187,9 @@ pub(crate) fn build_texture(
             let alpha = ((0.5 - dist).clamp(0.0, 1.0) * 255.0).round() as u8;
             let base = (row * w + col) * 3;
             pixels.push(Color32::from_rgba_unmultiplied(
-                (buf[base] * 255.0).round() as u8,
-                (buf[base + 1] * 255.0).round() as u8,
-                (buf[base + 2] * 255.0).round() as u8,
+                (buf[base] * sheen * 255.0).round().clamp(0.0, 255.0) as u8,
+                (buf[base + 1] * sheen * 255.0).round().clamp(0.0, 255.0) as u8,
+                (buf[base + 2] * sheen * 255.0).round().clamp(0.0, 255.0) as u8,
                 alpha,
             ));
         }
@@ -428,6 +438,7 @@ mod tests {
                 tint: None,
                 highlight_ceiling: None,
                 highlight_slope: 0.35,
+                sheen: 0.0,
             },
         );
         assert!(buf[0] > 0.5, "灰底应变亮");
@@ -443,6 +454,7 @@ mod tests {
                 tint: None,
                 highlight_ceiling: None,
                 highlight_slope: 0.35,
+                sheen: 0.0,
             },
         );
         assert_eq!(white[0], 1.0, "钳到 1.0");
