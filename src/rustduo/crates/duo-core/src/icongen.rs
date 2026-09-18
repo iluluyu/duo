@@ -29,9 +29,11 @@ pub const ADAPTIVE_SAFE: u32 = ADAPTIVE_CANVAS * 66 / 108; // 264
 /// （apps.py `_ADAPTIVE_FULL_BLEED`）。
 const ADAPTIVE_FULL_BLEED: f64 = 0.98;
 /// 蒙版超采样倍率（apps.py scale=6）：多边形在 6× 分辨率上光栅化，再
-/// LANCZOS 缩回，曲线在面板尺寸下保持平滑。
+/// 蒙版超采样倍率（apps.py scale=6）：多边形在 6× 分辨率上光栅化，再
+/// 均值缩回（见 g2_mask），曲线在面板尺寸下保持平滑。
 const MASK_SUPERSCALE: f64 = 6.0;
-/// 缩回后 alpha 低于此值清零（apps.py `point(<4→0)`：压掉 Lanczos 负环）。
+/// 缩回后 alpha 低于此值清零（压边缘量化噪声；均值滤波无负环，此阙
+/// 值只需挡采样栅格效应）。
 const MASK_ALPHA_FLOOR: u8 = 4;
 /// 可见墨水阈值：alpha > 8 才算内容（apps.py `_alpha_bbox` 默认档）。
 const ALPHA_INK_THRESHOLD: u8 = 8;
@@ -119,17 +121,39 @@ pub fn apply_g2_mask(image: &RgbaImage, radius_ratio: f32) -> RgbaImage {
     out
 }
 
-/// G2 蒙版的 alpha 场：超采样光栅化 + LANCZOS 缩回。
+/// G2 蒙版的 alpha 场：超采样光栅化 + 精确均值缩回。
+///
+/// 缩回用逐块均值（6× 超采样 → 每 6×6 块取平均）而非 Lanczos：Lanczos3
+/// 的负环会在硬边两侧产生振铃（缩回后成为离卡主体 2-3px 的杂散半透明
+/// 像素，60px 图标上读作毛刺）；均值滤波无振铃、单调，平滑度由超采样
+/// 档位保证（apps.py scale=6 语义的零振铃版）。
 fn g2_mask(width: u32, height: u32, radius: i64) -> GrayImage {
     let outline = g2_outline(f64::from(width), f64::from(height), radius as f64, 5.0);
     let supersampled: Vec<(f64, f64)> = outline
         .iter()
         .map(|(x, y)| (x * MASK_SUPERSCALE, y * MASK_SUPERSCALE))
         .collect();
-    let hi_width = width.saturating_mul(MASK_SUPERSCALE as u32) as i64;
-    let hi_height = height.saturating_mul(MASK_SUPERSCALE as u32) as i64;
-    let filled = fill_polygon(&supersampled, hi_width, hi_height);
-    imageops::resize(&filled, width, height, FilterType::Lanczos3)
+    let hi_width = width.saturating_mul(MASK_SUPERSCALE as u32);
+    let hi_height = height.saturating_mul(MASK_SUPERSCALE as u32);
+    let filled = fill_polygon(&supersampled, hi_width as i64, hi_height as i64);
+    box_downscale(&filled, MASK_SUPERSCALE as u32, width, height)
+}
+
+/// n× 超采样图 → 目标尺寸的精确均值缩回（n 为整数倍）。
+fn box_downscale(src: &GrayImage, factor: u32, width: u32, height: u32) -> GrayImage {
+    let mut out = GrayImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0_u32;
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    sum += u32::from(src.get_pixel(x * factor + dx, y * factor + dy)[0]);
+                }
+            }
+            out.put_pixel(x, y, image::Luma([(sum / (factor * factor)) as u8]));
+        }
+    }
+    out
 }
 
 /// 简单多边形的扫描线偶奇填充（等价 PIL ImageDraw.polygon 的 255 填充，
@@ -395,10 +419,35 @@ mod tests {
         assert_eq!(diagonal[0], 255, "diagonal starts opaque at the centre");
         assert_eq!(*diagonal.last().unwrap(), 0, "diagonal ends transparent");
         for pair in diagonal.windows(2) {
-            // 中心 → 角落 alpha 只允许下降（+3 容纳 Lanczos 极小正环）。
+            // 中心 → 角落 alpha 只允许下降（均值滤波无振铃）。
             assert!(
-                i16::from(pair[1]) <= i16::from(pair[0]) + 3,
+                pair[1] <= pair[0],
                 "alpha must not rise toward the corner: {pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rounded_mask_has_no_stray_pixels_outside_edge() {
+        // 均值缩回不得在主体外产生孤立半透明像素（Lanczos 负环旧问题：
+        // 角部斜边外 2-3px 的杂散 alpha 4-20）。
+        let out = rounded_mask_png(&solid_png(120, 120, [10, 80, 240, 255]), 0.5, 96).unwrap();
+        let masked = decode(&out);
+        assert_eq!(masked.get_pixel(2, 2)[3], 0);
+        for y in 4..48 {
+            let mut x = 0;
+            while x < 96 && masked.get_pixel(x, y)[3] == 0 {
+                x += 1;
+            }
+            let start = x;
+            let mut peak = 0;
+            while x < 96 && x < start + 4 {
+                peak = peak.max(masked.get_pixel(x, y)[3]);
+                x += 1;
+            }
+            assert!(
+                peak >= 64,
+                "row {y}: coverage after edge onset must ramp fast, got peak {peak}"
             );
         }
     }

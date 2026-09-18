@@ -40,6 +40,20 @@ pub fn font_id(px: f32, strong: bool) -> FontId {
     }
 }
 
+/// 亮色模式文字覆盖率补偿：egui 0.31 在 sRGB 直混（无 gamma 校正）下，
+/// 深字浅底的 AA 边缘视觉厚度不足（有效覆盖 ≈ a，正确值 ≈ a^0.45），
+/// 字形看起来瘦而毛糙。同位叠画第二遍使边缘覆盖变为
+/// 2a-a²（≈ a^0.45 的良好近似，内部 a=1 不变）——只影响暗色文字，
+/// 白字/暗底主题不动。见 docs/ui/DESIGN.md §2 修订注。
+fn galley_inked(painter: &egui::Painter, pos: Pos2, galley: &egui::text::Galley, color: Color32) {
+    let galley: std::sync::Arc<egui::text::Galley> = galley.clone().into();
+    painter.galley(pos, galley.clone(), Color32::WHITE);
+    let lum = (u32::from(color.r()) * 299 + u32::from(color.g()) * 587 + u32::from(color.b()) * 114) / 1000;
+    if lum < 128 {
+        painter.galley(pos, galley, Color32::WHITE);
+    }
+}
+
 /// 居中文本（QML Text anchors.centerIn 对译）。
 pub fn text_centered(
     painter: &egui::Painter,
@@ -59,7 +73,7 @@ pub fn text_centered(
     });
     let size = galley.size();
     let pos = center - Vec2::new(size.x / 2.0, size.y / 2.0);
-    painter.galley(pos, galley, Color32::WHITE);
+    galley_inked(painter, pos, &galley, color);
 }
 
 /// 左对齐文本（QML Text 默认对齐）。
@@ -98,7 +112,7 @@ pub fn text_left_weight(
             f32::INFINITY,
         ))
     });
-    painter.galley(pos, galley, Color32::WHITE);
+    galley_inked(painter, pos, &galley, color);
 }
 
 /// 左对齐、垂直居中于 pos.y（QML anchors.verticalCenter 对译；设置页
@@ -113,7 +127,7 @@ pub fn text_left_at_center(painter: &egui::Painter, pos: Pos2, s: &str, px: f32,
         ))
     });
     let pos = Pos2::new(pos.x, pos.y - galley.size().y / 2.0);
-    painter.galley(pos, galley, Color32::WHITE);
+    galley_inked(painter, pos, &galley, color);
 }
 
 /// 半透明色叠在不透明底上（theme::over 的本地别名，语义同 QML）。
@@ -143,19 +157,48 @@ pub fn canvas_spots(painter: &egui::Painter, t: &Tokens, canvas: Rect) {
 }
 
 /// G2 squircle 路径（QML AppGlyph.g2SquircleSource 同构：n=2/5 超椭圆，
-/// r = size/2；duo-core icons::g2_outline 提供同一份数学）。
+/// r = size/2；duo-core icons::g2_outline 提供同一份数学）。顶点保留亚像素
+/// 坐标（曾按整数像素取整——60px 磁贴上每顶点 ±0.5px 的台阶把 AA 边缘
+/// 打成锯齿，2026-09-19 修复）。
 pub fn g2_squircle(rect: Rect, color: Color32) -> Shape {
     let size = rect.width().min(rect.height());
     let pts =
         duo_core::icons::g2_outline(f64::from(size), f64::from(size), f64::from(size / 2.0), 5.0);
-    let to_screen = |p: (f64, f64)| {
-        Pos2::new(
-            (rect.left() + p.0 as f32).round(),
-            (rect.top() + p.1 as f32).round(),
-        )
-    };
+    let to_screen = |p: (f64, f64)| Pos2::new(rect.left() + p.0 as f32, rect.top() + p.1 as f32);
     let path: Vec<Pos2> = pts.iter().map(|p| to_screen(*p)).collect();
     Shape::convex_polygon(path, color, Stroke::new(1.0_f32, color))
+}
+
+/// 预设图标的矢量绘制（icons.rs render_preset_svg 的直绘版）：G2 轮廓
+/// 扇形三角化 + 逐顶点纵向渐变（顶部 lighten 8% → 底部品牌色），替代
+/// SVG 240px 光栅 → LINEAR 缩到 60px 的采样锯齿；任意缩放恒平滑。
+/// 顶点色按 y 线性插值，线性渐变下无视觉差。
+pub fn g2_squircle_gradient(rect: Rect, bottom: Color32, top: Color32) -> Shape {
+    let size = rect.width().min(rect.height());
+    let pts =
+        duo_core::icons::g2_outline(f64::from(size), f64::from(size), f64::from(size / 2.0), 5.0);
+    let lerp = |a: u8, b: u8, t: f32| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
+    let vertices: Vec<egui::epaint::Vertex> = pts
+        .iter()
+        .map(|(x, y)| {
+            let t = (*y as f32 / size).clamp(0.0, 1.0);
+            let color = Color32::from_rgb(
+                lerp(top.r(), bottom.r(), t),
+                lerp(top.g(), bottom.g(), t),
+                lerp(top.b(), bottom.b(), t),
+            );
+            let pos = Pos2::new(rect.left() + *x as f32, rect.top() + *y as f32);
+            egui::epaint::Vertex { pos, uv: egui::Pos2::ZERO, color }
+        })
+        .collect();
+    let indices: Vec<u32> = (1..vertices.len() as u32 - 1)
+        .flat_map(|i| [0, i, i + 1])
+        .collect();
+    Shape::Mesh(std::sync::Arc::new(egui::Mesh {
+        vertices,
+        indices,
+        texture_id: egui::TextureId::default(),
+    }))
 }
 
 /// 标签像素宽自适应截断（AppTile label 的 slice(0,6)+"…" 换像素规则）：
