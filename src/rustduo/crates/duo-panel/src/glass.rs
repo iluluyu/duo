@@ -66,7 +66,7 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
     }
     match std::env::var("DUO_GLASS_UNIT").as_deref() {
         Ok("0") => GlassParams {
-            sigma: 11.0,
+            sigma: 8.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
@@ -77,7 +77,7 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             sheen: 0.045,
         },
         Ok("1") => GlassParams {
-            sigma: 11.0,
+            sigma: 8.0,
             brightness: 0.02,
             contrast: 0.04,
             pivot: 0.11,
@@ -88,7 +88,7 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             sheen: 0.045,
         },
         Ok("2") => GlassParams {
-            sigma: 11.0,
+            sigma: 8.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
@@ -99,7 +99,7 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             sheen: 0.045,
         },
         Ok("4") => GlassParams {
-            sigma: 11.0,
+            sigma: 8.0,
             brightness: 0.035,
             contrast: 0.03,
             pivot: 0.11,
@@ -112,7 +112,7 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
         _ => GlassParams {
             // 候选 3（默认）：只拦 >102 级高光顶端（白底 ≤128 级 ≈4:1），
             // 重模糊+彩度回注消雾蒙蒙（Apple/ColorOS 理念，见配方 §8）
-            sigma: 11.0,
+            sigma: 8.0,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
@@ -125,12 +125,6 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
     }
 }
 
-pub(crate) fn sub_params(is_dark: bool) -> GlassParams {
-    let mut p = main_params(is_dark);
-    p.sigma += 2.0;
-    p.contrast += 0.02;
-    p
-}
 
 /// 从全窗设备像素快照裁出菜单区域（含边距），模糊 + 增益 + 蒙版后上传
 /// 贴图。返回（贴图，屏幕矩形 = 贴图覆盖区域）。裁剪退化时返回 None。
