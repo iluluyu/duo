@@ -9,6 +9,9 @@ pub(crate) const SNAPSHOT_MARGIN: f32 = 56.0;
 /// 蒙版圆角（逻辑 px，QML MenuGlassPlate radius 12）。
 pub(crate) const MASK_RADIUS: f32 = 12.0;
 
+/// 高光滚降软膝半宽（gamma 空间）：±13 级过渡带，C¹ 连续消 banding。
+const HIGHLIGHT_KNEE: f32 = 0.05;
+
 /// 把逻辑矩形各边量化到设备像素网格（ppp 可为小数，如 1.25）：不量化时
 /// 布局尾差会让逐帧矩形按位不等，误判"矩形变了"→ 清贴图重拍（真机
 /// 表现为菜单持续"晃动"）；量化后同格即视为未变，绝不重拍。
@@ -76,8 +79,8 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             pivot: 0.11,
             saturation: 1.38,
             tint: Some((Color32::from_rgb(36, 36, 40), 0.04)),
-            highlight_ceiling: Some(0.24),
-            highlight_slope: 0.05,
+            highlight_ceiling: Some(0.42),
+            highlight_slope: 0.12,
         },
         Ok("2") => GlassParams {
             sigma: 6.5,
@@ -86,8 +89,8 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             pivot: 0.11,
             saturation: 1.38,
             tint: None,
-            highlight_ceiling: Some(0.18),
-            highlight_slope: 0.03,
+            highlight_ceiling: Some(0.36),
+            highlight_slope: 0.12,
         },
         Ok("4") => GlassParams {
             sigma: 6.5,
@@ -96,19 +99,20 @@ pub(crate) fn main_params(is_dark: bool) -> GlassParams {
             pivot: 0.11,
             saturation: 1.35,
             tint: None,
-            highlight_ceiling: Some(0.28),
-            highlight_slope: 0.07,
+            highlight_ceiling: Some(0.44),
+            highlight_slope: 0.10,
         },
         _ => GlassParams {
-            // 候选 3（默认）：底板微抬略亮于底景（28→34），高光深度滚降（≤65级/10.6:1超高对比），亮底极高可读性
+            // 候选 3（默认）：只拦 >102 级高光顶端（白底 ≤128 级 ≈4:1），
+            // 中间调零干预保透明结构；深压档会糊成死灰板（真机教训）
             sigma: 6.5,
             brightness: 0.025,
             contrast: 0.04,
             pivot: 0.11,
             saturation: 1.38,
             tint: None,
-            highlight_ceiling: Some(0.22),
-            highlight_slope: 0.04,
+            highlight_ceiling: Some(0.40),
+            highlight_slope: 0.15,
         },
     }
 }
@@ -221,6 +225,28 @@ fn sd_rounded_rect(px: f32, py: f32, half_w: f32, half_h: f32, r: f32) -> f32 {
     outside + qx.max(qy).min(0.0) - r
 }
 
+/// 高光软膝（三次 Hermite）：拐点两侧值与斜率双连续，保证单调无 banding；
+/// 膝外输出与硬拐点公式完全一致（尾线斜率同 slope）。
+fn highlight_soft_knee(l: f32, ceiling: f32, slope: f32, half: f32) -> f32 {
+    let a = ceiling - half;
+    let b = ceiling + half;
+    if l >= b {
+        return ceiling + (l - ceiling) * slope;
+    }
+    if l <= a {
+        return l;
+    }
+    let r_b = ceiling + half * slope;
+    let x = (l - a) / (b - a);
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let h00 = 2.0 * x3 - 3.0 * x2 + 1.0;
+    let h10 = x3 - 2.0 * x2 + x;
+    let h01 = -2.0 * x3 + 3.0 * x2;
+    let h11 = x3 - x2;
+    h00 * a + h10 * (b - a) + h01 * r_b + h11 * (b - a) * slope
+}
+
 /// QML MultiEffect 光学增益的线性近似：brightness 加、contrast 绕 0.5
 /// 光学增益与暗色压暗 tint 处理。
 fn apply_gains(buf: &mut [f32], params: &GlassParams) {
@@ -237,8 +263,9 @@ fn apply_gains(buf: &mut [f32], params: &GlassParams) {
         }
         if let Some(ceiling) = params.highlight_ceiling {
             let cur_luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
-            if cur_luma > ceiling {
-                let scale = (ceiling + (cur_luma - ceiling) * params.highlight_slope) / cur_luma;
+            if cur_luma > ceiling - HIGHLIGHT_KNEE {
+                let out = highlight_soft_knee(cur_luma, ceiling, params.highlight_slope, HIGHLIGHT_KNEE);
+                let scale = out / cur_luma;
                 for c in px.iter_mut() {
                     *c *= scale;
                 }
@@ -426,10 +453,28 @@ mod tests {
 
         let mut bright = vec![0.9_f32; 3];
         apply_gains(&mut bright, &main_params(true));
-        assert!(bright[0] <= 0.30, "暗色模式高光图标应被滚降压制以保障白字高可读性");
+        assert!(bright[0] <= 0.52, "暗色模式高光图标应被滚降收进可读带（≤~132 级）");
 
         let mut white_bg = vec![1.0_f32; 3];
         apply_gains(&mut white_bg, &main_params(true));
-        assert!(white_bg[0] <= 0.28 && white_bg[0] >= 0.22, "纯白亮底压至高可读区间（~65级/10.6:1对比度）");
+        assert!(white_bg[0] <= 0.52 && white_bg[0] >= 0.46, "纯白亮底压至 ≈128 级（≈4:1），非死灰板");
+
+        let mut mid = vec![0.5_f32; 3];
+        apply_gains(&mut mid, &main_params(true));
+        assert!(mid[0] > 0.40, "中间调保持透明结构，不压向死底");
+    }
+
+    #[test]
+    fn highlight_knee_blends_smoothly() {
+        // 软膝过渡带内输出单调无跳变（banding 防护）
+        let params = main_params(true);
+        let mut prev = 0.0_f32;
+        for i in 0..20 {
+            let l = 0.34 + i as f32 * 0.005;
+            let mut px = vec![l; 3];
+            apply_gains(&mut px, &params);
+            assert!(px[0] > prev, "膝部输出应单调递增 @{l:.3}");
+            prev = px[0];
+        }
     }
 }
