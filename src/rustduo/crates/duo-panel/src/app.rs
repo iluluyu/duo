@@ -482,11 +482,7 @@ impl PanelApp {
         let prev_pad = ui.spacing().button_padding;
         ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
         let is_dark = matches!(t.kind, ThemeKind::Dark);
-        let text_color = if is_dark {
-            egui::Color32::WHITE
-        } else {
-            t.ink
-        };
+        let text_color = if is_dark { egui::Color32::WHITE } else { t.ink };
         let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(text_color))
             .min_size(egui::vec2(MENU_INNER_WIDTH, 28.0))
             .stroke(egui::Stroke::NONE);
@@ -530,14 +526,17 @@ impl PanelApp {
         } else {
             t.ink
         };
-        ui.menu_button(egui::RichText::new(label).size(13.0).color(text_color), |ui| {
-            ui.set_width(MENU_INNER_WIDTH);
-            menu_row_style(ui, &t);
-            ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
-            self.glass_underlay(ui, true);
-            add_contents(self, ui);
-            self.glass_record_sub(ui);
-        });
+        ui.menu_button(
+            egui::RichText::new(label).size(13.0).color(text_color),
+            |ui| {
+                ui.set_width(MENU_INNER_WIDTH);
+                menu_row_style(ui, &t);
+                ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
+                self.glass_underlay(ui, true);
+                add_contents(self, ui);
+                self.glass_record_sub(ui);
+            },
+        );
         ui.style_mut().spacing.button_padding = prev_pad;
     }
 
@@ -583,9 +582,10 @@ impl PanelApp {
                 ..Default::default()
             });
             if self.menu_snapshot.is_none() {
-                resp.ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                    GLASS_SHOT_TAG.to_string(),
-                )));
+                resp.ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                        GLASS_SHOT_TAG.to_string(),
+                    )));
                 resp.ctx.request_repaint();
             }
         }
@@ -600,7 +600,9 @@ impl PanelApp {
     /// 菜单闭包开头：在内容下方占位并垫毛玻璃贴图（ShapeIdx 预占底位，
     /// 确保即使首帧刚建出贴图也能插在内容控件下方）。
     pub(crate) fn glass_underlay(&mut self, ui: &mut egui::Ui, sub: bool) {
-        let Some(g) = &mut self.menu_glass else { return };
+        let Some(g) = &mut self.menu_glass else {
+            return;
+        };
         let (tex, rect) = if sub {
             (&g.sub_tex, g.sub_draw)
         } else {
@@ -2244,10 +2246,8 @@ fn menu_row_style(ui: &mut egui::Ui, t: &Tokens) {
 
 /// 菜单小节头（QML MenuSectionLabel：h20、暗色纯白/亮色 ink2、x4+8 左对齐）。
 pub(crate) fn menu_caption(ui: &mut egui::Ui, t: &Tokens, label: &str) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(MENU_INNER_WIDTH, 20.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(MENU_INNER_WIDTH, 20.0), egui::Sense::hover());
     let pos = egui::pos2(rect.min.x + 8.0, rect.center().y);
     let color = if matches!(t.kind, ThemeKind::Dark) {
         egui::Color32::WHITE
@@ -2259,10 +2259,7 @@ pub(crate) fn menu_caption(ui: &mut egui::Ui, t: &Tokens, label: &str) {
 
 /// 菜单 hairline 分隔（QML：x12 w-24 h9 内 1px 线）。
 pub(crate) fn menu_hairline(ui: &mut egui::Ui, t: &Tokens) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(MENU_INNER_WIDTH, 9.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(MENU_INNER_WIDTH, 9.0), egui::Sense::hover());
     let line = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
         egui::vec2(MENU_INNER_WIDTH - 16.0, 1.0),
@@ -2287,8 +2284,6 @@ mod menu_tests {
         assert_eq!(MENU_INNER_WIDTH, 120.0);
         assert_eq!(MENU_INNER_WIDTH + 2.0 * MENU_MARGIN, MENU_WIDTH);
     }
-
-
 
     #[test]
     fn fixed_aspect_resolution_matches_pyduo() {

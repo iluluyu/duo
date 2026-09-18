@@ -13,8 +13,8 @@
 //   cursor in the top edge band  -> top-right capsule: minimize /
 //                                   maximize (taskbar-safe, emulated) /
 //                                   close - over SAMPLED transparent
-//                                   glass (docs/window-experience.md
-//                                   §11); right-click on it toggles
+//                                   glass (docs/ui/glass-recipe.md §8.6);
+//                                   right-click on it toggles
 //                                   pin (stays revealed)
 //   always-on (window visible)   -> chin: "<" back (adb keyevent);
 //                                   "O" hold: HOME on every display
@@ -43,9 +43,10 @@
 //
 // Rendering is per-pixel-alpha layered windows (UpdateLayeredWindow) with
 // hand-made acrylic: the content behind each bar is sampled from the target
-// window itself (PrintWindow PW_RENDERFULLCONTENT), blurred by down/up
-// scaling, then white-tinted - transparent glass, premultiplied before the
-// push (docs/window-experience.md §11 通透化修订).
+// window itself (PrintWindow PW_RENDERFULLCONTENT / CopyFromScreen), then
+// run through the §8 glass pipeline - 3×box blur σ8 → optical gains with
+// soft-knee rolloffs → vertical sheen - opaque plate, premultiplied before
+// the push (docs/ui/glass-recipe.md §8.2/§8.6).
 // No OS composition API dependency - the SetWindowCompositionAttribute
 // route returns E_FAIL on Win11 24H2.
 //
@@ -1061,36 +1062,13 @@ namespace DuoChrome
             }
         }
 
-        /// <summary>Hand-made acrylic (frost, 2026-09-10 毛玻璃化): blur
-        /// the sampled content (downscale then upscale) through the shared
-        /// vibrancy matrix - NO flat tint. The native chin overrides this
-        /// only to add its adaptive hairline + seam margin mapping; the
-        /// native top needs no override - C2 made it a real system caption
-        /// with a DWM backdrop, drawn by the OS itself.</summary>
+        /// <summary>基类防御实现：两块玻璃面（沉浸胶囊 / 系统下巴）都在
+        /// 各自采样落地时烘焙 §8 增益链底板（BuildFrost / BuildChinFrost），
+        /// 正常路径不会走到这里；无缓存板时铺 DryGlass 待命色。</summary>
         protected virtual void DrawAcrylic(Graphics g)
         {
-            if (_behind != null && _behind.Width > 0 && _behind.Height > 0)
-            {
-                int qw = Math.Max(1, Width / 12);
-                int qh = Math.Max(1, Height / 4);
-                using (Bitmap small = new Bitmap(qw, qh))
-                {
-                    using (Graphics sg = Graphics.FromImage(small))
-                    {
-                        sg.InterpolationMode = InterpolationMode.Low;
-                        sg.PixelOffsetMode = PixelOffsetMode.Half;
-                        sg.DrawImage(_behind, new Rectangle(0, 0, qw, qh));
-                    }
-                    using (ImageAttributes ia = new ImageAttributes())
-                    {
-                        ia.SetColorMatrix(NewVibrancyMatrix());
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.PixelOffsetMode = PixelOffsetMode.Half;
-                        g.DrawImage(small, new Rectangle(0, 0, Width, Height),
-                            0, 0, qw, qh, GraphicsUnit.Pixel, ia);
-                    }
-                }
-            }
+            using (SolidBrush dry = new SolidBrush(DryGlass))
+                g.FillRectangle(dry, 0, 0, Width, Height);
         }
 
         protected virtual void PaintBar(Graphics g) { }
@@ -1222,32 +1200,166 @@ namespace DuoChrome
             finally { bmp.UnlockBits(data); }
         }
 
-        /// <summary>共享 vibrancy 矩阵（毛玻璃化定稿，docs/window-experience.md
-        /// §11）：饱和 ×1.45 + scale/lift。GDI+ ColorMatrix 是行向量约定
-        /// （out = in·M）：平移在第 5 **行**（Matrix40/41/42）——初版误放
-        /// 第 5 列是死格子，lift 从未上屏（2026-09-10 暗底死板根因）。
-        /// 双态：暗态 0.90/+0.07（原配方）；亮态 0.92/+0.10——白底顶到
-        /// clamp、浅底玻璃比背景亮（用户反馈亮色模式发灰，暗色不动）。</summary>
-        protected static ColorMatrix NewVibrancyMatrix(float scale, float lift)
+        // -- 毛玻璃 §8 增益链（glass-recipe.md §8.6 移植基线，2026-09-18） --
+
+        /// <summary>玻璃模糊 σ（device px，与面板 glass.rs 同值，同屏
+        /// parity：blur 半径固定设备像素，不随 DPI 重标定）。</summary>
+        protected const float GlassSigma = 8f;
+
+        /// <summary>软膝半宽（gamma 空间）：±13 级过渡带，C¹ 连续消 banding。</summary>
+        private const float GlassKneeHalf = 0.05f;
+
+        /// <summary>玻璃单位档（glass-recipe.md §8.4）：暗色 = Unit 3（天花
+        /// 0.40/坡 0.15 护白字 ≈4:1）；亮色 = 亮 Unit 3（地板 0.66/坡 0.15
+        /// 护墨字 #1D1D1F ≥4.5:1 + 天花 0.975/坡 0.35 抗冲白、平画布落点
+        /// ≈251 对齐 QML 假玻璃锚点）。σ8 与 sheen 0.045 全档共用。</summary>
+        protected struct GlassUnit
         {
-            float k = scale / 0.90f;   // 饱和块按原配方 0.90 预乘，任意 scale 重标定
-            ColorMatrix cm = new ColorMatrix();
-            cm.Matrix00 = 1.2189f * k; cm.Matrix01 = -0.0861f * k; cm.Matrix02 = -0.0861f * k;
-            cm.Matrix10 = -0.2897f * k; cm.Matrix11 = 1.0153f * k; cm.Matrix12 = -0.2897f * k;
-            cm.Matrix20 = -0.0292f * k; cm.Matrix21 = -0.0292f * k; cm.Matrix22 = 1.2758f * k;
-            cm.Matrix40 = lift; cm.Matrix41 = lift; cm.Matrix42 = lift;
-            return cm;
+            internal float Brightness;
+            internal float Contrast;
+            internal float Pivot;
+            internal float Saturation;
+            internal bool HasCeiling;
+            internal float Ceiling;
+            internal float CeilingSlope;
+            internal bool HasFloor;
+            internal float Floor;
+            internal float FloorSlope;
+            internal float Sheen;
+
+            internal static GlassUnit Dark()
+            {
+                GlassUnit u = new GlassUnit();
+                u.Brightness = 0.025f; u.Contrast = 0.04f; u.Pivot = 0.11f;
+                u.Saturation = 1.65f;
+                u.HasCeiling = true; u.Ceiling = 0.40f; u.CeilingSlope = 0.15f;
+                u.Sheen = 0.045f;
+                return u;
+            }
+
+            internal static GlassUnit Light()
+            {
+                GlassUnit u = new GlassUnit();
+                u.Brightness = 0.02f; u.Contrast = 0.06f; u.Pivot = 0.5f;
+                u.Saturation = 1.45f;
+                u.HasFloor = true; u.Floor = 0.66f; u.FloorSlope = 0.15f;
+                u.HasCeiling = true; u.Ceiling = 0.975f; u.CeilingSlope = 0.35f;
+                u.Sheen = 0.02f;   // 0.045 顶行钔白/底行跌破底板，降档（§8.4）
+                return u;
+            }
         }
 
-        protected static ColorMatrix NewVibrancyMatrix()
+        /// <summary>玻璃底板烘焙（§8.2 增益链，gamma 空间逐像素）：core 外
+        /// 的 overscan crop 先 3×box blur σ8，再 contrast 单侧扩张 →
+        /// brightness → 饱和回注 → 天花/地板软膝（luma 等比缩放保色相）
+        /// → clamp → 纵向 sheen，输出不透明板（旧 vibrancy 矩阵/顶光
+        /// 渐变/活底 alpha 退役，与面板同构）。</summary>
+        protected static Bitmap BakeGlassPlate(Bitmap behind, Rectangle core,
+            bool darkUnit)
         {
-            return NewVibrancyMatrix(0.90f, 0.07f);
+            using (Bitmap blur = GaussianBlur(behind, GlassSigma))
+            {
+                core.Intersect(new Rectangle(0, 0, blur.Width, blur.Height));
+                int w = core.Width, h = core.Height;
+                if (w < 1 || h < 1)
+                    return new Bitmap(1, 1, PixelFormat.Format32bppArgb);
+                Bitmap plate = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+                byte[] src = ReadPixels32(blur, blur.Width, blur.Height);
+                byte[] dst = new byte[w * h * 4];
+                GlassUnit u = darkUnit ? GlassUnit.Dark() : GlassUnit.Light();
+                for (int y = 0; y < h; y++)
+                {
+                    float sheen = 1f + u.Sheen * (0.5f - y / (float)h) * 2f;
+                    for (int x = 0; x < w; x++)
+                    {
+                        int si = ((core.Y + y) * blur.Width + (core.X + x)) * 4;
+                        int di = (y * w + x) * 4;
+                        float r = src[si] / 255f;
+                        float g = src[si + 1] / 255f;
+                        float b = src[si + 2] / 255f;
+                        float d = r - u.Pivot;
+                        if (d > 0f) r += d * u.Contrast;
+                        d = g - u.Pivot;
+                        if (d > 0f) g += d * u.Contrast;
+                        d = b - u.Pivot;
+                        if (d > 0f) b += d * u.Contrast;
+                        r += u.Brightness; g += u.Brightness; b += u.Brightness;
+                        float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                        r = luma + (r - luma) * u.Saturation;
+                        g = luma + (g - luma) * u.Saturation;
+                        b = luma + (b - luma) * u.Saturation;
+                        luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                        if (u.HasCeiling && luma > u.Ceiling - GlassKneeHalf)
+                        {
+                            float safe = Math.Max(0.001f, luma);
+                            float scale = HighlightKnee(safe, u.Ceiling,
+                                u.CeilingSlope) / safe;
+                            r *= scale; g *= scale; b *= scale;
+                            luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                        }
+                        if (u.HasFloor && luma < u.Floor + GlassKneeHalf)
+                        {
+                            float safe = Math.Max(0.001f, luma);
+                            float scale = ShadowKnee(safe, u.Floor,
+                                u.FloorSlope) / safe;
+                            r *= scale; g *= scale; b *= scale;
+                        }
+                        dst[di] = (byte)(Clamp01(r * sheen) * 255f + 0.5f);
+                        dst[di + 1] = (byte)(Clamp01(g * sheen) * 255f + 0.5f);
+                        dst[di + 2] = (byte)(Clamp01(b * sheen) * 255f + 0.5f);
+                        dst[di + 3] = 255;
+                    }
+                }
+                WritePixels32(plate, dst, w, h);
+                return plate;
+            }
         }
 
-        // -- gaussian frost (docs/window-experience.md §11 纯粹毛玻璃) --------
+        /// <summary>天花软膝（三次 Hermite，值+斜率双连续，单调无 banding；
+        /// 膝外输出与硬拐点公式一致，尾线斜率同 slope）。</summary>
+        private static float HighlightKnee(float l, float ceiling, float slope)
+        {
+            float a = ceiling - GlassKneeHalf;
+            float b = ceiling + GlassKneeHalf;
+            if (l >= b) return ceiling + (l - ceiling) * slope;
+            if (l <= a) return l;
+            float rB = ceiling + GlassKneeHalf * slope;
+            float x = (l - a) / (b - a);
+            float x2 = x * x, x3 = x2 * x;
+            float h00 = 2f * x3 - 3f * x2 + 1f;
+            float h10 = x3 - 2f * x2 + x;
+            float h01 = -2f * x3 + 3f * x2;
+            float h11 = x3 - x2;
+            return h00 * a + h10 * (b - a) + h01 * rB + h11 * (b - a) * slope;
+        }
+
+        /// <summary>地板软膝（天花膝镜像）：暗底向 floor 收拢，护墨字；
+        /// 值+斜率双连续同 HighlightKnee。</summary>
+        private static float ShadowKnee(float l, float floor, float slope)
+        {
+            float a = floor - GlassKneeHalf;
+            float b = floor + GlassKneeHalf;
+            if (l >= b) return l;
+            if (l <= a) return floor - (floor - l) * slope;
+            float lA = floor - (floor - a) * slope;
+            float x = (l - a) / (b - a);
+            float x2 = x * x, x3 = x2 * x;
+            float h00 = 2f * x3 - 3f * x2 + 1f;
+            float h10 = x3 - 2f * x2 + x;
+            float h01 = -2f * x3 + 3f * x2;
+            float h11 = x3 - x2;
+            return h00 * lA + h10 * (b - a) * slope + h01 * b + h11 * (b - a);
+        }
+
+        private static float Clamp01(float v)
+        {
+            return v < 0f ? 0f : (v > 1f ? 1f : v);
+        }
+
+        // -- gaussian frost (glass-recipe.md §8.6：σ8 device px，3×box) ------
 
         /// <summary>3×box 高斯近似（Kovesi），边缘像素外推；A 通道置 255
-        /// （底板不透明度由 ColorMatrix.Matrix33 承担）。</summary>
+        /// （玻璃板不透明，§8.2 增益链输出即终色）。</summary>
         internal static Bitmap GaussianBlur(Bitmap src, float sigma)
         {
             int w = src.Width, h = src.Height;
@@ -1581,10 +1693,8 @@ namespace DuoChrome
         private int _ear;                    // corner-ear height, physical px (0 = flush bar)
         private bool _barDark = true;          // raw-sample luminance: dark bar -> white pill
         private Bitmap _frost;                // baked frost plate (SetNativeSample 烘焙)
-        // 下巴毛玻璃统一配方（2026-09-12 Opus 裁决）：通栏远宽于胶囊，
-        // σ 提到 10 DIP 才达到胶囊 σ6 的“读不出内容”效果；双态矩阵/活底/
-        // 顶光/干底全部与胶囊同值。见 docs/window-experience.md §11。
-        private const float FrostSigma = 10.0f;
+        // σ8 device px 与 sheen 由共享 GlassSigma 承担（BakeGlassPlate）；
+        // 明暗探针 _barDark 只切单位档（§8.4 暗 Unit 3 / 亮 Unit 3）。
         private readonly Timer _hold;
         private readonly Timer _anim;          // ~60fps re-render while holding
         private readonly Timer _flash;         // 120ms white flash after HOME fires
@@ -1655,7 +1765,7 @@ namespace DuoChrome
         /// 条可见区之外的真实内容（glass-recipe.md 硬规则 2）。</summary>
         internal int FrostMargin
         {
-            get { return (int)Math.Ceiling(3f * FrostSigma * Dpi); }
+            get { return (int)Math.Ceiling(3f * GlassSigma); }
         }
 
         /// <summary>Corner ears (DWM round seam patch): without a G2
@@ -1864,9 +1974,9 @@ namespace DuoChrome
             return m != null && m.Equals("native");
         }
 
-        /// <summary>存屏采样并烘焙下巴毛玻璃（2026-09-12 Opus 统一配方）：
-        /// 亮度判据与胶囊同源——原始采样（模糊前、邻带替换后）中心区 BT.709
-        /// 均值，0.50 ± 0.04 迟滞；矩阵双态/药丸/顶光渐变全部跟随同一状态。
+        /// <summary>存屏采样并烘焙下巴毛玻璃（§8.6 移植）：亮度判据与胶囊
+        /// 同源——原始采样（模糊前、邻带替换后）中心区 BT.709 均值，0.50
+        /// ± 0.04 迟滞；玻璃单位档/药丸/hover 洗色全部跟随同一状态。
         /// capture 携带 FrostMargin 对称 margin（屏幕边缘被 VirtualScreen 裁剪
         /// 时钳位），BuildChinFrost 完成坐标映射。</summary>
         public void SetNativeSample(Bitmap behind)
@@ -1909,14 +2019,10 @@ namespace DuoChrome
             Render();
         }
 
-        /// <summary>下巴毛玻璃烘焙（性能路径，Opus 裁决）：CopyFromScreen
-        /// 采样（条 + 3σ margin）→ 1:2 预降采样 → Kovesi 真高斯
-        /// （σ_down = σ/2，等效 σ10 DIP×DPI）→ 2× 双三次升采样同时过
-        /// 双态 vibrancy 矩阵。1:2 路径把核心像素循环压到 1/4（~4ms/帧），
-        /// 降采样等效预模糊对 σ10 贡献可忽略；全链路直通 alpha（预乘只在
-        /// PushLayered 上屏前一次完成，ColorMatrix 的 scale/lift 即非预乘
-        /// 语义——Opus 终审注记）；Matrix33 alpha（暗 0.90 / 亮 0.86）让
-        /// 真活底从屏幕物理透入。</summary>
+        /// <summary>下巴毛玻璃烘焙（§8.6 移植）：CopyFromScreen 采样（条
+        /// + 3σ margin）→ 3×box blur σ8 → §8.2 增益链（暗/亮单位档随
+        /// _barDark 探针）→ sheen → 不透明板。1440×40 杆件全链 <1ms，
+        /// 无需旧 1:2 预降采样路径。</summary>
         private void BuildChinFrost(Bitmap capture)
         {
             Bitmap old = _frost;
@@ -1928,62 +2034,20 @@ namespace DuoChrome
                 int cw = Math.Min(Width, capture.Width - mx);
                 int ch = Math.Min(Height, capture.Height - my);
                 if (cw >= 4 && ch >= 4)
-                {
-                    int qw = Math.Max(1, capture.Width / 2);
-                    int qh = Math.Max(1, capture.Height / 2);
-                    using (Bitmap half = new Bitmap(qw, qh, PixelFormat.Format32bppArgb))
-                    {
-                        using (Graphics sg = Graphics.FromImage(half))
-                        {
-                            sg.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                            sg.PixelOffsetMode = PixelOffsetMode.Half;
-                            sg.DrawImage(capture, new Rectangle(0, 0, qw, qh));
-                        }
-                        using (Bitmap blur = GaussianBlur(half, FrostSigma * Dpi / 2f))
-                        {
-                            // 源矩形取整到半分辨率像素网格（Opus 终审）：分数
-                            // DPI 下 mx/2 落在 .5 像素上，bicubic 4x4 核会采到
-                            // 有效内容外的填充行，表现为底边 1px 暗带
-                            float srcX = (float)Math.Round(mx / 2.0);
-                            float srcY = (float)Math.Round(my / 2.0);
-                            float srcW = Math.Max(1f, (float)Math.Round(cw / 2.0));
-                            float srcH = Math.Max(1f, (float)Math.Round(ch / 2.0));
-                            Bitmap plate = new Bitmap(cw, ch, PixelFormat.Format32bppArgb);
-                            using (Graphics pg = Graphics.FromImage(plate))
-                            using (ImageAttributes ia = new ImageAttributes())
-                            {
-                                ColorMatrix cm = NewVibrancyMatrix(
-                                    _barDark ? 0.90f : 0.98f,
-                                    _barDark ? 0.02f : 0.10f);
-                                cm.Matrix33 = _barDark ? 0.90f : 0.86f;
-                                ia.SetColorMatrix(cm);
-                                pg.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                pg.PixelOffsetMode = PixelOffsetMode.Half;
-                                pg.DrawImage(blur, new Rectangle(0, 0, cw, ch),
-                                    srcX, srcY, srcW, srcH,
-                                    GraphicsUnit.Pixel, ia);
-                            }
-                            _frost = plate;
-                        }
-                    }
-                }
+                    _frost = BakeGlassPlate(capture,
+                        new Rectangle(mx, my, cw, ch), _barDark);
             }
             catch { }
             if (old != null) old.Dispose();
         }
 
-        /// <summary>Native chin material（2026-09-12 Opus 统一配方）：玻璃
-        /// = frost 直铺 + 顶光渐变，静止态零描边（与胶囊同族，去旧常驻
-        /// hairline）；干底（采样不可用）= DryGlass 待命色。普通材质
+        /// <summary>Native chin material（§8.6 移植）：玻璃 = frost 直铺
+        /// （BuildChinFrost 烘焙的 §8.2 增益链板，sheen 内置，静止态零
+        /// 描边）；干底（采样不可用）= DryGlass 待命色。普通材质
         /// （--glass 0）= Win11 系统面不透明色 + 常驻 hairline（对齐
         /// SolidBackgroundFillColorBase，无采样无自适应，随面板主题）。</summary>
         protected override void DrawAcrylic(Graphics g)
         {
-            if (!_native)
-            {
-                base.DrawAcrylic(g);
-                return;
-            }
             if (!Ctrl.Glass)
             {
                 using (SolidBrush fill = new SolidBrush(
@@ -2002,24 +2066,12 @@ namespace DuoChrome
                 }
                 return;
             }
-            // 毛玻璃：frost 直铺（BuildChinFrost 烘焙的真高斯 σ10）；无采样
-            // 时干底待命（#1C1C1E@92%，暗玻璃白药丸）
+            // 毛玻璃：frost 直铺；无采样时干底待命（#1C1C1E@92%，暗玻璃白药丸）
             if (_frost != null)
                 g.DrawImage(_frost, 0, 0, Width, Height);
             else
                 using (SolidBrush dry = new SolidBrush(DryGlass))
                     g.FillRectangle(dry, 0, 0, Width, Height);
-            // 顶光渐变（与胶囊同值）：暗 2.4%→0.4% / 亮 8%→1.5%，跨 32DIP
-            // 矮条表现为顶缘受光
-            int topLit = _barDark ? 6 : 20;
-            int botLit = _barDark ? 1 : 4;
-            Rectangle lit = new Rectangle(0, _ear, Width, Math.Max(1, Height - _ear));
-            using (LinearGradientBrush backlight = new LinearGradientBrush(
-                lit,
-                Color.FromArgb(topLit, 255, 255, 255),
-                Color.FromArgb(botLit, 255, 255, 255),
-                LinearGradientMode.Vertical))
-                g.FillRectangle(backlight, lit);
         }
 
         /// <summary>agy v6 native chin pill. The acrylic surface comes from
@@ -2122,16 +2174,14 @@ namespace DuoChrome
         private bool _capsuleDark = true;           // 无采样干底为暗玻璃 → 白字形
         private Bitmap _frost;                      // cached frosted plate (SetSample 烘焙)
 
-        // 纯粹毛玻璃配方（配方/裁决/迭代史见 docs/window-experience.md §11）
-        private const float FrostSigma = 6.0f;
-        private const float DarkGlassAlpha = 0.90f;
-        private const float BrightGlassAlpha = 0.86f;
+        // 明暗探针只切单位档（§8.4 暗 Unit 3 / 亮 Unit 3）；σ8 device px
+        // 与 sheen 由共享 GlassSigma 承担（BakeGlassPlate）。
 
         /// <summary>Overscan 采样边距（物理 px）：≥ 3σ，模糊核永远采到胶囊
         /// 可见区之外的真实内容（glass-recipe.md 硬规则 2）。</summary>
         internal int FrostMargin
         {
-            get { return (int)Math.Ceiling(3f * FrostSigma * Dpi); }
+            get { return (int)Math.Ceiling(3f * GlassSigma); }
         }
 
         public TopWindow(Controller owner, bool fillButton, string mode)
@@ -2234,39 +2284,16 @@ namespace DuoChrome
             if (IsHandleCreated) Render();   // 采样落地即重绘，玻璃不再冻结
         }
 
-        /// <summary>烘焙胶囊底板：采样（含 overscan margin）→ 高斯模糊 →
-        /// core 区 1:1 过 vibrancy 矩阵进缓存；可见内容零重采样。</summary>
+        /// <summary>烘焙胶囊底板（§8.6 移植）：采样（含 overscan margin）
+        /// → 3×box blur σ8 → §8.2 增益链（暗/亮单位档随 _capsuleDark 探针）
+        /// → sheen → 不透明板缓存；可见内容零重采样。</summary>
         private void BuildFrost(Bitmap behind, Rectangle core)
         {
             Bitmap old = _frost;
             _frost = null;
             try
             {
-                Bitmap plate = new Bitmap(core.Width, core.Height,
-                    PixelFormat.Format32bppArgb);
-                try
-                {
-                    using (Bitmap blur = GaussianBlur(behind, FrostSigma * Dpi))
-                    using (Graphics pg = Graphics.FromImage(plate))
-                    using (ImageAttributes ia = new ImageAttributes())
-                    {
-                        ColorMatrix cm = NewVibrancyMatrix(
-                            _capsuleDark ? 0.90f : 0.98f,
-                            _capsuleDark ? 0.02f : 0.10f);
-                        cm.Matrix33 = _capsuleDark
-                            ? DarkGlassAlpha : BrightGlassAlpha;
-                        ia.SetColorMatrix(cm);
-                        pg.DrawImage(blur,
-                            new Rectangle(0, 0, core.Width, core.Height),
-                            core.X, core.Y, core.Width, core.Height,
-                            GraphicsUnit.Pixel, ia);
-                    }
-                    _frost = plate;
-                }
-                catch
-                {
-                    plate.Dispose();
-                }
+                _frost = BakeGlassPlate(behind, core, _capsuleDark);
             }
             catch { }
             if (old != null) old.Dispose();
@@ -2401,10 +2428,10 @@ namespace DuoChrome
             {
                 if (Ctrl.Glass)
                 {
-                    // 胶囊底板 = 纯毛玻璃（无 tint，vibrancy 矩阵；配方与裁决见
-                    // docs/window-experience.md §11 毛玻璃化）；字形随底色自适应。
-                    // 轮廓由 MaskSurface 的 AA 覆盖蒙版雕刻；静止态零描边（用户拍板
-                    // "纯粹毛玻璃胶囊"）——描边只在固定态出现，作为 pin 指示器。
+                    // 胶囊底板 = §8 增益链纯毛玻璃（glass-recipe.md §8.6，
+                    // 暗/亮单位档随 _capsuleDark）；字形随底色自适应。
+                    // 轮廓由 MaskSurface 的 AA 覆盖蒙版雕刻；静止态零描边
+                    // ——描边只在固定态出现，作为 pin 指示器。
                     DrawCapsuleAcrylic(g);
                 }
                 else
@@ -2460,30 +2487,17 @@ namespace DuoChrome
             return RoundedPath(w, h, rad, rad);
         }
 
-        /// <summary>胶囊底板直贴：BuildFrost 在采样落地时烘焙的高斯毛玻璃
-        /// 缓存（docs/window-experience.md §11 纯粹毛玻璃）。可见内容零重
-        /// 采样；干底（采样不可用）= DryGlass 待命色。轮廓由 MaskSurface
-        /// 的 AA 蒙版雕刻，此处整矩形绘制。</summary>
+        /// <summary>胶囊底板直贴：BuildFrost 在采样落地时烘焙的 §8 增益链
+        /// 毛玻璃缓存（sheen 内置，旧顶光渐变/活底 alpha 退役）。可见内容
+        /// 零重采样；干底（采样不可用）= DryGlass 待命色。轮廓由
+        /// MaskSurface 的 AA 蒙版雕刻，此处整矩形绘制。</summary>
         private void DrawCapsuleAcrylic(Graphics g)
         {
-            // 有采样时 frost 直铺透明层；双通路配方见 docs/window-experience.md §11。
             if (_frost != null)
                 g.DrawImage(_frost, 0, 0, Width, Height);
             else
                 using (SolidBrush dry = new SolidBrush(DryGlass))
                     g.FillRectangle(dry, 0, 0, Width, Height);
-            // 顶光渐变（Opus 裁决 A，docs/window-experience.md §11）：内容
-            // 无关的白色纵向 ramp。双态：亮态 8%→1.5%（+8% 被 clamp，
-            // 亮态几乎不可见）；暗态 2.4%→0.4%（用户拍板"往最暗了拉"——
-            // 深色玻璃只留一丝顶部受光）。千底同样适用。
-            int topLit = _capsuleDark ? 6 : 20;
-            int botLit = _capsuleDark ? 1 : 4;
-            using (LinearGradientBrush backlight = new LinearGradientBrush(
-                new Rectangle(0, 0, Width, Height),
-                Color.FromArgb(topLit, 255, 255, 255),
-                Color.FromArgb(botLit, 255, 255, 255),
-                LinearGradientMode.Vertical))
-                g.FillRectangle(backlight, 0, 0, Width, Height);
         }
 
         /// <summary>C2 4th caption button paint: one glass dot over the
@@ -4785,7 +4799,7 @@ namespace DuoChrome
         /// SampleMs cadence while the bar is visible. The capture also
         /// grabs the bar's own layered pixels, so the bar's footprint rows
         /// are replaced with the desktop band below the bar (or the video
-        /// band above, at the screen edge) before handoff - after the 1/8
+        /// band above, at the screen edge) before handoff - after the σ8
         /// blur the composite is indistinguishable from the true backdrop,
         /// and the self-feedback loop (bar -&gt; capture of bar -&gt; flat
         /// tint) is broken without any hide/blank flicker.</summary>
