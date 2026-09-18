@@ -514,9 +514,11 @@ pub struct Card {
 impl SettingsLayout {
     pub fn compute(w: f32, h: f32, problems: &str, engine_locked: bool) -> Self {
         use geom::*;
-        // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8
-        let left = MARGIN + 8.0;
-        let cw = w - (MARGIN + 8.0) * 2.0;
+        // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8。
+        // 宽屏限宽居中（KISS）：列宽封顶 560，窗口更宽时两侧留白，
+        // 避免路径行/模式钮/滑条拉伸成横幅（2026-09-19）。
+        let cw = (w - (MARGIN + 8.0) * 2.0).min(560.0);
+        let left = ((w - cw) / 2.0).max(MARGIN + 8.0);
         let vp = Rect::from_min_max(Pos2::new(left, TOP), Pos2::new(left + cw, h));
         let inner_w = cw - PAD * 2.0;
         let x = left + PAD;
