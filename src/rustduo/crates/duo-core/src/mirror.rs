@@ -22,7 +22,7 @@ use crate::monitor::{
 };
 use crate::paths::logs_dir;
 use crate::session::{run_session_abortable, SessionSpec};
-use crate::settings::{load_settings, resolve_tool, Settings};
+use crate::settings::{load_settings, resolve_tool, Settings, DEFAULT_VD_DPI};
 
 // ------------------------------------------------------------ resolvers
 
@@ -91,6 +91,13 @@ pub fn pick_serial(explicit: Option<&str>, states: &DeviceStates) -> Result<Stri
             online.join(", ")
         )),
     }
+}
+
+/// 平行视窗密度上限：字框宽（短边×9:16 px）÷ 密度 ≥ ~925dp 目标的
+/// 最大整数密度（1440 短边 → 140，字框 ~917dp > 900dp 阈值留 17dp 余量）。
+fn parallel_view_dpi_cap(short_side_px: i64) -> i64 {
+    let letterbox_px = short_side_px as f64 * 9.0 / 16.0;
+    (letterbox_px * 160.0 / 925.0).round().clamp(80.0, DEFAULT_VD_DPI as f64) as i64
 }
 
 /// 窗口标题：--title > 目录预设名 > 包名（M2 的设备标签 sweep 到位后
@@ -301,6 +308,14 @@ pub struct DisplayPlan {
 
 /// 密度注入：args.dpi > 设置 dpi > 设备探测（仅 flex 且未钉时）> 160。
 /// density_probe 由驱动层注入（None = 探测失败/跳过），保持纯函数可测。
+///
+/// 固定横屏的平行视窗保障：竖屏锁定应用（酷安等）在固定横屏上被系统
+/// 信箱化为「短边×9:16」居中竖条，应用侧双栏/平行视窗阈值 sw>900dp
+/// （真机标定 917dp ON / 900dp OFF，见 docs/window-experience.md）。默认
+/// 密度 160 下 1440 短边只给 801dp、跟随设备（如 356）更只给 ~364dp；
+/// 在无显式 --dpi 且设置密度为默认或「跟随设备」时，自动降到使字框
+/// ≥~920dp 的密度（1440 短边 → 140）。用户自定义全局密度（非默认非
+/// null）与按应用 --dpi 钉扎一律不动。
 pub fn plan_display(
     args: &MirrorArgs,
     settings: &Settings,
@@ -322,7 +337,17 @@ pub fn plan_display(
     }
     let mut dpi = args.dpi.or(settings.dpi);
     if dpi.is_none() {
-        dpi = density_probe.or(Some(160)).map(|d| d as i64);
+        dpi = density_probe.or(Some(DEFAULT_VD_DPI as u32)).map(|d| d as i64);
+    }
+    let custom_density = settings
+        .dpi
+        .is_some_and(|d| d != DEFAULT_VD_DPI);
+    if args.display == DisplayMode::Fixed && args.dpi.is_none() && !custom_density {
+        if let (Some(w), Some(h)) = (args.width, args.height) {
+            if w >= h {
+                dpi = Some(parallel_view_dpi_cap(w.min(h)));
+            }
+        }
     }
     let mut display = DisplaySpec {
         mode: args.display,
@@ -487,9 +512,16 @@ pub fn build_engine_args(
     video: VideoSpec,
     audio: bool,
     title: &str,
-    borderless: bool,
+    serial: &str,
 ) -> EngineArgs {
-    let mut engine = EngineArgs::new(args.serial.clone().unwrap_or_default());
+    // serial 用驱动层已解析的在线设备（CLI 可省 --serial）；曾直接取
+    // args.serial.unwrap_or_default()，CLI 省略时传出空 --serial= 令
+    // scrcpy 报「Could not find ADB device :」拒连（面板路径因恒传
+    // --serial 而未暴露，2026-09-19 修）。
+    let mut engine = EngineArgs::new(serial.to_string());
+    // borderless 随 chrome/上巴模式推导（chrome.rs 2026-09-09 真机定稿）。
+    engine.borderless =
+        args.chrome && borderless_for(&resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode));
     engine.display = plan.display.clone();
     engine.video = video;
     engine.app_package = args.app.clone();
@@ -505,7 +537,6 @@ pub fn build_engine_args(
     engine.window_y = plan.window_y;
     engine.window_width = plan.window_width;
     engine.window_height = plan.window_height;
-    engine.borderless = borderless;
     engine
 }
 
@@ -659,18 +690,9 @@ pub fn run(argv: &[String]) -> i32 {
         println!("audio already owned by another duo window - muted");
     }
 
-    // 上巴 native = 真系统标题栏：scrcpy 不得无边框（chrome.rs
-    // borderless_for，2026-09-09 真机定稿）；沉浸/无 上巴仍无边框。
-    let top_bar_mode = resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode);
-    let mut engine = build_engine_args(
-        &args,
-        &settings,
-        &plan,
-        video,
-        audio,
-        &title,
-        args.chrome && borderless_for(&top_bar_mode),
-    );
+    // borderless 随 chrome/上巴模式推导已内化到 build_engine_args
+    //（chrome.rs 2026-09-09 真机定稿：上巴 native = 真系统标题栏）。
+    let mut engine = build_engine_args(&args, &settings, &plan, video, audio, &title, &serial);
     engine.adb_binary = Some(adb_path.clone());
     let log_path = session_log_path(&args, None);
     println!("session log: {}", log_path.display());
@@ -706,6 +728,8 @@ pub fn run(argv: &[String]) -> i32 {
         {
             use crate::chrome::{read_top_pin, top_pin_path, ChromeOverlay, OverlayArgs};
             use crate::settings::corner_radius_dip;
+            let top_bar_mode =
+                resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode);
             let bottom_bar_mode =
                 resolve_bar_mode(args.chrome_bottom.as_deref(), &settings.bottom_bar_mode);
             // 视频尺寸 seed 只给 fixed（比例锁）；flex 纯自由窗口，
@@ -994,6 +1018,75 @@ mod tests {
     }
 
     #[test]
+    fn parallel_view_dpi_cap_matches_calibration() {
+        // 真机标定：1440 短边在 160dpi 字框 801dp（手机形态）、140dpi
+        // 917dp（平行视窗 ON）；上限公式取 140。
+        assert_eq!(parallel_view_dpi_cap(1440), 140);
+        // 更大的短边：160 默认已给足字框 dp，上限钉在出厂默认；小屏不低于 80。
+        assert_eq!(parallel_view_dpi_cap(2294), 160);
+        assert_eq!(parallel_view_dpi_cap(1080), 105);
+        assert_eq!(parallel_view_dpi_cap(400), 80);
+    }
+
+    #[test]
+    fn plan_display_fixed_landscape_default_dpi_gets_parallel_cap() {
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2560);
+        a.height = Some(1440);
+        let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(140));
+        assert!(plan.diag.contains("new-display=2560x1440/140"));
+        // 1:1 也算横屏（竖屏锁定应用同样被信箱化）。
+        let mut sq = a.clone();
+        sq.width = Some(1440);
+        sq.height = Some(1440);
+        assert_eq!(plan_display(&sq, &settings(), AREA, None).unwrap().display.dpi, Some(140));
+    }
+
+    #[test]
+    fn plan_display_fixed_explicit_or_custom_dpi_wins() {
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2560);
+        a.height = Some(1440);
+        // 按应用钉扎（面板 --dpi）优先。
+        let mut pinned = a.clone();
+        pinned.dpi = Some(320);
+        assert_eq!(
+            plan_display(&pinned, &settings(), AREA, None).unwrap().display.dpi,
+            Some(320)
+        );
+        // 用户自定义全局密度（≠出厂 160）不被改写。
+        let mut s = settings();
+        s.dpi = Some(150);
+        assert_eq!(
+            plan_display(&a, &s, AREA, None).unwrap().display.dpi,
+            Some(150)
+        );
+        // 「跟随设备」（None + 探测）同样被保障覆盖（否则 356 密度下
+        // 固定横屏字框 ~364dp 永远手机形态）。
+        let mut follow = settings();
+        follow.dpi = None;
+        assert_eq!(
+            plan_display(&a, &follow, AREA, Some(356)).unwrap().display.dpi,
+            Some(140)
+        );
+    }
+
+    #[test]
+    fn plan_display_fixed_portrait_keeps_default_dpi() {
+        // 竖屏固定屏：竖屏应用原生填满，无信箱化，密度保障不介入。
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(1440);
+        a.height = Some(2560);
+        let plan = plan_display(&a, &settings(), AREA, None).unwrap();
+        assert_eq!(plan.display.dpi, Some(160));
+        assert!(plan.diag.contains("new-display=1440x2560/160"));
+    }
+
+    #[test]
     fn plan_display_explicit_dpi_beats_probe() {
         let mut a = args();
         a.dpi = Some(240);
@@ -1102,9 +1195,10 @@ mod tests {
             default_video(),
             false,
             "微信",
-            false,
+            "4444bd6b",
         );
         let argv = engine.to_argv("scrcpy").unwrap();
+        assert!(argv.iter().any(|f| f == "--serial=4444bd6b"));
         let joined = argv.join(" ");
         assert!(joined.contains("--start-app=+com.tencent.mm"));
         assert!(joined.contains("--no-vd-destroy-content"));
@@ -1127,9 +1221,10 @@ mod tests {
 
     #[test]
     fn engine_args_borderless_surface() {
-        let a = args();
+        let mut a = args();
+        a.chrome = true;
         let plan = DisplayPlan::default();
-        let engine = build_engine_args(&a, &settings(), &plan, default_video(), true, "T", true);
+        let engine = build_engine_args(&a, &settings(), &plan, default_video(), true, "T", "s");
         let argv = engine.to_argv("scrcpy").unwrap();
         assert!(argv.iter().any(|f| f == "--window-borderless"));
         assert!(argv.iter().any(|f| f == "--audio-codec=flac"));
@@ -1162,30 +1257,14 @@ mod tests {
         a.chrome = true;
         let s = settings();
         let plan = DisplayPlan::default();
-        let engine = build_engine_args(
-            &a,
-            &s,
-            &plan,
-            default_video(),
-            true,
-            "T",
-            a.chrome && borderless_for(&resolve_bar_mode(a.chrome_top.as_deref(), &s.top_bar_mode)),
-        );
+        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "4444bd6b");
         assert!(engine
             .to_argv("scrcpy")
             .unwrap()
             .iter()
             .any(|f| f == "--window-borderless"));
         a.chrome_top = Some("native".into());
-        let engine = build_engine_args(
-            &a,
-            &s,
-            &plan,
-            default_video(),
-            true,
-            "T",
-            a.chrome && borderless_for(&resolve_bar_mode(a.chrome_top.as_deref(), &s.top_bar_mode)),
-        );
+        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "4444bd6b");
         assert!(
             !engine
                 .to_argv("scrcpy")

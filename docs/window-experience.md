@@ -699,3 +699,56 @@ AssertAbove 与漂移 Glue）。
 在自由窗口模式（flex）下，安卓系统响应传感器或应用请求可能会自动旋转虚拟屏，导致桌面端窗口与视频比例冲突。
 - 一旦解析到虚拟显示屏 ID，立即执行 `wm set-ignore-orientation-request -d <id> 1`，将虚拟屏方向与旋转响应严格锁定在桌面端窗口决定的横/竖规格下。
 
+
+## §16 固定比例的平行视窗与密度保障（2026-09-19）
+
+> 用户报告：酷安在「自适应窗口」能打开平行视窗，「固定比例」不能。
+> 本节记录真机标定过程与最终规则；实现在 duo-core `mirror.rs`
+> `plan_display` 的 `parallel_view_dpi_cap`。
+
+### 1. 机理（真机 OPD2409 / ColorOS 16 逐条 dumpsys 标定）
+
+- scrcpy flex 与固定建屏参数完全一致（同一 `createNewVirtualDisplay`
+  调用与 flags）；唯一差异是 flex 会随窗口 `resize()`。**resize 事件
+  不是平行视窗开关**（3392×2294 固定屏、零 resize 同样触发）。
+- 竖屏锁定应用（酷安）在横屏虚拟屏上被系统**信箱化**为「短边 × 9:16」
+  的居中竖条；应用看到的是该竖条的 dp 配置。
+- 酷安的平行视窗 = 应用自建 TaskFragment adjacent 嵌入
+  （`organizerProc=com.coolapk.market`，sz=2），在首次导航时激活，
+  触发阈值是字框 `screenWidthDp > 900`：
+
+| 显示 | 密度 | 字框 sw | 形态 |
+|---|---|---|---|
+| 1920×1080（flex 小窗） | 160 | 599dp | 手机 |
+| 2560×1440（固定 16:9） | 160 | 801dp | 手机 |
+| 2560×1440（固定） | 150 | ~864dp | 手机 |
+| 2560×1440（固定） | 144 | ~900dp | 手机（900 不满足 >900） |
+| **2560×1440（固定）** | **140** | **917dp** | **平行视窗 ON** |
+| 3392×2294（固定/flex 皆然） | 160 | 1541dp | 平行视窗 ON |
+
+- 「跟随设备」密度（本机 356）下字框仅 ~364dp，固定与 flex（4K 全屏
+  上限 ~580dp）都永远到不了阈值——用户印象里「flex 可以」来自全局
+  密度 160 时期的大窗口。
+
+### 2. 规则（mirror.rs）
+
+固定横屏（`--display fixed` 且 w≥h）且无显式 `--dpi`、全局密度为出厂
+默认 160 或「跟随设备」时，密度自动取
+`round(短边×9/16×160/925)`（1440 短边 → **140**，字框 ~917dp，阈值上
+留 17dp 余量）；上限不超过出厂默认、下限 80。自定义全局密度与按应用
+DPI 钉扎（面板右键 → DPI）不被改写。竖屏固定屏不介入（竖屏应用原生
+填满，无信箱化）。
+
+### 3. 顺带修复
+
+`build_engine_args` 曾直接取 `args.serial.unwrap_or_default()`：CLI
+省略 `--serial` 时传出空 `--serial=`，scrcpy 报「Could not find ADB
+device :」拒连（面板路径因恒传 serial 未暴露）。现改用驱动层已解析的
+在线 serial。
+
+### 4. 验收（2026-09-19 生产路径）
+
+`duo-core.exe mirror --app com.coolapk.market --display fixed --width
+2560 --height 1440`（设置 dpi=null 跟随设备）→ diag `display: fixed
+dpi=140`，酷安收 `sw917dp`，首导航即出现 coolapk 自组织 AdjacentSet
+（平行视窗激活）。

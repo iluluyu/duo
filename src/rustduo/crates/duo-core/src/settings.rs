@@ -30,6 +30,10 @@ pub const CORNER_RANGE: (i64, i64) = (0, 96); // 超过 96 是试验田（160 �
                                               // 即 1K 渲染）。范围 1.0–3.0，自由取值（预设 1/1.4/2，微调步进 0.1）。
 pub const RENDER_SCALE_RANGE: (f64, f64) = (1.0, 3.0);
 
+/// 虚拟屏密度的出厂默认（桌面 mdpi 基准）。固定横屏的平行视窗保障
+/// 以「设置 == 默认值」为介入条件（用户自定义密度不让位）。
+pub const DEFAULT_VD_DPI: i64 = 160;
+
 /// 持久化的用户偏好（引擎默认值与外观）。字段顺序即 settings.json 落盘
 /// 顺序（Python dataclass asdict 合同）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -73,7 +77,7 @@ impl Default for Settings {
             adb_path: String::new(),
             fps: Some(60),
             bitrate_mbps: Some(30),
-            dpi: Some(160),
+            dpi: Some(DEFAULT_VD_DPI),
             render_scale: 1.0,
             corner_mode: "system".into(),
             corner_size_dip: 48,
