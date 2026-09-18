@@ -349,6 +349,12 @@ pub fn plan_display(
             }
         }
     }
+    // 补偿基准恒为出厂 160（跟随设备的探测值不作基准——356/140 会把
+    // 补偿推到 fit 上限变全屏窗，2026-09-19 真机撞出）。
+    let parallel_capped = matches!((args.display, dpi), (DisplayMode::Fixed, Some(d))
+        if d < DEFAULT_VD_DPI)
+        && args.dpi.is_none()
+        && !custom_density;
     let mut display = DisplaySpec {
         mode: args.display,
         width: args.width.map(|w| w as u32),
@@ -395,7 +401,17 @@ pub fn plan_display(
             let dh = dh as f64;
             let avail_w = (area.width - 40).max(320) as f64;
             let avail_h = (area.height - 60).max(320) as f64;
-            let scale = (avail_w / dw).min(avail_h / dh).min(1.0);
+            // 平行视窗降密度的窗口补偿（§16）：display 几何不变、窗口按
+            // 出厂 160/实际密度 放大（140 档 = ×8/7），屏上文字回到 160
+            // 桌面密度时代的物理尺寸；钳进工作区，小屏放不下时退回
+            // 工作区适配。
+            let text_scale = if parallel_capped {
+                (DEFAULT_VD_DPI as f64 / f64::from(dpi.unwrap_or(DEFAULT_VD_DPI) as u32))
+                    .min(2.0)
+            } else {
+                1.0
+            };
+            let scale = (avail_w / dw).min(avail_h / dh).min(text_scale);
             let mut w = (dw * scale).round() as u32;
             let mut h = (dh * scale).round() as u32;
             w += w & 1;
@@ -442,13 +458,17 @@ pub fn plan_display(
         DisplayMode::Mirror => "mirror",
     };
     plan.display = display;
-    plan.diag = format!(
+    let mut diag = format!(
         "display: {mode_name} dpi={} new-display={new_display} ({area_text})",
         plan.display
             .dpi
             .map(|d| d.to_string())
             .unwrap_or_else(|| "None".into())
     );
+    if let (Some(w), Some(h)) = (plan.window_width, plan.window_height) {
+        diag.push_str(&format!(" window: {w}x{h}"));
+    }
+    plan.diag = diag;
     Ok(plan)
 }
 
@@ -1037,11 +1057,30 @@ mod tests {
         let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
         assert_eq!(plan.display.dpi, Some(140));
         assert!(plan.diag.contains("new-display=2560x1440/140"));
+        // 窗口补偿：2560×1440 × 160/140 ≈ 2926×1646（屏上文字回到
+        // 降密前尺寸；4K 工作区放得下）。
+        assert_eq!((plan.window_width, plan.window_height), (Some(2926), Some(1646)));
         // 1:1 也算横屏（竖屏锁定应用同样被信箱化）。
         let mut sq = a.clone();
         sq.width = Some(1440);
         sq.height = Some(1440);
         assert_eq!(plan_display(&sq, &settings(), AREA, None).unwrap().display.dpi, Some(140));
+    }
+
+    #[test]
+    fn plan_display_fixed_window_compensation_clamps_to_work_area() {
+        // 小工作区放不下补偿窗口：退回工作区适配（文字略小于降密前但
+        // 窗口不溢出）。
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2560);
+        a.height = Some(1440);
+        let tiny = WorkArea { width: 2000, height: 1200 };
+        let plan = plan_display(&a, &settings(), tiny, None).unwrap();
+        assert_eq!(plan.display.dpi, Some(140));
+        let w = plan.window_width.unwrap() as f64;
+        let h = plan.window_height.unwrap() as f64;
+        assert!(w <= 1960.0 && h <= 1140.0, "window {w}x{h} must fit work area");
     }
 
     #[test]
@@ -1065,12 +1104,16 @@ mod tests {
             Some(150)
         );
         // 「跟随设备」（None + 探测）同样被保障覆盖（否则 356 密度下
-        // 固定横屏字框 ~364dp 永远手机形态）。
+        // 固定横屏字框 ~364dp 永远手机形态）；窗口补偿基准恒为 160
+        //（不用探测值，否则补偿失控到全屏）。
         let mut follow = settings();
         follow.dpi = None;
+        let plan_follow = plan_display(&a, &follow, AREA, Some(356)).unwrap();
+        assert_eq!(plan_follow.display.dpi, Some(140));
         assert_eq!(
-            plan_display(&a, &follow, AREA, Some(356)).unwrap().display.dpi,
-            Some(140)
+            (plan_follow.window_width, plan_follow.window_height),
+            (Some(2926), Some(1646)),
+            "补偿窗口对准 160 基准，不随探测密度膨胀"
         );
     }
 
