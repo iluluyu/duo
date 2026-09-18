@@ -184,6 +184,16 @@ fn stale(entry: Option<&RendererMeta>, old: Option<&RendererMeta>, png_exists: b
     }
 }
 
+/// 本地图标后处理管线版本（蒙版/缩放等本地重绘逻辑变更时 +1）：
+/// 设备端渲染器版本只覆盖 dex 变化，本地管线升级后旧缓存靠它判陈。
+/// sidecar 不符 → 全量 stale → 重拉重绘。
+const ICON_PIPELINE_VERSION: &str = "2-mask-feather";
+
+fn pipeline_stale(cache_root: Option<&Path>) -> bool {
+    let path = icon_cache_dir(cache_root).join("pipeline.txt");
+    std::fs::read_to_string(path).ok().as_deref() != Some(ICON_PIPELINE_VERSION)
+}
+
 /// 设备端批量渲染 + 本地收尾（对译 render_device_icons）。False = 渲染器
 /// 不可用/传输失败（面板回退目录标签 + 预设图标，绝不拦启动）。
 pub fn render_device_icons(
@@ -204,6 +214,7 @@ pub fn render_device_icons(
         return outcome(empty);
     }
     let existing = read_device_meta(cache_root);
+    let pipeline_dirty = pipeline_stale(cache_root);
     // 每次调用独立工作目录（同进程并发 sweep 互不踩踏）。
     static SWEEP_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let work = std::env::temp_dir().join(format!(
@@ -256,11 +267,12 @@ pub fn render_device_icons(
     let pending: Vec<&String> = packages
         .iter()
         .filter(|package| {
-            stale(
-                meta.get(*package),
-                existing.get(*package),
-                icon_cache_png(cache_root, package).is_file(),
-            )
+            pipeline_dirty
+                || stale(
+                    meta.get(*package),
+                    existing.get(*package),
+                    icon_cache_png(cache_root, package).is_file(),
+                )
         })
         .collect();
     let labels: BTreeMap<String, String> = meta
@@ -326,6 +338,11 @@ pub fn render_device_icons(
         merged.insert((*package).clone(), entry.clone());
     }
     write_device_meta(cache_root, &merged);
+    // 管线版本钉在成功收尾后：中途失败下次仍判陈重拉。
+    let _ = std::fs::write(
+        icon_cache_dir(cache_root).join("pipeline.txt"),
+        ICON_PIPELINE_VERSION,
+    );
     cleanup(&work);
     SweepOutcome {
         rendered: true,

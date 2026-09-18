@@ -464,9 +464,12 @@ fn is_monochrome_art(blob: &RgbaImage, dominant: (u8, u8, u8)) -> bool {
     while i + 3 < data.len() {
         if data[i + 3] >= 200 {
             total += 1;
-            let d2 = (u32::from(data[i]) - u32::from(dominant.0)).pow(2)
-                + (u32::from(data[i + 1]) - u32::from(dominant.1)).pow(2)
-                + (u32::from(data[i + 2]) - u32::from(dominant.2)).pow(2);
+            // i32 差值取绝对值：u32 直减在 data < dominant 时下溢
+            //（debug panic / release 回绕错判，2026-09-19 真机 sweep 撞出）。
+            let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).unsigned_abs();
+            let d2 = d(data[i], dominant.0).pow(2)
+                + d(data[i + 1], dominant.1).pow(2)
+                + d(data[i + 2], dominant.2).pow(2);
             if d2 < t2 {
                 near += 1;
             }
