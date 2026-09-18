@@ -158,15 +158,36 @@ pub fn g2_squircle(rect: Rect, color: Color32) -> Shape {
     Shape::convex_polygon(path, color, Stroke::new(1.0_f32, color))
 }
 
-/// 标签 6 字截断（AppTile label.slice(0,6) + "…"）。
-pub fn elide_6(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > 6 {
-        let head: String = chars[..6].iter().collect();
-        format!("{head}…")
-    } else {
-        s.to_owned()
+/// 标签像素宽自适应截断（AppTile label 的 slice(0,6)+"…" 换像素规则）：
+/// 整串放得下则原样返回（窄字母长名不再被字数规则误截）；放不下时保留
+/// 最长前缀使 前缀宽 + "…" 宽 ≤ max_w，再补 "…"——"…" 宽度计入预算，
+/// 装不下就逐字回退。宽度函数由调用方注入（真字形宽 =
+/// fonts(|f| f.glyph_width(font_id, ch))，字体栈内含 CJK 兜底），纯逻辑可测。
+pub fn elide_to_width(s: &str, max_w: f32, char_w: &dyn Fn(char) -> f32) -> String {
+    let ell_w = char_w('…');
+    let mut chars: Vec<(char, f32)> = s.chars().map(|ch| (ch, char_w(ch))).collect();
+    let mut used: f32 = chars.iter().map(|(_, w)| w).sum();
+    if used <= max_w {
+        return s.to_owned(); // 整串放得下：不截
     }
+    // 放不下：为 "…" 留位，超宽就退字
+    while used + ell_w > max_w {
+        let Some((_, w)) = chars.pop() else { break };
+        used -= w;
+    }
+    if chars.is_empty() {
+        // 一个字都装不下：装得下 "…" 就只画 "…"（QML ElideRight 同款兜底），
+        // 连 "…" 都超宽则留空，宁缺勿溢出。
+        return if ell_w <= max_w {
+            "…".to_owned()
+        } else {
+            String::new()
+        };
+    }
+    let mut head = String::new();
+    head.extend(chars.iter().map(|(ch, _)| ch));
+    head.push('…');
+    head
 }
 
 /// 清空钮/停止 ✕ 的双斜线（QML 两条 10×1.6 旋转矩形；线帽圆头）。
@@ -219,75 +240,6 @@ pub fn speaker(painter: &egui::Painter, top_left: Pos2, color: Color32) {
     }
 }
 
-/// 毛玻璃配方与算法见 docs/ui/glass-recipe.md
-pub fn paint_menu_glass(painter: &egui::Painter, rect: Rect, is_dark: bool) {
-    if rect.width() < 10.0 || rect.height() < 10.0 {
-        return;
-    }
-    let specular = if is_dark {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 55)
-    } else {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 120)
-    };
-    let top_y = rect.top() + 1.0;
-    painter.line_segment(
-        [
-            Pos2::new(rect.left() + 12.0, top_y),
-            Pos2::new(rect.right() - 12.0, top_y),
-        ],
-        Stroke::new(1.0_f32, specular),
-    );
-
-    let grad_h = (rect.height() * 0.35).min(40.0);
-    let grad_steps = 6;
-    for i in 0..grad_steps {
-        let frac = i as f32 / grad_steps as f32;
-        let y = rect.top() + frac * grad_h;
-        let alpha = if is_dark {
-            ((1.0 - frac) * 14.0).round() as u8
-        } else {
-            ((1.0 - frac) * 22.0).round() as u8
-        };
-        if alpha > 0 {
-            let color = Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
-            painter.line_segment(
-                [
-                    Pos2::new(rect.left() + 10.0, y),
-                    Pos2::new(rect.right() - 10.0, y),
-                ],
-                Stroke::new(grad_h / grad_steps as f32, color),
-            );
-        }
-    }
-
-    let dot_alpha = if is_dark { 8u8 } else { 6u8 };
-    let dot_color = if is_dark {
-        Color32::from_rgba_unmultiplied(255, 255, 255, dot_alpha)
-    } else {
-        Color32::from_rgba_unmultiplied(0, 0, 0, dot_alpha)
-    };
-    let step = 6.0_f32;
-    let mut y = rect.top() + 4.0;
-    while y < rect.bottom() - 4.0 {
-        let mut x = rect.left() + 4.0;
-        while x < rect.right() - 4.0 {
-            let h =
-                ((x as u32).wrapping_mul(374761393) ^ (y as u32).wrapping_mul(668265263)) & 0xFF;
-            if h > 110 {
-                let dx = ((h & 3) as f32) - 1.5;
-                let dy = (((h >> 2) & 3) as f32) - 1.5;
-                painter.rect_filled(
-                    Rect::from_min_size(Pos2::new(x + dx, y + dy), Vec2::splat(1.0)),
-                    CornerRadius::ZERO,
-                    dot_color,
-                );
-            }
-            x += step;
-        }
-        y += step;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,24 +257,49 @@ mod tests {
         );
     }
 
-    #[test]
-    fn elide_matches_qml_six_char_rule() {
-        assert_eq!(elide_6("微信"), "微信");
-        assert_eq!(elide_6("哔哩哔哩"), "哔哩哔哩");
-        assert_eq!(elide_6("哔哩哔哩动画集"), "哔哩哔哩动画…");
-        assert_eq!(elide_6("哔哩哔哩动画"), "哔哩哔哩动画");
-        assert_eq!(elide_6("Chrome"), "Chrome");
+    /// 像素宽自适应截断（elide_to_width）的合成宽函数：ASCII 与 "…"
+    /// 记 1px，其余（CJK 全宽）记 2px，方便手算边界。
+    fn synth_w(ch: char) -> f32 {
+        if ch == '…' || ch.is_ascii() {
+            1.0
+        } else {
+            2.0
+        }
     }
 
     #[test]
-    fn paint_menu_glass_produces_valid_shapes() {
-        let ctx = egui::Context::default();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new("test"),
-        ));
-        let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::new(128.0, 200.0));
-        paint_menu_glass(&painter, rect, true);
-        paint_menu_glass(&painter, rect, false);
+    fn elide_fits_exactly_or_packs_by_pixel() {
+        // 恰好放下：整串宽 == 预算 → 原样，不加 "…"
+        assert_eq!(elide_to_width("abcdef", 6.0, &synth_w), "abcdef");
+        // 恰好放不下：截后 前缀+"…" 恰好 == 预算（“…” 计入预算的边界）
+        assert_eq!(elide_to_width("abcdefg", 6.0, &synth_w), "abcde…");
+        // 前缀+"…" 会超预算时退字：4.9 只装得下 3 字 + "…"（ab.. 由 2+1）
+        assert_eq!(elide_to_width("abcdefg", 3.9, &synth_w), "ab…");
+    }
+
+    #[test]
+    fn elide_empty_and_fullwidth_and_nothing_fits() {
+        // 空串
+        assert_eq!(elide_to_width("", 10.0, &synth_w), "");
+        // 全宽字符：预算 2 恰好装一个 CJK
+        assert_eq!(elide_to_width("中", 2.0, &synth_w), "中");
+        assert_eq!(elide_to_width("中", 1.9, &synth_w), "…"); // 一字装不下→只画省略号
+        assert_eq!(elide_to_width("中", 0.5, &synth_w), ""); // 连 "…" 都超宽→留空
+                                                             // CJK+拉丁混合按各自字形宽计（2px CJK 顶得掉 1px 拉丁）：
+                                                             // 7px 全串 > 预算 5 → 退到 "ab中" + "…" = 5
+        assert_eq!(elide_to_width("ab中cde", 5.0, &synth_w), "ab中…");
+    }
+
+    #[test]
+    fn elide_keeps_full_name_that_old_rule_mistruncated() {
+        // 修复动机：FlClash/ChatGPT 这类 >6 字符的窄字母名，旧 6 字规则
+        // 截成 "Flclas…"；像素规则下放得下就完整显示。
+        assert_eq!(elide_to_width("FlClash", 7.0, &synth_w), "FlClash");
+        assert_eq!(elide_to_width("ChatGPT", 7.0, &synth_w), "ChatGPT");
+        // 7 个 CJK（14px）放不下 13px 预算：截尾 + "…" 恰好 13
+        assert_eq!(
+            elide_to_width("哔哩哔哩动画集", 13.0, &synth_w),
+            "哔哩哔哩动画…"
+        );
     }
 }

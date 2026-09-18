@@ -9,6 +9,7 @@ pub mod app;
 pub mod backend;
 pub mod blur;
 pub mod fonts;
+pub mod glass;
 pub mod home;
 pub mod model;
 pub mod paint;
@@ -19,6 +20,8 @@ pub mod settings;
 mod settings_view;
 pub mod theme;
 pub mod winproc;
+#[cfg(unix)]
+pub mod xtest;
 
 use eframe::egui;
 

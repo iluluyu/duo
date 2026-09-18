@@ -894,6 +894,7 @@ dependencies = [
  "window-vibrancy",
  "windows",
  "winresource",
+ "x11-dl",
 ]
 
 [[package]]

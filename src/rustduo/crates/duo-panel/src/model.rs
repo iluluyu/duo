@@ -28,7 +28,7 @@ pub struct AppEntry {
 }
 
 impl AppEntry {
-    fn fresh(package: &str, label: &str, pinned: bool) -> Self {
+    pub(crate) fn fresh(package: &str, label: &str, pinned: bool) -> Self {
         Self {
             package: package.to_string(),
             label: label.to_string(),

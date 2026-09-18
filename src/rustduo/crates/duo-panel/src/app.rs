@@ -3,12 +3,13 @@
 //! immediate-mode 绘制与事件转发。结构对齐 DESIGN.md §3：顶栏胶囊 →
 //! 首页（设备卡 + 固定卡 + 搜索 + 网格 + 运行卡）或设置页 → Toast。
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use eframe::egui::{Sense, Vec2};
+use eframe::egui::{Sense, TextureHandle, Vec2};
 
 use crate::sessions;
 use duo_core::aspects::{
@@ -74,6 +75,22 @@ fn bar_entry_after(
 /// 已装探测后台任务结果（已装包名全集 + duo-core apps 行）。
 type InstalledResult = Result<(Vec<String>, Vec<backend::AppRow>), String>;
 
+/// 菜单毛玻璃截图请求的归属标签（与 --shot 出图泵的回包区分，防互吞）。
+const GLASS_SHOT_TAG: &str = "duo-menu-glass-shot";
+/// --shot 出图泵的截图归属标签。
+const SHOT_TAG: &str = "duo-shot";
+
+pub(crate) const MENU_WIDTH: f32 = 128.0;
+pub(crate) const MENU_MARGIN: f32 = 4.0;
+pub(crate) const MENU_INNER_WIDTH: f32 = MENU_WIDTH - 2.0 * MENU_MARGIN;
+
+fn user_data_eq(ud: &egui::UserData, tag: &str) -> bool {
+    ud.data
+        .as_ref()
+        .and_then(|a| a.downcast_ref::<String>())
+        .is_some_and(|s| s == tag)
+}
+
 /// 引擎路径检测结果：。*/
 pub(crate) type ProbeResult = Result<(String, bool, String), String>;
 
@@ -82,6 +99,49 @@ struct MoveResult {
     package: String,
     ok: bool,
     detail: String,
+}
+
+/// 菜单毛玻璃状态机（生命周期 = 一次菜单打开；配方见 docs/ui/glass-recipe.md
+/// 「egui 实装」节）：跳变帧跳画菜单并发截图命令 → 下一帧
+/// Event::Screenshot 落地 → 裁剪/模糊/贴图 → 菜单闭包开头垫贴图。
+pub(crate) struct MenuGlass {
+    /// 截图命令已发出（一次打开只发一次）。
+    pub(crate) requested: bool,
+    /// 菜单外沿矩形（逻辑 px，frame 边距含）。
+    pub(crate) menu_rect: Option<egui::Rect>,
+    /// 全窗设备像素快照 + 拍摄时 pixels_per_point。
+    pub(crate) snapshot: Option<std::sync::Arc<egui::ColorImage>>,
+    pub(crate) snapshot_ppp: f32,
+    pub(crate) main_tex: Option<TextureHandle>,
+    /// 主贴图的屏幕矩形（设备像素网格对齐后）。
+    pub(crate) main_rect: Option<egui::Rect>,
+    pub(crate) sub_tex: Option<TextureHandle>,
+    pub(crate) sub_rect: Option<egui::Rect>,
+    /// 贴图屏幕覆盖矩形（= 裁剪区，非菜单矩形；主侧为 main_rect）。
+    pub(crate) sub_draw: Option<egui::Rect>,
+    /// 贴图对应的拍摄矩形（区域被屏幕钳位后矩形会变，须重拍）。
+    pub(crate) sub_tex_rect: Option<egui::Rect>,
+    pub(crate) main_shape: Option<egui::layers::ShapeIdx>,
+    pub(crate) sub_shape: Option<egui::layers::ShapeIdx>,
+}
+
+impl Default for MenuGlass {
+    fn default() -> Self {
+        Self {
+            requested: false,
+            menu_rect: None,
+            snapshot: None,
+            snapshot_ppp: 1.0,
+            main_tex: None,
+            main_rect: None,
+            sub_tex: None,
+            sub_rect: None,
+            sub_draw: None,
+            sub_tex_rect: None,
+            main_shape: None,
+            sub_shape: None,
+        }
+    }
 }
 
 pub struct PanelApp {
@@ -129,10 +189,33 @@ pub struct PanelApp {
     /// 出图模式：(path, 已渲染帧数, 启动时刻)。帧数 ≥40 且满 1.6s（桩
     /// duo-core 的 watch/apps 首行落位）才请求截图，收到即存盘退出。
     pub(crate) shot: Option<(String, u32, Instant)>,
+    /// 出图泵自己的截图请求已发出（毛玻璃也发截图命令，须区分归属）。
+    pub(crate) shot_capture: bool,
+    pub(crate) shot_capture_frame: u32,
+    #[allow(dead_code)]
+    shot_clicked: bool,
+    #[allow(dead_code)]
+    shot_sub_moved: bool,
+    /// DUO_SKIP_SWEEP=1：零子进程出图（不探测/不 sweep，图标吃缓存）。
+    skip_sweep: bool,
+    /// Wayland 出图：无 XTEST/点击注入，改由 harness 托管菜单 Area。
+    shot_use_harness: bool,
     /// DUO_SHOT_MENU=tile|tile-sub|mirror：--shot 模式注入合成右键自动
     /// 开菜单（tile-sub 再悬停「固定比例」展开二级）。对拍回路常备开关
     /// （菜单只能走 Windows exe 验：WSLg 下 popup 行为不同）。
     pub(crate) shot_menu: Option<String>,
+    /// 菜单毛玻璃状态（None = 菜单关/玻璃关）。
+    pub(crate) menu_glass: Option<MenuGlass>,
+    /// 菜单外沿矩形记忆（换目标时重裁切）。
+    pub(crate) menu_rect_hint: Option<egui::Rect>,
+    /// 菜单连续"未开"帧计数（宽容清空去抖，见 pump_menu_glass）。
+    pub(crate) menu_glass_closed_frames: u32,
+    /// 全窗干净背景快照（菜单未开时捕获，供菜单打开时即时切图）。
+    pub(crate) menu_snapshot: Option<std::sync::Arc<egui::ColorImage>>,
+    pub(crate) menu_snapshot_ppp: f32,
+    pub(crate) last_screen_size: Option<egui::Vec2>,
+    /// 图标贴图缓存：(路径, 显示尺寸)。None = 加载失败不重试。
+    pub(crate) icon_tex: RefCell<BTreeMap<(PathBuf, u32), Option<TextureHandle>>>,
 }
 
 impl PanelApp {
@@ -175,13 +258,90 @@ impl PanelApp {
             settings_scroll: 0.0,
             probe_bg: None,
             probe_pill: None,
+            shot_capture: false,
+            shot_capture_frame: 0,
+            shot_clicked: false,
+            shot_sub_moved: false,
+            shot_use_harness: false,
+            skip_sweep: std::env::var("DUO_SKIP_SWEEP").is_ok_and(|v| v == "1"),
             shot_menu: std::env::var("DUO_SHOT_MENU").ok(),
+            menu_glass: None,
+            menu_rect_hint: None,
+            menu_glass_closed_frames: 0,
+            menu_snapshot: None,
+            menu_snapshot_ppp: 1.0,
+            last_screen_size: None,
+            icon_tex: RefCell::new(BTreeMap::new()),
         };
         // QML _status_text 初始「就绪」→ 启动即挂状态 toast
         app.toast_now("就绪");
-        app.ensure_watch();
-        app.refresh_installed();
+        if app.skip_sweep {
+            // 出图回路：零子进程、不受 adb 抖动影响
+            app.load_apps_from_icon_cache();
+        } else {
+            app.ensure_watch();
+            app.refresh_installed();
+        }
         app
+    }
+
+    /// icons 缓存即已装集合（r20 优先，裸 png 兜底），标签退包名末段。
+    fn load_apps_from_icon_cache(&mut self) {
+        let dir = duo_core::paths::icons_dir(None);
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let mut icons: BTreeMap<String, Option<PathBuf>> = BTreeMap::new();
+        for file in files.flatten() {
+            let path = file.path();
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            {
+                continue;
+            }
+            let Some(name) = path.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let (package, is_r20) = match name.strip_suffix(duo_core::sweep::ICON_CACHE_SUFFIX) {
+                Some(pkg) => (pkg.to_string(), true),
+                None => match name.strip_suffix(".png") {
+                    Some(pkg) => (pkg.to_string(), false),
+                    None => continue,
+                },
+            };
+            let slot = icons.entry(package).or_default();
+            if is_r20 || slot.is_none() {
+                *slot = Some(path);
+            }
+        }
+        let mut entries: Vec<AppEntry> = icons
+            .into_iter()
+            .map(|(package, icon)| {
+                let label = crate::sessions::package_to_label(&package);
+                let mut entry = AppEntry::fresh(&package, &label, false);
+                entry.icon = icon.or(entry.icon);
+                entry
+            })
+            .collect();
+        entries.sort_by(|a, b| (&a.key, &a.label, &a.package).cmp(&(&b.key, &b.label, &b.package)));
+        self.apps.apps = entries;
+        // 出图种子：无图标缓存的机器（WSL/新机）也能拍磁贴菜单——
+        // DUO_SHOT_SEED_APPS=N 视目录前 N 项为已装（仅出图回路，不影响
+        // 真实启动路径）。
+        if self.apps.apps.is_empty() {
+            let seed = std::env::var("DUO_SHOT_SEED_APPS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok());
+            if let Some(n) = seed {
+                let seeded: Vec<String> = duo_core::catalog::APP_CATALOG
+                    .iter()
+                    .take(n)
+                    .map(|p| p.package.to_string())
+                    .collect();
+                self.apps.rebuild(&seeded, &self.pinned);
+            }
+        }
     }
 
     fn ensure_watch(&mut self) {
@@ -190,6 +350,21 @@ impl PanelApp {
         }
         self.watch = Some(DeviceWatch::start(&self.adb, 2.0));
         self.watch_adb = self.adb.clone();
+    }
+
+    /// 设置页离页守卫（2026-09-18 拍板：返回首页即自动保存，保存钮已删）：
+    /// 脏才写盘；校验失败留在设置页看红字，成功则刷新 adb 守护并回首页。
+    fn save_settings_and_leave(&mut self) {
+        self.settings.save_if_dirty();
+        if !self.settings.dirty {
+            let adb = resolve_adb_path(&self.settings.draft, None, "adb");
+            if adb != self.adb {
+                self.adb = adb;
+                self.ensure_watch();
+            }
+            self.settings.dismiss_flash();
+            self.page = Page::Home;
+        }
     }
 
     // ---- home.rs 桥接（数据合同，全部薄转发） ----
@@ -272,25 +447,74 @@ impl PanelApp {
     /// weak_bg_fill——不留显式 fill，hover 才能上洗色）。返回 clicked。
     fn menu_item(&self, ui: &mut egui::Ui, label: &str, marked: Option<bool>) -> bool {
         let t = self.tokens;
-        menu_row_style(ui);
+        menu_row_style(ui, &t);
         let pad_x = if marked.is_some() { 20.0 } else { 8.0 };
         let prev_pad = ui.spacing().button_padding;
         ui.style_mut().spacing.button_padding = egui::vec2(pad_x, 0.0);
-        let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(t.ink))
-            .min_size(egui::vec2(ui.available_width() - 8.0, 32.0))
+        let text_color = if matches!(t.kind, ThemeKind::Dark) {
+            egui::Color32::WHITE
+        } else {
+            t.ink
+        };
+        let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(text_color))
+            .min_size(egui::vec2(MENU_INNER_WIDTH, 32.0))
             .stroke(egui::Stroke::NONE);
         let resp = ui.add(btn);
         ui.style_mut().spacing.button_padding = prev_pad;
         if marked == Some(true) {
-            let dot = egui::pos2(resp.rect.min.x + 10.0, resp.rect.center().y);
+            let dot = egui::pos2(resp.rect.min.x + 9.0, resp.rect.center().y);
             ui.painter().circle_filled(dot, 2.0, t.accent);
         }
         resp.clicked()
     }
 
-    /// 子菜单行（QML MenuSubmenuRow：同勾选行栅格 + 右 ›；行高由
-    /// interact_size 拾到 32）。ui.menu_button 在 popup 内自动切换为
-    /// hover 展开的 submenu。
+    fn menu_aspect_item(
+        &self,
+        ui: &mut egui::Ui,
+        label: &str,
+        marked: bool,
+        gw: f32,
+        gh: f32,
+    ) -> bool {
+        let t = self.tokens;
+        menu_row_style(ui, &t);
+        ui.style_mut().spacing.interact_size.y = 28.0;
+        let prev_pad = ui.spacing().button_padding;
+        ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
+        let is_dark = matches!(t.kind, ThemeKind::Dark);
+        let text_color = if is_dark {
+            egui::Color32::WHITE
+        } else {
+            t.ink
+        };
+        let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(text_color))
+            .min_size(egui::vec2(MENU_INNER_WIDTH, 28.0))
+            .stroke(egui::Stroke::NONE);
+        let resp = ui.add(btn);
+        ui.style_mut().spacing.button_padding = prev_pad;
+        if marked {
+            let dot = egui::pos2(resp.rect.min.x + 9.0, resp.rect.center().y);
+            ui.painter().circle_filled(dot, 2.0, t.accent);
+        }
+        let cy = resp.rect.center().y;
+        let glyph = egui::Rect::from_min_max(
+            egui::pos2(resp.rect.right() - 8.0 - gw, cy - gh / 2.0),
+            egui::pos2(resp.rect.right() - 8.0, cy + gh / 2.0),
+        );
+        let glyph_stroke = if is_dark {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+        } else {
+            t.ink2
+        };
+        ui.painter().rect_stroke(
+            glyph,
+            egui::CornerRadius::same(2),
+            egui::Stroke::new(1.5_f32, glyph_stroke),
+            egui::StrokeKind::Middle,
+        );
+        resp.clicked()
+    }
+
     fn menu_sub_button(
         &mut self,
         ui: &mut egui::Ui,
@@ -298,27 +522,26 @@ impl PanelApp {
         add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
     ) {
         let t = self.tokens;
-        menu_row_style(ui);
+        menu_row_style(ui, &t);
         let prev_pad = ui.spacing().button_padding;
         ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
-        ui.menu_button(egui::RichText::new(label).size(13.0).color(t.ink), |ui| {
-            menu_row_style(ui);
+        let text_color = if matches!(t.kind, ThemeKind::Dark) {
+            egui::Color32::WHITE
+        } else {
+            t.ink
+        };
+        ui.menu_button(egui::RichText::new(label).size(13.0).color(text_color), |ui| {
+            ui.set_width(MENU_INNER_WIDTH);
+            menu_row_style(ui, &t);
             ui.style_mut().spacing.button_padding = egui::vec2(20.0, 0.0);
+            self.glass_underlay(ui, true);
             add_contents(self, ui);
-            if self.settings.draft.glass_enabled {
-                let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
-                let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
-                crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
-            }
+            self.glass_record_sub(ui);
         });
         ui.style_mut().spacing.button_padding = prev_pad;
     }
 
     pub(crate) fn mirror_menu(&mut self, ui: &mut egui::Ui) {
-        // Main.qml mirrorContextMenu 逐行对齐：打开投屏 / hairline /
-        // 窗口栏直接一级平铺（上巴 沉浸/系统；下巴 沉浸/系统/不显示）
-        // ——设备镜像无应用包，直接写设置页默认（setDefaultBarMode）。
-        // 「镜像时关闭设备屏幕」不在 QML 菜单（设置页字段），已删。
         if self.menu_item(ui, "打开投屏", None) {
             self.start_mirror();
             ui.close_menu();
@@ -344,10 +567,312 @@ impl PanelApp {
                 ui.close_menu();
             }
         }
-        if self.settings.draft.glass_enabled {
-            let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
-            let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
-            crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
+    }
+
+    pub(crate) fn context_menu(
+        &mut self,
+        resp: &egui::Response,
+        add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) {
+        if self.menu_glass.is_none() && self.settings.draft.glass_enabled {
+            self.menu_glass = Some(MenuGlass {
+                menu_rect: self.menu_rect_hint,
+                snapshot: self.menu_snapshot.clone(),
+                snapshot_ppp: self.menu_snapshot_ppp,
+                requested: self.menu_snapshot.is_some(),
+                ..Default::default()
+            });
+            if self.menu_snapshot.is_none() {
+                resp.ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                    GLASS_SHOT_TAG.to_string(),
+                )));
+                resp.ctx.request_repaint();
+            }
+        }
+        resp.context_menu(|ui| {
+            ui.set_width(MENU_INNER_WIDTH);
+            self.glass_underlay(ui, false);
+            add_contents(self, ui);
+            self.glass_record_main(ui);
+        });
+    }
+
+    /// 菜单闭包开头：在内容下方占位并垫毛玻璃贴图（ShapeIdx 预占底位，
+    /// 确保即使首帧刚建出贴图也能插在内容控件下方）。
+    pub(crate) fn glass_underlay(&mut self, ui: &mut egui::Ui, sub: bool) {
+        let Some(g) = &mut self.menu_glass else { return };
+        let (tex, rect) = if sub {
+            (&g.sub_tex, g.sub_draw)
+        } else {
+            (&g.main_tex, g.main_rect)
+        };
+        let shape = if let (Some(tex), Some(rect)) = (tex, rect) {
+            egui::Shape::image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            )
+        } else {
+            egui::Shape::Noop
+        };
+        let idx = ui.painter().add(shape);
+        if sub {
+            g.sub_shape = Some(idx);
+        } else {
+            g.main_shape = Some(idx);
+        }
+    }
+
+    /// 一级菜单闭包末尾：记录外沿矩形；换目标（右键到另一磁贴）时即时
+    /// 重构贴图，并通过预占的 main_shape 底位立即更新图元。
+    pub(crate) fn glass_record_main(&mut self, ui: &mut egui::Ui) {
+        let rect = crate::glass::snap_rect_device_px(
+            ui.min_rect().expand2(egui::vec2(MENU_MARGIN, MENU_MARGIN)),
+            ui.ctx().pixels_per_point(),
+        );
+        let effective = match self.menu_glass.as_ref().and_then(|g| g.menu_rect) {
+            Some(old) if crate::glass::rect_within_tol(old, rect, 1.0) => old,
+            _ => {
+                let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+                if let Some(g) = &mut self.menu_glass {
+                    g.menu_rect = Some(rect);
+                    g.sub_tex = None;
+                    g.sub_rect = None;
+                    g.sub_draw = None;
+                    g.sub_tex_rect = None;
+                    if let Some(snapshot) = &g.snapshot {
+                        let built = crate::glass::build_texture(
+                            ui.ctx(),
+                            snapshot,
+                            g.snapshot_ppp,
+                            rect,
+                            &crate::glass::main_params(is_dark),
+                            "duo-menu-glass",
+                        );
+                        if let Some((tex, draw)) = built {
+                            g.main_tex = Some(tex);
+                            g.main_rect = Some(draw);
+                        } else {
+                            g.main_tex = None;
+                            g.main_rect = None;
+                        }
+                    } else {
+                        g.main_tex = None;
+                        g.main_rect = None;
+                    }
+                }
+                rect
+            }
+        };
+        self.menu_rect_hint = Some(effective);
+        if let Some(g) = &mut self.menu_glass {
+            if let (Some(idx), Some(tex), Some(draw)) = (g.main_shape, &g.main_tex, g.main_rect) {
+                ui.painter().set(
+                    idx,
+                    egui::Shape::image(
+                        tex.id(),
+                        draw,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    ),
+                );
+            }
+        }
+        if self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.main_tex.is_some())
+        {
+            ui.painter().rect_stroke(
+                effective,
+                egui::CornerRadius::same(12),
+                egui::Stroke::new(1.0_f32, self.tokens.menu_glass_border),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    pub(crate) fn glass_record_sub(&mut self, ui: &mut egui::Ui) {
+        if let Some(g) = &mut self.menu_glass {
+            let rect = crate::glass::snap_rect_device_px(
+                ui.min_rect().expand2(egui::vec2(MENU_MARGIN, MENU_MARGIN)),
+                ui.ctx().pixels_per_point(),
+            );
+            let effective = match g.sub_rect {
+                Some(old) if crate::glass::rect_within_tol(old, rect, 1.0) => old,
+                _ => {
+                    let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+                    if let Some(snapshot) = &g.snapshot {
+                        let built = crate::glass::build_texture(
+                            ui.ctx(),
+                            snapshot,
+                            g.snapshot_ppp,
+                            rect,
+                            &crate::glass::sub_params(is_dark),
+                            "duo-menu-glass-sub",
+                        );
+                        if let Some((tex, draw)) = built {
+                            g.sub_tex = Some(tex);
+                            g.sub_draw = Some(draw);
+                            g.sub_tex_rect = Some(rect);
+                        } else {
+                            g.sub_tex = None;
+                            g.sub_draw = None;
+                            g.sub_tex_rect = None;
+                        }
+                    } else {
+                        g.sub_tex = None;
+                        g.sub_draw = None;
+                        g.sub_tex_rect = None;
+                    }
+                    rect
+                }
+            };
+            g.sub_rect = Some(effective);
+            if let (Some(idx), Some(tex), Some(draw)) = (g.sub_shape, &g.sub_tex, g.sub_draw) {
+                ui.painter().set(
+                    idx,
+                    egui::Shape::image(
+                        tex.id(),
+                        draw,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    ),
+                );
+            }
+            if g.sub_tex.is_some() {
+                ui.painter().rect_stroke(
+                    effective,
+                    egui::CornerRadius::same(12),
+                    egui::Stroke::new(1.0_f32, self.tokens.menu_glass_border),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+
+    /// 菜单可视状态：真右键链路 + Wayland 出图 harness 托管菜单。
+    pub(crate) fn menu_effectively_open(&self, ctx: &egui::Context) -> bool {
+        ctx.is_context_menu_open() || self.harness_menu_open()
+    }
+
+    fn harness_menu_open(&self) -> bool {
+        self.shot_use_harness
+            && self.shot_menu.is_some()
+            && self
+                .shot
+                .as_ref()
+                .is_some_and(|(_, frames, _)| *frames >= 46)
+    }
+
+    /// 毛玻璃泵：开/关跳变、截图命令与 Event::Screenshot 消费、贴图懒
+    /// 构建。须在 pump_shot / pump_shot_menu 之前跑（后者会重跑
+    /// begin_pass 吞掉未读事件）。
+    pub(crate) fn pump_menu_glass(&mut self, ctx: &egui::Context) {
+        if !self.settings.draft.glass_enabled {
+            self.menu_glass = None;
+            self.menu_snapshot = None;
+            self.menu_glass_closed_frames = 0;
+            return;
+        }
+
+        let shot = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot {
+                    image, user_data, ..
+                } if user_data_eq(user_data, GLASS_SHOT_TAG) => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = shot {
+            let ppp = ctx.pixels_per_point();
+            self.menu_snapshot = Some(image.clone());
+            self.menu_snapshot_ppp = ppp;
+            if let Some(g) = self.menu_glass.as_mut() {
+                g.snapshot = Some(image);
+                g.snapshot_ppp = ppp;
+            }
+            ctx.request_repaint();
+        }
+
+        if !self.menu_effectively_open(ctx) {
+            self.menu_glass_closed_frames += 1;
+            if self.menu_glass_closed_frames >= 2 {
+                self.menu_glass = None;
+            }
+            if self.menu_snapshot.is_none() && (self.shot.is_none() || self.shot_menu.is_some()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                    GLASS_SHOT_TAG.to_string(),
+                )));
+                ctx.request_repaint();
+            }
+            return;
+        }
+        self.menu_glass_closed_frames = 0;
+        if self.menu_glass.is_none() {
+            self.menu_glass = Some(MenuGlass {
+                menu_rect: self.menu_rect_hint,
+                snapshot: self.menu_snapshot.clone(),
+                snapshot_ppp: self.menu_snapshot_ppp,
+                requested: self.menu_snapshot.is_some(),
+                ..Default::default()
+            });
+        }
+        let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
+        let Some(g) = self.menu_glass.as_mut() else {
+            return;
+        };
+        if !g.requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                GLASS_SHOT_TAG.to_string(),
+            )));
+            g.requested = true;
+        }
+        let (snapshot, ppp, rect, sub_rect) = match self.menu_glass.as_ref() {
+            Some(g) => match (&g.snapshot, g.menu_rect, g.sub_rect) {
+                (Some(s), Some(r), sub) => (s.clone(), g.snapshot_ppp, r, sub),
+                _ => return,
+            },
+            None => return,
+        };
+        if self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.main_tex.is_none())
+        {
+            if let Some((tex, draw)) = crate::glass::build_texture(
+                ctx,
+                &snapshot,
+                ppp,
+                rect,
+                &crate::glass::main_params(is_dark),
+                "duo-menu-glass",
+            ) {
+                if let Some(g) = self.menu_glass.as_mut() {
+                    g.main_tex = Some(tex);
+                    g.main_rect = Some(draw);
+                }
+            }
+        }
+        let want_sub = self.menu_glass.as_ref().is_some_and(|g| {
+            g.sub_tex.is_none() || (g.sub_rect.is_some() && g.sub_tex_rect != g.sub_rect)
+        });
+        if let (true, Some(sub_rect)) = (want_sub, sub_rect) {
+            if let Some((tex, draw)) = crate::glass::build_texture(
+                ctx,
+                &snapshot,
+                ppp,
+                sub_rect,
+                &crate::glass::sub_params(is_dark),
+                "duo-menu-glass-sub",
+            ) {
+                if let Some(g) = self.menu_glass.as_mut() {
+                    g.sub_tex = Some(tex);
+                    g.sub_draw = Some(draw);
+                    g.sub_tex_rect = Some(sub_rect);
+                }
+            }
         }
     }
 
@@ -439,22 +964,6 @@ impl PanelApp {
         }
     }
 
-    /// 保存并返回主页（QML saveChanges：空清单 = accepted → resolveAdb +
-    /// pop；非空留在页内红条）。
-    pub(crate) fn save_settings_and_return(&mut self) {
-        self.settings.save();
-        if !self.settings.dirty {
-            self.page = Page::Home;
-            self.resolve_adb();
-            self.settings.dismiss_flash();
-        }
-    }
-
-    /// 保存后重找 adb（QML Main 侧 resolveAdb 语义）。
-    fn resolve_adb(&mut self) {
-        self.adb = resolve_adb_path(&self.settings.draft, None, &self.adb.clone());
-    }
-
     /// 浏览按钮（native 文件对话框；shot/无交互环境无害）。
     pub(crate) fn browse_engine(&mut self, _tool: &str) {
         if let Some(picked) = rfd::FileDialog::new()
@@ -479,7 +988,7 @@ impl PanelApp {
     /// 构造，须在菜单打开期间改 ctx 级 style（二级菜单同根 BarState，
     /// is_context_menu_open 覆盖全链）。
     pub(crate) fn skin_menus(&self, ctx: &egui::Context) {
-        if !ctx.is_context_menu_open() {
+        if !self.menu_effectively_open(ctx) {
             return;
         }
         let t = self.tokens;
@@ -487,55 +996,68 @@ impl PanelApp {
         // QML hoverWash/pressWash 令牌字面（rgba），叠在玻璃填充上
         let (hover, press) = if is_dark {
             (
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 15),
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 31),
+                egui::Color32::from_rgba_premultiplied(12, 12, 12, 20),
+                egui::Color32::from_rgba_premultiplied(24, 24, 24, 36),
             )
         } else {
             (
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10),
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20),
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 15),
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26),
             )
         };
         let glass = self.settings.draft.glass_enabled;
         ctx.style_mut(|st| {
             st.visuals.window_fill = if glass {
-                if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(30, 30, 35, 175)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(246, 246, 250, 185)
-                }
+                egui::Color32::TRANSPARENT
             } else {
                 t.menu_fill
             };
-            st.visuals.window_stroke = egui::Stroke::new(
-                1.0_f32,
-                if glass {
-                    t.menu_glass_border
-                } else if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
-                },
-            );
+            st.visuals.window_stroke = if glass {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(
+                    1.0_f32,
+                    if is_dark {
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+                    },
+                )
+            };
             st.visuals.window_corner_radius = egui::CornerRadius::same(12);
-            st.visuals.popup_shadow = egui::epaint::Shadow {
-                offset: [0, 8],
-                blur: 32,
-                spread: 3,
-                color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
+            st.visuals.menu_corner_radius = egui::CornerRadius::same(12);
+            st.visuals.popup_shadow = if glass {
+                egui::epaint::Shadow::NONE
+            } else {
+                egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 32,
+                    spread: 3,
+                    color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
+                }
             };
             st.spacing.menu_margin = egui::Margin::same(4);
-            st.spacing.menu_width = 128.0; // QML ctxMenu width: 128
+            st.spacing.menu_width = MENU_WIDTH;
+            let text_color = if is_dark { egui::Color32::WHITE } else { t.ink };
+            for state in [
+                &mut st.visuals.widgets.hovered,
+                &mut st.visuals.widgets.open,
+                &mut st.visuals.widgets.active,
+                &mut st.visuals.widgets.inactive,
+            ] {
+                state.expansion = 0.0;
+                state.corner_radius = 8.into();
+                state.bg_stroke = egui::Stroke::NONE;
+                state.fg_stroke = egui::Stroke::new(1.0_f32, text_color);
+            }
             st.visuals.widgets.hovered.weak_bg_fill = hover;
-            st.visuals.widgets.hovered.corner_radius = 10.into();
+            st.visuals.widgets.hovered.bg_fill = hover;
             st.visuals.widgets.active.weak_bg_fill = press;
-            st.visuals.widgets.active.corner_radius = 10.into();
-            // 二级展开中的触发行（widgets.open）保持洗色（QML active 联动）
+            st.visuals.widgets.active.bg_fill = press;
             st.visuals.widgets.open.weak_bg_fill = hover;
-            st.visuals.widgets.open.corner_radius = 10.into();
-            st.visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+            st.visuals.widgets.open.bg_fill = hover;
             st.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-            st.visuals.widgets.inactive.corner_radius = 10.into();
+            st.visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
         });
     }
 
@@ -939,30 +1461,33 @@ impl PanelApp {
         visuals.panel_fill = t.bg;
         let glass = self.settings.draft.glass_enabled;
         visuals.window_fill = if glass {
-            if is_dark {
-                egui::Color32::from_rgba_unmultiplied(30, 30, 35, 175)
-            } else {
-                egui::Color32::from_rgba_unmultiplied(246, 246, 250, 185)
-            }
+            egui::Color32::TRANSPARENT
         } else {
             t.menu_fill
         };
-        visuals.window_stroke = egui::Stroke::new(
-            1.0_f32,
-            if glass {
-                t.menu_glass_border
-            } else if is_dark {
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
-            } else {
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
-            },
-        );
+        visuals.window_stroke = if glass {
+            egui::Stroke::NONE
+        } else {
+            egui::Stroke::new(
+                1.0_f32,
+                if is_dark {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+                },
+            )
+        };
         visuals.window_corner_radius = egui::CornerRadius::same(12);
-        visuals.popup_shadow = egui::epaint::Shadow {
-            offset: [0, 8],
-            blur: 32,
-            spread: 3,
-            color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
+        visuals.menu_corner_radius = egui::CornerRadius::same(12);
+        visuals.popup_shadow = if glass {
+            egui::epaint::Shadow::NONE
+        } else {
+            egui::epaint::Shadow {
+                offset: [0, 8],
+                blur: 32,
+                spread: 3,
+                color: egui::Color32::from_black_alpha(if is_dark { 110 } else { 50 }),
+            }
         };
         visuals.extreme_bg_color = t.bg;
         visuals.selection.bg_fill = t.accent;
@@ -977,6 +1502,10 @@ impl PanelApp {
         visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, t.ink);
         visuals.widgets.open.bg_fill = t.capsule;
         ctx.set_visuals(visuals);
+        ctx.style_mut(|st| {
+            st.spacing.menu_margin = egui::Margin::same(4);
+            st.spacing.menu_width = MENU_WIDTH;
+        });
     }
 
     /// 顶栏胶囊分段导航：底胶囊手绘，两段用 ui.put 子区放按钮——文字
@@ -1044,8 +1573,57 @@ impl PanelApp {
             }
         }
         if let Some(page) = clicked {
-            self.page = page;
+            if self.page == Page::Settings && page == Page::Home {
+                self.save_settings_and_leave();
+            } else {
+                self.page = page;
+            }
         }
+    }
+
+    /// 「固定比例」二级内容（一级 menu_sub_button 与出图 harness 共用）。
+    /// 每行右侧画比例示意矩形（QML AspectMenuRow：横屏宽边 16、竖屏
+    /// 高边 14；机身项用探测真值，无缓存时退 20:9 示意）。
+    pub(crate) fn fixed_aspect_submenu(&mut self, ui: &mut egui::Ui, package: &str) {
+        let current = self.display_prefs.get(package).cloned();
+        let body = self.body_preset.clone();
+        let dims = |p: &AspectPreset| {
+            if p.landscape {
+                (16.0_f32, 16.0 * p.height as f32 / p.width as f32)
+            } else {
+                (14.0 * p.width as f32 / p.height as f32, 14.0_f32)
+            }
+        };
+        let pick = |app: &mut Self, ui: &mut egui::Ui, id: &str, label: &str, gw: f32, gh: f32| {
+            let mark = matches!(&current, Some(DisplayChoice::Fixed { aspect }) if aspect == id);
+            if app.menu_aspect_item(ui, label, mark, gw, gh) {
+                app.set_display_fixed(package, id);
+                ui.close_menu();
+            }
+        };
+        menu_caption(ui, &self.tokens, "横屏");
+        for preset in duo_core::aspects::aspect_presets()
+            .iter()
+            .filter(|p| p.landscape)
+        {
+            let (gw, gh) = dims(preset);
+            pick(self, ui, &preset.id, &preset.id, gw, gh);
+        }
+        let (bl, bp) = match &body {
+            Some(b) => (dims(b), dims(&transposed(b))),
+            None => ((16.0, 7.6), (6.7, 14.0)),
+        };
+        pick(self, ui, BODY_LANDSCAPE_ID, "机身", bl.0, bl.1);
+        menu_hairline(ui, &self.tokens);
+        menu_caption(ui, &self.tokens, "竖屏");
+        for preset in duo_core::aspects::aspect_presets()
+            .iter()
+            .filter(|p| !p.landscape)
+        {
+            let (gw, gh) = dims(preset);
+            pick(self, ui, &preset.id, &preset.id, gw, gh);
+        }
+        pick(self, ui, BODY_PORTRAIT_ID, "机身", bp.0, bp.1);
     }
 
     pub(crate) fn tile_menu(&mut self, ui: &mut egui::Ui, entry: &AppEntry) {
@@ -1077,32 +1655,7 @@ impl PanelApp {
             ui.close_menu();
         }
         self.menu_sub_button(ui, "固定比例", |app, ui| {
-            let current = app.display_prefs.get(&package).cloned();
-            let pick = |app: &mut Self, ui: &mut egui::Ui, id: &str, label: &str| {
-                let mark =
-                    matches!(&current, Some(DisplayChoice::Fixed { aspect }) if aspect == id);
-                if app.menu_item(ui, label, Some(mark)) {
-                    app.set_display_fixed(&package, id);
-                    ui.close_menu();
-                }
-            };
-            menu_caption(ui, &app.tokens, "横屏");
-            for preset in duo_core::aspects::aspect_presets()
-                .iter()
-                .filter(|p| p.landscape)
-            {
-                pick(app, ui, &preset.id, &preset.id);
-            }
-            pick(app, ui, BODY_LANDSCAPE_ID, "机身");
-            menu_hairline(ui, &app.tokens);
-            menu_caption(ui, &app.tokens, "竖屏");
-            for preset in duo_core::aspects::aspect_presets()
-                .iter()
-                .filter(|p| !p.landscape)
-            {
-                pick(app, ui, &preset.id, &preset.id);
-            }
-            pick(app, ui, BODY_PORTRAIT_ID, "机身");
+            app.fixed_aspect_submenu(ui, &package);
         });
         self.menu_sub_button(ui, "窗口栏", |app, ui| {
             let bars = app.bar_prefs.get(&package).cloned().unwrap_or_default();
@@ -1179,11 +1732,6 @@ impl PanelApp {
                 app.set_scale(&package, Some((custom * 10.0).round() / 10.0));
             }
         });
-        if self.settings.draft.glass_enabled {
-            let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
-            let rect = ui.min_rect().expand2(egui::vec2(4.0, 4.0));
-            crate::paint::paint_menu_glass(ui.painter(), rect, is_dark);
-        }
     }
 
     // -------------------------------------------------------------- 设置页
@@ -1192,8 +1740,10 @@ impl PanelApp {
         crate::settings::show(self, ui);
     }
 
-    /// 出图泵：帧数 ≥40 且 1.6s 就绪后请求 Screenshot；事件回包存盘即退。
-    /// 开菜单对拍时多留时间（菜单 + 二级稳定）。
+    /// 出图泵：帧数 ≥40 且 1.6s 就绪后请求 Screenshot；自己请求的截图
+    /// 回包存盘即退。毛玻璃也发截图命令（拍纯背景），所以只认
+    /// pending 之后的回包；须跑在 pump_shot_menu 前（后者重跑
+    /// begin_pass 会吞掉未读事件——旧版 DUO_SHOT_MENU 永不存盘的根因）。
     fn pump_shot(&mut self, ctx: &egui::Context) {
         let Some((path, frames, started)) = &mut self.shot else {
             return;
@@ -1205,12 +1755,28 @@ impl PanelApp {
             (40, 2900)
         };
         let ready = *frames >= need_frames && started.elapsed() >= Duration::from_millis(need_ms);
-        if ready {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        if ready && !self.shot_capture {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                SHOT_TAG.to_string(),
+            )));
+            self.shot_capture = true;
+            self.shot_capture_frame = *frames;
+        }
+        if ready && self.shot_capture && *frames - self.shot_capture_frame > 30 {
+            // 回包丢失重发（无交互环境偶发）
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                SHOT_TAG.to_string(),
+            )));
+            self.shot_capture_frame = *frames;
+        }
+        if !self.shot_capture {
+            return;
         }
         let shot = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                egui::Event::Screenshot {
+                    image, user_data, ..
+                } if user_data_eq(user_data, SHOT_TAG) => Some(image.clone()),
                 _ => None,
             })
         });
@@ -1232,18 +1798,19 @@ impl PanelApp {
                 Err(err) => eprintln!("shot save FAILED: {path}: {err}"),
             }
             self.shot = None;
+            self.shot_capture = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
-    /// DUO_SHOT_MENU 注入：帧 44/45 合成右键（press→release）打开菜单；
-    /// tile-sub 在帧 58 起把指针悬停到「固定比例」行（菜单几何 = 内边 4 +
-    /// 打开32+置顶32+发线9+自适应32 → 触发行中心 y+125）展开二级。
+    /// DUO_SHOT_MENU 注入：帧 44 右键打开菜单；tile-sub 帧 70 起把指针
+    /// 悬停到「固定比例」行（菜单几何 = 内边 4 + 打开32+置顶32+发线9+
+    /// 自适应32 → 触发行中心 y+125）展开二级。
     ///
-    /// egui 的 hover/click 判定读 PointerState，而 PointerState 只在 pass
-    /// 开头由 RawInput 推进：往 InputState.events 里塞事件对交互无效，须
-    /// 用合成 RawInput 重跑 begin_pass（走真机指针路径，非旁路渲染）。
-    fn pump_shot_menu(&mut self, ctx: &egui::Context) {
+    /// egui 的 hover/click 旗标在 pass 开头由真指针输入推进，进程内
+    /// begin_pass 重放造不出命中：unix 走 XTEST 系统事件（真机指针
+    /// 路径）；其余平台保留合成 RawInput 重跑 begin_pass。
+    fn pump_shot_menu(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if self.shot.is_none() {
             return;
         }
@@ -1269,35 +1836,164 @@ impl PanelApp {
             let cell_w = layout.grid.width() / cols as f32;
             egui::pos2(layout.grid.left() + cell_w / 2.0, layout.grid.top() + 40.0)
         };
-        // 二级展开后指针留在触发行（菜单不随指针离开关闭）
-        let at = if mode == "tile-sub" && frames >= 58 {
-            egui::pos2(pos.x + 64.0, pos.y + 125.0)
-        } else {
-            pos
-        };
-        if frames.is_multiple_of(20) || (44..=60).contains(&frames) {
-            eprintln!("[shot-menu] frames={frames} mode={mode} at={at:?}");
+        let sub_at = egui::pos2(pos.x + 64.0, pos.y + 125.0);
+        let ppp = ctx.pixels_per_point();
+        #[cfg(unix)]
+        {
+            if frames == 44 && !self.shot_clicked {
+                let Some(xid) = window_xid(frame) else {
+                    // Wayland：无法注入系统指针，改走 harness 托管菜单
+                    self.shot_clicked = true;
+                    self.shot_use_harness = true;
+                    eprintln!("[shot-menu] no X11 window, using harness menu");
+                    return;
+                };
+                let origin = crate::xtest::client_origin(xid);
+                let Some(origin) = origin.filter(|(x, y)| *x >= 0 && *y >= 0) else {
+                    self.shot_clicked = true;
+                    self.shot_use_harness = true;
+                    eprintln!("[shot-menu] no mapped X11 window, using harness menu");
+                    return;
+                };
+                self.shot_clicked = true;
+                eprintln!(
+                    "[shot-menu] frames={frames} mode={mode} click at={pos:?} origin={origin:?}"
+                );
+                std::thread::spawn(move || {
+                    crate::xtest::pointer_sequence(
+                        origin,
+                        &[(pos, crate::xtest::PointerAction::ClickRight)],
+                        ppp,
+                    );
+                });
+            } else if mode == "tile-sub" && frames >= 70 && !self.shot_sub_moved {
+                let Some(xid) = window_xid(frame) else { return };
+                let Some(origin) = crate::xtest::client_origin(xid) else {
+                    return;
+                };
+                self.shot_sub_moved = true;
+                eprintln!("[shot-menu] frames={frames} mode={mode} hover sub at={sub_at:?}");
+                std::thread::spawn(move || {
+                    crate::xtest::pointer_sequence(
+                        origin,
+                        &[(sub_at, crate::xtest::PointerAction::Move)],
+                        ppp,
+                    );
+                });
+            }
         }
-        let mut events = vec![egui::Event::PointerMoved(at)];
-        if frames == 44 || frames == 45 {
-            events.push(egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Secondary,
-                pressed: frames == 44,
-                modifiers: Default::default(),
+        #[cfg(not(unix))]
+        {
+            let _ = (frame, ppp);
+            // 二级展开后指针留在触发行（菜单不随指针离开关闭）
+            let at = if mode == "tile-sub" && frames >= 58 {
+                sub_at
+            } else {
+                pos
+            };
+            if frames.is_multiple_of(20) || (44..=60).contains(&frames) {
+                eprintln!("[shot-menu] frames={frames} mode={mode} at={at:?}");
+            }
+            let mut events = vec![egui::Event::PointerMoved(at)];
+            if frames == 44 || frames == 45 {
+                events.push(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed: frames == 44,
+                    modifiers: Default::default(),
+                });
+            }
+            let options = ctx.options(|o| o.clone());
+            ctx.input_mut(|i| {
+                let raw = egui::RawInput {
+                    events,
+                    ..i.raw.clone()
+                };
+                let next = i
+                    .clone()
+                    .begin_pass(raw, true, i.pixels_per_point, &options);
+                *i = next;
             });
         }
-        let options = ctx.options(|o| o.clone());
-        ctx.input_mut(|i| {
-            let raw = egui::RawInput {
-                events,
-                ..i.raw.clone()
-            };
-            let next = i
-                .clone()
-                .begin_pass(raw, true, i.pixels_per_point, &options);
-            *i = next;
-        });
+    }
+
+    /// Wayland 出图的托管菜单（无点击注入通道）：与真菜单同一份内容
+    /// 闭包与玻璃钩子，Area + Frame::menu 复刻 popup 几何；tile-sub 另
+    /// 托管「固定比例」二级。
+    fn show_harness_menu(&mut self, ctx: &egui::Context) {
+        if !self.harness_menu_open() {
+            return;
+        }
+        if self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.snapshot.is_none())
+        {
+            // 玻璃截图帧：不画菜单，拍纯背景（快照到达为止，见
+            // context_menu 同款注释）
+            return;
+        }
+        let mode = self.shot_menu.clone().unwrap_or_default();
+        let screen = ctx.screen_rect();
+        let layout = crate::home::HomeLayout::compute(
+            screen.width(),
+            screen.height(),
+            self.has_pinned(),
+            !self.running_chips().is_empty(),
+        );
+        let pos = if mode == "mirror" {
+            layout.mirror.center()
+        } else {
+            let cols = ((layout.grid.width() / 92.0).floor() as usize).max(2);
+            let cell_w = layout.grid.width() / cols as f32;
+            egui::pos2(layout.grid.left() + cell_w / 2.0, layout.grid.top() + 40.0)
+        };
+        let entry = self.grid_entries().first().cloned();
+        let package = entry.as_ref().map(|e| e.package.clone());
+        let sub_at = self
+            .menu_glass
+            .as_ref()
+            .and_then(|g| g.menu_rect)
+            .map(|r| egui::pos2(r.right(), r.top() + 109.0));
+        let show_sub = mode == "tile-sub" && sub_at.is_some();
+        egui::Area::new(egui::Id::new("duo-shot-harness-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .default_width(MENU_WIDTH)
+            .sense(egui::Sense::hover())
+            .show(ctx, |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.set_width(MENU_INNER_WIDTH);
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        self.glass_underlay(ui, false);
+                        match (&mode, &entry) {
+                            (m, Some(entry)) if m != "mirror" => self.tile_menu(ui, entry),
+                            _ => self.mirror_menu(ui),
+                        }
+                        self.glass_record_main(ui);
+                    });
+                });
+            });
+        if show_sub {
+            let sub_at = sub_at.unwrap_or_else(|| unreachable!());
+            egui::Area::new(egui::Id::new("duo-shot-harness-submenu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(sub_at)
+                .default_width(MENU_WIDTH)
+                .sense(egui::Sense::hover())
+                .show(ctx, |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        ui.set_width(MENU_INNER_WIDTH);
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                            self.glass_underlay(ui, true);
+                            if let Some(package) = &package {
+                                self.fixed_aspect_submenu(ui, package);
+                            }
+                            self.glass_record_sub(ui);
+                        });
+                    });
+                });
+        }
     }
 
     /// 音量命令 200ms 防抖（QML volumeDebounce）。
@@ -1334,6 +2030,9 @@ impl PanelApp {
                     Ok(sweep) => {
                         if sweep.rendered {
                             let patched = self.apps.apply_sweep(&sweep.labels);
+                            // r20 重写后旧贴图滞留：清缓存让下帧重读
+                            self.icon_tex.borrow_mut().clear();
+                            self.menu_snapshot = None;
                             if !patched.is_empty() {
                                 self.toast_now("应用图标已更新");
                             }
@@ -1372,12 +2071,25 @@ impl PanelApp {
                 .map(|(serial, _)| serial)
                 .collect();
             if let Some(known) = &self.known_online {
-                if online.len() > known.len() && self.installed_bg.is_none() {
+                if online.len() > known.len() && self.installed_bg.is_none() && !self.skip_sweep {
                     self.refresh_installed();
                 }
             }
             self.known_online = Some(online);
         }
+    }
+}
+
+/// X11 客户区窗口 id（XTEST 坐标换算用；非 unix / 非 x11 无值）。
+#[cfg(unix)]
+fn window_xid(frame: &eframe::Frame) -> Option<u64> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let window = frame.window_handle().ok()?;
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Xlib(h) => Some(h.window),
+        RawWindowHandle::Xcb(h) => Some(u64::from(h.window.get())),
+        _ => None,
     }
 }
 
@@ -1404,26 +2116,34 @@ impl eframe::App for PanelApp {
         if self.shot.is_some() {
             ctx.request_repaint(); // 出图模式：静态画面也推进帧计数
         }
+        let cur_size = ctx.screen_rect().size();
+        if self.last_screen_size != Some(cur_size) {
+            self.last_screen_size = Some(cur_size);
+            self.menu_snapshot = None;
+        }
         let kind = ThemeKind::from_settings(&self.settings.draft.theme);
         if self.tokens.kind != kind {
             self.tokens = Tokens::of(kind);
+            self.menu_snapshot = None;
         }
-        // QML Shortcut：Ctrl+, 打开设置；Esc 在设置页 = 取消返回
-        // （SettingsPage cancelled，无焦点依赖）
+        let prev_page = self.page;
+        // QML Shortcut：Ctrl+, 打开设置；Esc 在设置页 = 保存并返回
+        // （2026-09-18 拍板：离开设置即自动保存，无放弃语义）
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
             self.page = Page::Settings;
         }
         if self.page == Page::Settings && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.settings.reject();
-            self.page = Page::Home;
+            self.save_settings_and_leave();
         }
         self.sync_visuals(ctx);
+        self.sessions.reap();
         self.pump_background();
         self.pump_volume_debounce();
         self.pump_probe();
         self.skin_menus(ctx);
-        self.pump_shot_menu(ctx);
+        self.pump_menu_glass(ctx);
         self.pump_shot(ctx);
+        self.pump_shot_menu(ctx, frame);
 
         // 画布（bg + 六枚色斑）铺满；卡片自管边距（QML x:20 语义）
         egui::CentralPanel::default()
@@ -1455,6 +2175,8 @@ impl eframe::App for PanelApp {
                     }
                 }
             });
+        // Wayland 出图：托管菜单浮层（Area，先于 Toast）
+        self.show_harness_menu(ctx);
         // Toast（2.5s 淡出语义在 home::toast 内）
         if let Some((_, at)) = &self.toast {
             if at.elapsed() > Duration::from_millis(2500) {
@@ -1463,9 +2185,15 @@ impl eframe::App for PanelApp {
                 crate::home::toast(self, ctx);
             }
         }
+        if self.page != prev_page {
+            self.menu_snapshot = None;
+        }
         // Toast 计时需要重绘驱动
         if self.toast.is_some() || self.volume_pending.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if !self.sessions.running().is_empty() {
+            // 运行卡存活探测：会话退出后芯片免输入也能及时消失
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
     }
 }
@@ -1476,40 +2204,91 @@ impl Drop for PanelApp {
     }
 }
 
-/// 菜单行高栅格（QML MenuRow/SubmenuRow h32；SubMenuButton 高度取自
-/// interact_size，Button 行由 min_size 拉齐）。DragValue 同拾 32（QML
-/// NumberBox h32）。
-fn menu_row_style(ui: &mut egui::Ui) {
+/// 菜单行高与悬停皮肤（高 32、行距 0、8% 白悬停洗色，详见 docs/ui/glass-recipe.md §8）。
+fn menu_row_style(ui: &mut egui::Ui, t: &Tokens) {
     ui.style_mut().spacing.interact_size.y = 32.0;
+    ui.style_mut().spacing.item_spacing.y = 0.0;
+    let is_dark = matches!(t.kind, ThemeKind::Dark);
+    let text_color = if is_dark { egui::Color32::WHITE } else { t.ink };
+    let hover_fill = if is_dark {
+        egui::Color32::from_rgba_premultiplied(12, 12, 12, 20)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 15)
+    };
+    let active_fill = if is_dark {
+        egui::Color32::from_rgba_premultiplied(24, 24, 24, 36)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+    };
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    for state in [
+        &mut widgets.hovered,
+        &mut widgets.open,
+        &mut widgets.active,
+        &mut widgets.inactive,
+    ] {
+        state.expansion = 0.0;
+        state.corner_radius = 8.into();
+        state.bg_stroke = egui::Stroke::NONE;
+        state.fg_stroke = egui::Stroke::new(1.0_f32, text_color);
+    }
+    widgets.hovered.weak_bg_fill = hover_fill;
+    widgets.hovered.bg_fill = hover_fill;
+    widgets.active.weak_bg_fill = active_fill;
+    widgets.active.bg_fill = active_fill;
+    widgets.open.weak_bg_fill = hover_fill;
+    widgets.open.bg_fill = hover_fill;
+    widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
 }
 
-/// 菜单小节头（QML MenuSectionLabel：h20、11px ink2、x4+8 左对齐）。
+/// 菜单小节头（QML MenuSectionLabel：h20、暗色纯白/亮色 ink2、x4+8 左对齐）。
 pub(crate) fn menu_caption(ui: &mut egui::Ui, t: &Tokens, label: &str) {
-    let prev = ui.spacing().button_padding;
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width() - 8.0, 20.0),
+        egui::vec2(MENU_INNER_WIDTH, 20.0),
         egui::Sense::hover(),
     );
-    let pos = egui::pos2(rect.min.x + 12.0, rect.center().y);
-    crate::paint::text_left_at_center(ui.painter(), pos, label, 11.0, t.ink2);
-    ui.spacing_mut().button_padding = prev;
+    let pos = egui::pos2(rect.min.x + 8.0, rect.center().y);
+    let color = if matches!(t.kind, ThemeKind::Dark) {
+        egui::Color32::WHITE
+    } else {
+        t.ink2
+    };
+    crate::paint::text_left_at_center(ui.painter(), pos, label, 12.0, color);
 }
 
 /// 菜单 hairline 分隔（QML：x12 w-24 h9 内 1px 线）。
 pub(crate) fn menu_hairline(ui: &mut egui::Ui, t: &Tokens) {
-    let w = ui.available_width() - 8.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 9.0), egui::Sense::hover());
-    let line = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x + 12.0, rect.min.y + 4.0),
-        egui::vec2(w - 24.0, 1.0),
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(MENU_INNER_WIDTH, 9.0),
+        egui::Sense::hover(),
     );
-    ui.painter().rect_filled(line, 0, t.hairline_on_card);
+    let line = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
+        egui::vec2(MENU_INNER_WIDTH - 16.0, 1.0),
+    );
+    let color = if matches!(t.kind, ThemeKind::Dark) {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 36)
+    } else {
+        t.hairline_on_card
+    };
+    ui.painter().rect_filled(line, 0, color);
 }
 
 #[cfg(test)]
 mod menu_tests {
     use super::*;
     use crate::prefs::BarChoice;
+
+    #[test]
+    fn menu_geometry_constants_are_consistent() {
+        assert_eq!(MENU_WIDTH, 128.0);
+        assert_eq!(MENU_MARGIN, 4.0);
+        assert_eq!(MENU_INNER_WIDTH, 120.0);
+        assert_eq!(MENU_INNER_WIDTH + 2.0 * MENU_MARGIN, MENU_WIDTH);
+    }
+
+
 
     #[test]
     fn fixed_aspect_resolution_matches_pyduo() {

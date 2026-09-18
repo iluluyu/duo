@@ -21,6 +21,7 @@ pub fn cjk_font_candidates() -> Vec<&'static str> {
     } else {
         vec![
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
             "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
@@ -75,8 +76,9 @@ pub fn install_fonts(ctx: &egui::Context) {
             list.push(name.clone());
         }
     }
-    // DemiBold 档：独立 family（QML Font.DemiBold 的近似，Segoe/雅黑粗体）；
-    // 粗体不可得（Linux/WSL 出图）时回退常规栈——字重降档不缺字。
+    // DemiBold 档：独立 family（QML Font.DemiBold 的近似，Segoe/雅黑粗体）。
+    // family 恒非空（常规栈 + egui 内置兑底）：空 family 会静默不绘制——
+    // WSLg 无粗体时磁贴首字消失即此根因；缺字 ≤ 字重降档。
     let mut bold_stack: Vec<String> = Vec::new();
     let segoe_b = r"C:\Windows\Fonts\segoeuib.ttf";
     if let Ok(bytes) = std::fs::read(segoe_b) {
@@ -86,7 +88,11 @@ pub fn install_fonts(ctx: &egui::Context) {
         );
         bold_stack.push("duo-bold-segoe".into());
     }
-    let cjk_b = r"C:\Windows\Fonts\msyhbd.ttc";
+    let cjk_b = if cfg!(target_os = "windows") {
+        r"C:\Windows\Fonts\msyhbd.ttc"
+    } else {
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"
+    };
     if let Ok(bytes) = std::fs::read(cjk_b) {
         fonts.font_data.insert(
             "duo-bold-cjk".into(),
@@ -94,9 +100,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         );
         bold_stack.push("duo-bold-cjk".into());
     }
-    if bold_stack.is_empty() {
-        bold_stack = stack.clone();
-    }
+    bold_stack.extend(stack.iter().cloned());
+    bold_stack.extend(
+        fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
     fonts
         .families
         .insert(egui::FontFamily::Name("duo-bold".into()), bold_stack);

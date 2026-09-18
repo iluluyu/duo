@@ -84,6 +84,17 @@ pub fn panel_icon_png(input: &[u8]) -> Result<Vec<u8>, String> {
     rounded_mask_png(input, DEFAULT_RADIUS_RATIO, ADAPTIVE_VISIBLE)
 }
 
+/// 面板直载入口：任意 PNG → 显示尺寸的 G2 圆角 RGBA（预乘 LANCZOS）。
+/// 288 缓存直缩显示尺寸 + 裸/平角遗留缓存补蒙版，保证上屏圆角一致。
+pub fn panel_icon_rgba(input: &[u8], out_size: u32) -> Result<RgbaImage, String> {
+    if out_size == 0 {
+        return Err("out_size must be at least 1".to_string());
+    }
+    let decoded = decode_rgba(input)?;
+    let scaled = resize_premultiplied(&decoded, out_size, out_size);
+    Ok(apply_g2_mask(&scaled, DEFAULT_RADIUS_RATIO))
+}
+
 // ---------------------------------------------------------------------------
 // ① G2 圆角 alpha 蒙版（apply_rounded_mask）
 // ---------------------------------------------------------------------------
@@ -510,5 +521,21 @@ mod tests {
         assert_eq!(icon.dimensions(), (ADAPTIVE_VISIBLE, ADAPTIVE_VISIBLE));
         assert_eq!(icon.get_pixel(0, 0)[3], 0);
         assert_eq!(icon.get_pixel(143, 143)[3], 255);
+    }
+
+    #[test]
+    fn panel_icon_rgba_masks_at_display_size() {
+        // 平角源（341 见角 alpha>0 的遗留产物）→ 蒙版后四角归零
+        let mut flat = RgbaImage::from_pixel(341, 341, Rgba([255, 0, 0, 255]));
+        flat.put_pixel(0, 0, Rgba([255, 0, 0, 10]));
+        let bytes = encode_png(&flat).unwrap();
+        let icon = panel_icon_rgba(&bytes, 60).expect("rgba icon");
+        assert_eq!(icon.dimensions(), (60, 60));
+        assert_eq!(icon.get_pixel(0, 0)[3], 0);
+        assert_eq!(icon.get_pixel(30, 30)[3], 255);
+        // 已蒙版的 288 缓存再走一遍 = 幂等（角仍为 0）
+        let again = panel_icon_rgba(&encode_png(&icon).unwrap(), 60).unwrap();
+        assert_eq!(again.get_pixel(0, 0)[3], 0);
+        assert!(panel_icon_rgba(&bytes, 0).is_err());
     }
 }
