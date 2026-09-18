@@ -1517,15 +1517,14 @@ impl PanelApp {
     fn top_capsule(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         let full = ui.max_rect();
-        // 液态玻璃胶囊（iOS 26 segmented + ColorOS 17 流体亚克力，2026-09-19
-        // 视觉升级，配方详见 docs/ui/DESIGN.md §3.2）：宽度随文案收缩，
-        // 悬浮居中；拇指 = 玻璃透镜（顶部高光渐变 + 双层阴影）。
-        let label_w = 28.0; // 「首页」「设置」两字 13.5px 实测宽度上限
-        let seg_target = ((label_w + 46.0_f32).max(72.0)).max(72.0);
+        // Apple 式克制分段控件（2026-09-19 gemini-3.8-flash 重估定稿，
+        // 配方与禁忌见 docs/ui/DESIGN.md §3.2）：200×32（420 面板的 ~48%，
+        // 过窄读作 UISwitch）；端头同心：轨道 r16 − 拇指 r13 = 内缩 3；
+        // 无高光条/无内发光边——靠微色阶 + 柔影而非玻璃仿真。
         let track_h = 32.0_f32;
         let inset = 3.0;
         let thumb_h = track_h - 2.0 * inset;
-        let cap_w = (seg_target * 2.0 + 2.0 * inset)
+        let cap_w = (2.0 * 97.0 + 2.0 * inset)
             .min(full.width() - 40.0)
             .max(0.0);
         let rect = egui::Rect::from_min_size(
@@ -1544,20 +1543,23 @@ impl PanelApp {
         } else {
             t.segment_track
         };
-        crate::paint::rounded_fill(ui.painter(), rect, 15.0, track);
-        // 发光边缘（ColorOS 17 luminous edge）：轨道内侧 1px 亮线圈，
-        // 上半强下半弱——玻璃截面高光。
-        let inner = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 0.5, rect.top() + 0.5),
-            Vec2::new(rect.width() - 1.0, rect.height() - 1.0),
-        );
-        let glow = if is_dark { 6 } else { 110 };
-        ui.painter().rect_stroke(
-            inner,
-            egui::CornerRadius::same(15),
-            egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(glow)),
-            egui::StrokeKind::Inside,
-        );
+        crate::paint::rounded_fill(ui.painter(), rect, 16.0, track);
+        // 结构线（1px、几不可见）：亮色专用；暗色靠亮度差，不描。
+        if !is_dark {
+            let inner = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 0.5, rect.top() + 0.5),
+                Vec2::new(rect.width() - 1.0, rect.height() - 1.0),
+            );
+            ui.painter().rect_stroke(
+                inner,
+                egui::CornerRadius::same(16),
+                egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_black_alpha(10),
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
         let seg_w = ((rect.width() - 2.0 * inset) / 2.0).floor();
         let target_x = if self.page == Page::Home {
             rect.left() + inset
@@ -1571,60 +1573,45 @@ impl PanelApp {
             egui::pos2(x, rect.top() + inset),
             Vec2::new(seg_w, thumb_h),
         );
-        // 双层阴影：贴底接触阴影（锐、深）+ 环境投影（软、浅）——
-        // 「搁在轨道上」而非「悬浮」。
+        // 拇指（gemini 方案 A：Apple HIG 精修）——纯色填充 + 1px 发丝描边
+        // + 紧致双层浅影：杜绝渐变发脏与缝隙焦黑（禁忌清单见
+        // docs/ui/DESIGN.md §3.2）。
+        let (fill, hairline) = if is_dark {
+            (
+                egui::Color32::from_rgb(0x3C, 0x3C, 0x3E),
+                egui::Color32::from_white_alpha(31),
+            )
+        } else {
+            (
+                egui::Color32::WHITE,
+                egui::Color32::from_black_alpha(13),
+            )
+        };
         let contact = egui::Shadow {
             offset: [0, 1],
             blur: 1,
             spread: 0,
-            color: egui::Color32::from_black_alpha(if is_dark { 80 } else { 48 }),
+            color: egui::Color32::from_black_alpha(if is_dark { 76 } else { 26 }),
         };
         let ambient = egui::Shadow {
-            offset: [0, 3],
-            blur: 8,
+            offset: [0, 2],
+            blur: if is_dark { 3 } else { 2 },
             spread: 0,
-            color: egui::Color32::from_black_alpha(if is_dark { 55 } else { 20 }),
+            color: egui::Color32::from_black_alpha(if is_dark { 46 } else { 13 }),
         };
         for sh in [&ambient, &contact] {
             ui.painter()
                 .add(sh.as_shape(thumb, egui::CornerRadius::same(13)));
         }
-        // 玻璃透镜拇指：顶部亮、底部微沉的垂直渐变（非纯白方块）。
-        let (lens_top, lens_bot) = if is_dark {
-            (
-                egui::Color32::from_rgb(94, 94, 98),
-                egui::Color32::from_rgb(60, 60, 63),
-            )
-        } else {
-            (
-                egui::Color32::from_rgb(255, 255, 255),
-                egui::Color32::from_rgb(242, 242, 245),
-            )
-        };
-        crate::paint::rounded_fill_v(
-            ui.painter(),
-            thumb,
-            13.0,
-            lens_top,
-            lens_bot,
-        );
-        // 顶部内高光（玻璃厚度感）：上弧亮条，长坡渐灭（无切齐感）。
-        let glint_h = (thumb_h * 0.58).min(16.0);
-        let glint = egui::Rect::from_min_size(
-            egui::pos2(thumb.left() + 2.5, thumb.top() + 1.0),
-            Vec2::new(thumb.width() - 5.0, glint_h),
-        );
-        let glint_top = if is_dark {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70)
-        } else {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140)
-        };
-        crate::paint::rounded_fill_v(
-            ui.painter(),
-            glint,
-            6.0,
-            glint_top,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 0),
+        crate::paint::rounded_fill(ui.painter(), thumb, 13.0, fill);
+        ui.painter().rect_stroke(
+            egui::Rect::from_min_size(
+                egui::pos2(thumb.left() + 0.5, thumb.top() + 0.5),
+                Vec2::new(thumb.width() - 1.0, thumb.height() - 1.0),
+            ),
+            egui::CornerRadius::same(13),
+            egui::Stroke::new(1.0_f32, hairline),
+            egui::StrokeKind::Inside,
         );
         let mut clicked = None;
         for (i, (page, label)) in [(Page::Home, "首页"), (Page::Settings, "设置")]

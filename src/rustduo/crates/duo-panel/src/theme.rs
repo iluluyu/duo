@@ -201,7 +201,7 @@ impl Tokens {
             capsule_hover: over(capsule, hex("#000000"), 0.04),
             capsule_border: over(capsule, white, 0.65),
             segment_fill: white,
-            segment_track: over(bg, hex("#787880"), 0.16),
+            segment_track: over(bg, hex("#000000"), 0.06),
             search: over(bg, white, 0.72),
             search_focus: capsule,
             menu_fill: hex("#F7F7F9"),
