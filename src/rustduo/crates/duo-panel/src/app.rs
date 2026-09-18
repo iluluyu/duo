@@ -102,7 +102,7 @@ struct MoveResult {
 }
 
 /// 菜单毛玻璃状态机（生命周期 = 一次菜单打开；配方见 docs/ui/glass-recipe.md
-/// 「egui 实装」节）：跳变帧跳画菜单并发截图命令 → 下一帧
+/// §8）：跳变帧跳画菜单并发截图命令 → 下一帧
 /// Event::Screenshot 落地 → 裁剪/模糊/贴图 → 菜单闭包开头垫贴图。
 pub(crate) struct MenuGlass {
     /// 截图命令已发出（一次打开只发一次）。

@@ -1,6 +1,5 @@
 //! 菜单毛玻璃（egui 实装）：快照裁剪 → 3×box blur（高斯近似）→ 光学
-//! 增益 → 圆角蒙版 → 贴图。配方、快照时机与参数论证见
-//! docs/ui/glass-recipe.md「egui 实装（2026 快照模糊路线）」节。
+//! 增益 → 圆角蒙版 → 贴图。配方、参数与移植基线见 docs/ui/glass-recipe.md §8。
 
 use eframe::egui::{Color32, ColorImage, Context, Pos2, Rect, TextureHandle, TextureOptions, Vec2};
 
