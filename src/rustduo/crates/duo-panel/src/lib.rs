@@ -69,8 +69,16 @@ pub fn run() {
         winproc::notify_already_running("Duo 面板已在运行。");
         return;
     }
+    let mut viewport = viewport();
+    if let Some(s) = &shot {
+        // 高分取证：视口物理尺寸×ppp + 钉住 pixels_per_point，出图即
+        // 设备像素（Wayland 无头端平台 ppp 恒 1，两者一起才生效）。
+        if s.ppp > 0.0 {
+            viewport = viewport.with_inner_size([420.0 * s.ppp, 660.0 * s.ppp]);
+        }
+    }
     let options = eframe::NativeOptions {
-        viewport: viewport(),
+        viewport,
         ..Default::default()
     };
     if let Err(err) = eframe::run_native(
@@ -78,6 +86,11 @@ pub fn run() {
         options,
         Box::new(move |cc| {
             let mut app = app::PanelApp::new(cc);
+            if let Some(s) = &shot {
+                if s.ppp > 0.0 {
+                    cc.egui_ctx.set_pixels_per_point(s.ppp);
+                }
+            }
             if let Some(s) = &shot {
                 if s.page == "settings" {
                     app.page = app::Page::Settings;

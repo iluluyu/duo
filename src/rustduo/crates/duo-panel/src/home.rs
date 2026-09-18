@@ -476,7 +476,14 @@ fn paint_glyph(
                 crate::theme::hex(&duo_core::icons::lighten(preset.color, 0.08)),
                 alpha,
             );
-            painter.add(paint::g2_squircle_gradient(rect, bottom, top));
+            let feather = (painter.ctx().pixels_per_point() * 0.8).clamp(0.5, 2.0);
+            painter.add(paint::g2_gradient_feathered(
+                rect,
+                rect.width() / 2.0,
+                bottom,
+                top,
+                feather,
+            ));
             let ink = if preset.glyph_ink {
                 egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
             } else {

@@ -22,6 +22,19 @@ pub fn rounded_fill(painter: &egui::Painter, rect: Rect, radius: f32, color: Col
     painter.rect_filled(rect, CornerRadius::same(radius as u8), color);
 }
 
+/// 垂直渐变圆角矩形（顶→底顶点色）：玻璃透镜拇指等体积感控件。
+/// 与 g2_squircle_gradient 同一羽化构建器（裸 Mesh 自带边缘 AA）。
+pub fn rounded_fill_v(
+    painter: &egui::Painter,
+    rect: Rect,
+    radius: f32,
+    top: Color32,
+    bottom: Color32,
+) {
+    let feather = (painter.ctx().pixels_per_point() * 0.8).clamp(0.5, 2.0);
+    painter.add(g2_gradient_feathered(rect, radius, bottom, top, feather));
+}
+
 /// 状态点：dotSize 点核 + ringWidth 白环（Main.qml component Dot）。
 pub fn dot(painter: &egui::Painter, center: Pos2, dot_size: f32, ring: f32, color: Color32) {
     if ring > 0.0 {
@@ -170,30 +183,71 @@ pub fn g2_squircle(rect: Rect, color: Color32) -> Shape {
 }
 
 /// 预设图标的矢量绘制（icons.rs render_preset_svg 的直绘版）：G2 轮廓
-/// 扇形三角化 + 逐顶点纵向渐变（顶部 lighten 8% → 底部品牌色），替代
-/// SVG 240px 光栅 → LINEAR 缩到 60px 的采样锯齿；任意缩放恒平滑。
-/// 顶点色按 y 线性插值，线性渐变下无视觉差。
+/// 扇形三角化 + 逐顶点纵向渐变（顶部 lighten 8% → 底部品牌色）。
+/// 边缘自带羽化（外环顶点 alpha 0）：裸 Mesh 不经 tessellator，
+/// 没有自动抗锯齿——2026-09-19 用户再报「放大后锯齿」的根因。
 pub fn g2_squircle_gradient(rect: Rect, bottom: Color32, top: Color32) -> Shape {
-    let size = rect.width().min(rect.height());
-    let pts =
-        duo_core::icons::g2_outline(f64::from(size), f64::from(size), f64::from(size / 2.0), 5.0);
+    g2_gradient_feathered(rect, rect.width() / 2.0, bottom, top, 1.0)
+}
+
+/// 羽化渐变填充：轮廓外环 alpha→0、内环实体色，边缘宽度 feather px；
+/// 内部扇形三角化 + 逐顶点 y 向新变色。凸多边形专用。
+pub fn g2_gradient_feathered(
+    rect: Rect,
+    radius: f32,
+    bottom: Color32,
+    top: Color32,
+    feather: f32,
+) -> Shape {
+    let w = rect.width();
+    let h = rect.height();
+    let pts = duo_core::icons::g2_outline(f64::from(w), f64::from(h), f64::from(radius), 5.0);
     let lerp = |a: u8, b: u8, t: f32| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
-    let vertices: Vec<egui::epaint::Vertex> = pts
-        .iter()
-        .map(|(x, y)| {
-            let t = (*y as f32 / size).clamp(0.0, 1.0);
-            let color = Color32::from_rgb(
-                lerp(top.r(), bottom.r(), t),
-                lerp(top.g(), bottom.g(), t),
-                lerp(top.b(), bottom.b(), t),
-            );
-            let pos = Pos2::new(rect.left() + *x as f32, rect.top() + *y as f32);
-            egui::epaint::Vertex { pos, uv: egui::Pos2::ZERO, color }
-        })
-        .collect();
-    let indices: Vec<u32> = (1..vertices.len() as u32 - 1)
-        .flat_map(|i| [0, i, i + 1])
-        .collect();
+    let color_at = |y: f32| {
+        let t = ((y - rect.top()) / h.max(1e-3)).clamp(0.0, 1.0);
+        Color32::from_rgba_unmultiplied(
+            lerp(top.r(), bottom.r(), t),
+            lerp(top.g(), bottom.g(), t),
+            lerp(top.b(), bottom.b(), t),
+            lerp(top.a(), bottom.a(), t),
+        )
+    };
+    let n = pts.len();
+    let cx = f64::from(w) / 2.0;
+    let cy = f64::from(h) / 2.0;
+    let mut vertices: Vec<egui::epaint::Vertex> = Vec::with_capacity(n * 2);
+    let mut indices: Vec<u32> = Vec::with_capacity(n * 6);
+    for i in 0..n {
+        let prev = pts[(i + n - 1) % n];
+        let next = pts[(i + 1) % n];
+        let (tx, ty) = (next.0 - prev.0, next.1 - prev.1);
+        let len = (tx * tx + ty * ty).sqrt().max(1e-6);
+        let (mut nx, mut ny) = (-ty / len, tx / len);
+        if nx * (cx - pts[i].0) + ny * (cy - pts[i].1) < 0.0 {
+            (nx, ny) = (-nx, -ny);
+        }
+        let outer = Pos2::new(
+            rect.left() + pts[i].0 as f32,
+            rect.top() + pts[i].1 as f32,
+        );
+        let inner = Pos2::new(
+            outer.x + nx as f32 * feather,
+            outer.y + ny as f32 * feather,
+        );
+        let solid = color_at(inner.y);
+        let fade = Color32::from_rgba_unmultiplied(solid.r(), solid.g(), solid.b(), 0);
+        vertices.push(egui::epaint::Vertex { pos: outer, uv: egui::Pos2::ZERO, color: fade });
+        vertices.push(egui::epaint::Vertex { pos: inner, uv: egui::Pos2::ZERO, color: solid });
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (o_i, in_i) = (i as u32 * 2, i as u32 * 2 + 1);
+        let (o_j, in_j) = (j as u32 * 2, j as u32 * 2 + 1);
+        indices.extend_from_slice(&[o_i, in_i, in_j, o_i, in_j, o_j]);
+        if j != 0 {
+            indices.extend_from_slice(&[1, in_i, in_j]);
+        }
+    }
     Shape::Mesh(std::sync::Arc::new(egui::Mesh {
         vertices,
         indices,
