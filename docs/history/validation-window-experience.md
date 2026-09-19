@@ -4,7 +4,7 @@
 # 窗口体验验证记录
 
 - **日期**: 2026-09-05
-- **环境**: WSL2 (archlinux) + Windows 侧 interop；scrcpy 4.1 (scoop, 自带 adb)；adb 37.0.1 (scoop shim)；设备 OPD2409 (Android 16, 4444bd6b)；pwsh 7（用户建议，规避 WinPS 5.1 解析怪癖与 MTA WinForms 问题）
+- **环境**: WSL2 (archlinux) + Windows 侧 interop；scrcpy 4.1 (scoop, 自带 adb)；adb 37.0.1 (scoop shim)；设备 TESTPAD (Android 16, TESTSERIAL)；pwsh 7（用户建议，规避 WinPS 5.1 解析怪癖与 MTA WinForms 问题）
 - **代码**: 提交于 `8587626`（比例缩放）与 G2 提交（本轮）
 - **素材**: `assets/g2v5-*.png`（裸窗口 300px 内缩椭圆区域三连拍）、`assets/g2v6-*.png`（生产路径 160 DIP G2 三连拍）
 

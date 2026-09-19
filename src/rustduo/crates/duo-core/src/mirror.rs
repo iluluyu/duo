@@ -1259,10 +1259,10 @@ mod tests {
             default_video(),
             false,
             "微信",
-            "4444bd6b",
+            "TESTSERIAL",
         );
         let argv = engine.to_argv("scrcpy").unwrap();
-        assert!(argv.iter().any(|f| f == "--serial=4444bd6b"));
+        assert!(argv.iter().any(|f| f == "--serial=TESTSERIAL"));
         let joined = argv.join(" ");
         assert!(joined.contains("--start-app=+com.tencent.mm"));
         assert!(joined.contains("--no-vd-destroy-content"));
@@ -1321,14 +1321,14 @@ mod tests {
         a.chrome = true;
         let s = settings();
         let plan = DisplayPlan::default();
-        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "4444bd6b");
+        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "TESTSERIAL");
         assert!(engine
             .to_argv("scrcpy")
             .unwrap()
             .iter()
             .any(|f| f == "--window-borderless"));
         a.chrome_top = Some("native".into());
-        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "4444bd6b");
+        let engine = build_engine_args(&a, &s, &plan, default_video(), true, "T", "TESTSERIAL");
         assert!(
             !engine
                 .to_argv("scrcpy")

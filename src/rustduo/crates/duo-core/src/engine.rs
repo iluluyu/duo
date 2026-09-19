@@ -234,11 +234,11 @@ mod tests {
 
     #[test]
     fn flex_default_matches_verified_preset() {
-        let mut args = EngineArgs::new("4444bd6b");
+        let mut args = EngineArgs::new("TESTSERIAL");
         args.app_package = Some("cn.com.langeasy.LangEasyLexis".into());
         let argv = argv(&args);
         let joined = argv.join(" ");
-        assert!(has(&argv, "--serial=4444bd6b"));
+        assert!(has(&argv, "--serial=TESTSERIAL"));
         assert!(has(&argv, "--new-display=1920x1080"));
         assert!(has(&argv, "--no-window-aspect-ratio-lock"));
         assert!(has(&argv, "--flex-display"));

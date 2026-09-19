@@ -1,6 +1,6 @@
 # 投屏质量
 
-> settings 投屏质量项的设计记录。真机：OPPO OPD2409 / SM8750P / Android 16 / scrcpy 4.1。
+> settings 投屏质量项的设计记录。真机：OPPO TESTPAD / SM8750P / Android 16 / scrcpy 4.1。
 > 卡顿诊断：会话日志带 `--print-fps`，设备端 fps 掉=编码侧，fps 正常画面卡=PC 解码侧。
 
 ## 1. 编码器（探测缓存 `encoders.json`，TTL 7 天）

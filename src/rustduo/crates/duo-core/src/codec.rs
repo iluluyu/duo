@@ -364,11 +364,12 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// OPD2409（骁龙）真机 ``--list-encoders`` 原样输出：别名行、.cq/.hdr
+    /// TESTPAD（骁龙）真机 ``--list-encoders`` 抓包（型号/序列号已假名化）：
+    /// 别名行、.cq/.hdr
     /// 变体、sw 档、audio 段（逐字对齐 tests/test_codec.py 的 OPPO_OUTPUT）。
     const OPPO_OUTPUT: &str = concat!(
         "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>\n",
-        "[server] INFO: Device: [OPPO] OPPO OPD2409 (Android 16)\n",
+        "[server] INFO: Device: [OPPO] OPPO TESTPAD (Android 16)\n",
         "[server] INFO: List of video encoders:\n",
         "    --video-codec=h264 --video-encoder=c2.qti.avc.encoder             (hw) [vendor]\n",
         "    --video-codec=h264 --video-encoder=OMX.qcom.video.encoder.avc (hw) (alias for c2.qti.avc.enc)\n",
@@ -467,14 +468,14 @@ mod tests {
         let dir = scratch_dir("roundtrip");
         let path = dir.join("encoders.json");
         let encoders = fixture_encoders();
-        save_encoders_cache(&path, "4444bd6b", &encoders, Some(1000.0)).unwrap();
+        save_encoders_cache(&path, "TESTSERIAL", &encoders, Some(1000.0)).unwrap();
         let raw: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(raw["serial"], "4444bd6b");
+        assert_eq!(raw["serial"], "TESTSERIAL");
         assert_eq!(raw["probed_at"].as_f64(), Some(1000.0));
         assert_eq!(raw["encoders"][0]["codec"], "h264");
         assert_eq!(
-            load_cached_encoders(&path, "4444bd6b", Some(1000.0 + 3600.0)),
+            load_cached_encoders(&path, "TESTSERIAL", Some(1000.0 + 3600.0)),
             Some(encoders)
         );
     }
@@ -484,14 +485,14 @@ mod tests {
         let dir = scratch_dir("ttl");
         let path = dir.join("encoders.json");
         let encoders = fixture_encoders();
-        save_encoders_cache(&path, "4444bd6b", &encoders, Some(1000.0)).unwrap();
+        save_encoders_cache(&path, "TESTSERIAL", &encoders, Some(1000.0)).unwrap();
         assert_eq!(
-            load_cached_encoders(&path, "4444bd6b", Some(1000.0 + ENCODERS_TTL_S + 1.0)),
+            load_cached_encoders(&path, "TESTSERIAL", Some(1000.0 + ENCODERS_TTL_S + 1.0)),
             None
         );
         // TTL 边界仍新鲜。
         assert_eq!(
-            load_cached_encoders(&path, "4444bd6b", Some(1000.0 + ENCODERS_TTL_S)),
+            load_cached_encoders(&path, "TESTSERIAL", Some(1000.0 + ENCODERS_TTL_S)),
             Some(encoders)
         );
     }
@@ -501,7 +502,7 @@ mod tests {
         // 编码器组件机型专属：别机 serial 必须重探。
         let dir = scratch_dir("foreign");
         let path = dir.join("encoders.json");
-        save_encoders_cache(&path, "4444bd6b", &fixture_encoders(), Some(1000.0)).unwrap();
+        save_encoders_cache(&path, "TESTSERIAL", &fixture_encoders(), Some(1000.0)).unwrap();
         assert_eq!(load_cached_encoders(&path, "OTHER", Some(1001.0)), None);
     }
 
@@ -510,9 +511,9 @@ mod tests {
         let dir = scratch_dir("corrupt");
         let path = dir.join("encoders.json");
         fs::write(&path, "{not json").unwrap();
-        assert_eq!(load_cached_encoders(&path, "4444bd6b", None), None);
+        assert_eq!(load_cached_encoders(&path, "TESTSERIAL", None), None);
         assert_eq!(
-            load_cached_encoders(&dir.join("missing.json"), "4444bd6b", None),
+            load_cached_encoders(&dir.join("missing.json"), "TESTSERIAL", None),
             None
         );
     }
@@ -643,7 +644,7 @@ mod tests {
 
     #[test]
     fn explicit_av1_without_hardware_degrades_to_h264() {
-        // OPD2409 实况：仅 sw av1 → h264 硬件，绝不软编 AV1。
+        // TESTPAD 实况：仅 sw av1 → h264 硬件，绝不软编 AV1。
         let choice = resolve_codec("av1", Some(&fixture_encoders()));
         assert_eq!(choice.codec, "h264");
         assert_eq!(choice.encoder.as_deref(), Some("c2.qti.avc.encoder"));

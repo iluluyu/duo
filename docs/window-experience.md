@@ -39,7 +39,7 @@ flex 不变：永不自改窗形。
 灵动岛方向消歧（水平拖=移动 / 垂直滑=拉通知栏 / 点按=穿透）；下巴 ○ 单击=返回，
 长按=镜像 keyevent 3 / 虚拟屏 `am start --display N -c HOME`；G2 圆角已回退为系统默认。
 
-## 2. 虚拟屏调研存档（2026-09-05 真机，OPD2409 / Android 16 / scrcpy 4.1）
+## 2. 虚拟屏调研存档（2026-09-05 真机，TESTPAD / Android 16 / scrcpy 4.1）
 
 - `--new-display` 建屏自带 `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` → 副屏自动拉起
   AOSP `SecondaryDisplayLauncher`（`CATEGORY_SECONDARY_HOME` 唯一 handler）——
@@ -706,7 +706,7 @@ AssertAbove 与漂移 Glue）。
 > 本节记录真机标定过程与最终规则；实现在 duo-core `mirror.rs`
 > `plan_display` 的 `parallel_view_dpi_cap`。
 
-### 1. 机理（真机 OPD2409 / ColorOS 16 逐条 dumpsys 标定）
+### 1. 机理（真机 TESTPAD / ColorOS 16 逐条 dumpsys 标定）
 
 - scrcpy flex 与固定建屏参数完全一致（同一 `createNewVirtualDisplay`
   调用与 flags）；唯一差异是 flex 会随窗口 `resize()`。**resize 事件

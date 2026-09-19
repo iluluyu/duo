@@ -1,7 +1,7 @@
 //! 设备媒体音量：mirror 卡需要的唯一一条 adb 命令。对译自 duo/core/adb.py
 //! （纯逻辑部分）；合同镜像 tests/test_adb.py。
 //!
-//! 真机实测（serial 4444bd6b，ColorOS）：经典 ``media volume`` 工具在 OEM
+//! 真机实测（serial TESTSERIAL，ColorOS）：经典 ``media volume`` 工具在 OEM
 //! ROM 上不存在（/system/bin/media: inaccessible），唯一可用写入路径是
 //! ``cmd media_session volume``（Android 9+）。预读刻意放弃：
 //! ``--get`` 输出 ``[V]`` 日志文本无可解析数字，源码不得出现 --get/dumpsys
