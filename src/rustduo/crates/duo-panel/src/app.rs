@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use eframe::egui::{Sense, TextureHandle, Vec2};
+use eframe::egui::{Color32, ColorImage, Pos2, Rect, Sense, TextureHandle, Vec2};
 
 use crate::sessions;
 use duo_core::aspects::{
@@ -144,6 +144,15 @@ impl Default for MenuGlass {
     }
 }
 
+/// 全屏滚动自检：截图A → 直注滚动 → 截图B → diff 判决。
+pub struct SelfCheck {
+    pub phase: u32,
+    pub frames: u32,
+    pub out: String,
+    pub img_a: Option<std::sync::Arc<egui::ColorImage>>,
+    pub img_b: Option<std::sync::Arc<egui::ColorImage>>,
+}
+
 pub struct PanelApp {
     pub page: Page,
     pub settings: SettingsPageModel,
@@ -192,6 +201,17 @@ pub struct PanelApp {
     /// 出图泵自己的截图请求已发出（毛玻璃也发截图命令，须区分归属）。
     pub(crate) shot_capture: bool,
     pub(crate) shot_capture_frame: u32,
+    /// DWM blur 是否已挂上（sync_glass 跳变时才调 DWM，见 blur.rs 注释）。
+    pub(crate) glass_applied: bool,
+    /// DUO_SELFCHECK 自检状态机（全屏滚动判决，临时诊断工具）。
+    pub(crate) selfcheck: Option<Box<SelfCheck>>,
+    /// 自检结束后的画面停留截止（供外部 GDI 实拍）。
+    pub(crate) selfcheck_hold_until: std::time::Instant,
+    /// 标签拇指动画（起点 x, 起始时刻）；ease-out 见 top_capsule。
+    pub(crate) tab_anim: Option<(f32, std::time::Instant)>,
+    /// 标签拇指上帧渲染位（动画起点的真值来源）。
+    pub(crate) tab_pos: Option<f32>,
+
     #[allow(dead_code)]
     shot_clicked: bool,
     #[allow(dead_code)]
@@ -216,6 +236,15 @@ pub struct PanelApp {
     pub(crate) last_screen_size: Option<egui::Vec2>,
     /// 图标贴图缓存：(路径, 显示尺寸)。None = 加载失败不重试。
     pub(crate) icon_tex: RefCell<BTreeMap<(PathBuf, u32), Option<TextureHandle>>>,
+    /// 玻璃岛贴图缓存（0=胶囊岛 1=搜索岛）：键=（页,滚动量化,暗色,
+    /// 岛矩形）。
+    pub(crate) island_tex: RefCell<[Option<(IslandKey, TextureHandle)>; 2]>,
+    /// 本帧两块岛是否画成（内层控件据此省掉自身填充，杜绝双层）。
+    pub(crate) island_drawn: [bool; 2],
+    /// 岛背板内容剖面（内容坐标，含滚动前偏移）：设置页=纵向色带；
+    /// 首页=色块列表。各页 show() 每帧刷新。
+    pub(crate) island_bands: Vec<(f32, f32, Color32)>,
+    pub(crate) island_blocks: Vec<(Rect, Color32)>,
 }
 
 impl PanelApp {
@@ -260,6 +289,20 @@ impl PanelApp {
             probe_pill: None,
             shot_capture: false,
             shot_capture_frame: 0,
+            glass_applied: false,
+            selfcheck_hold_until: std::time::Instant::now(),
+            tab_anim: None,
+            tab_pos: None,
+
+            selfcheck: std::env::var("DUO_SELFCHECK").ok().map(|p| {
+                Box::new(SelfCheck {
+                    phase: 0,
+                    frames: 0,
+                    out: p,
+                    img_a: None,
+                    img_b: None,
+                })
+            }),
             shot_clicked: false,
             shot_sub_moved: false,
             shot_use_harness: false,
@@ -272,6 +315,10 @@ impl PanelApp {
             menu_snapshot_ppp: 1.0,
             last_screen_size: None,
             icon_tex: RefCell::new(BTreeMap::new()),
+            island_tex: RefCell::new([None, None]),
+            island_drawn: [false, false],
+            island_bands: Vec::new(),
+            island_blocks: Vec::new(),
         };
         // QML _status_text 初始「就绪」→ 启动即挂状态 toast
         app.toast_now("就绪");
@@ -498,7 +545,7 @@ impl PanelApp {
             egui::pos2(resp.rect.right() - 8.0, cy + gh / 2.0),
         );
         let glyph_stroke = if is_dark {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+            crate::theme::srgba(255, 255, 255, 200)
         } else {
             t.ink2
         };
@@ -1003,8 +1050,8 @@ impl PanelApp {
             )
         } else {
             (
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 15),
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26),
+                crate::theme::srgba(0, 0, 0, 15),
+                crate::theme::srgba(0, 0, 0, 26),
             )
         };
         let glass = self.settings.draft.glass_enabled;
@@ -1020,9 +1067,9 @@ impl PanelApp {
                 egui::Stroke::new(
                     1.0_f32,
                     if is_dark {
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                        crate::theme::srgba(255, 255, 255, 26)
                     } else {
-                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+                        crate::theme::srgba(0, 0, 0, 26)
                     },
                 )
             };
@@ -1452,6 +1499,172 @@ impl PanelApp {
 
     // ------------------------------------------------------------- 渲染
 
+    /// DWM blur 状态机：开关跳变时才碰 DWM（每帧直调会拖慢系统合成——
+    /// 拖任意窗口偶发卡顿的来源）；主题切换重挂一次换染色。
+    fn sync_glass(&mut self, frame: &eframe::Frame) {
+        let want = self.settings.draft.glass_enabled;
+        if want != self.glass_applied {
+            if want {
+                crate::blur::apply_glass(frame, self.tokens.blur_tint());
+            } else {
+                crate::blur::clear_glass(frame);
+            }
+            self.glass_applied = want;
+        }
+    }
+
+    fn pump_selfcheck(&mut self, ctx: &egui::Context) {
+        let Some(sc) = self.selfcheck.as_mut() else {
+            return;
+        };
+        sc.frames += 1;
+        ctx.request_repaint(); // 自检期间保持帧推进（响应式渲染默认无事件即停）
+        let tag = |p: &str| egui::UserData::new(p.to_string());
+        let take_shot = |ctx: &egui::Context, want: &str| {
+            ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot {
+                        image, user_data, ..
+                    } if user_data_eq(user_data, want) => Some(image.clone()),
+                    _ => None,
+                })
+            })
+        };
+        match sc.phase {
+            0 if sc.frames >= 90 => {
+                self.page = match std::env::var("DUO_SELFCHECK_PAGE").as_deref() {
+                    Ok("home") => Page::Home,
+                    _ => Page::Settings,
+                };
+                if let Ok(theme) = std::env::var("DUO_SELFCHECK_THEME") {
+                    self.settings.draft.theme = theme;
+                }
+                if std::env::var("DUO_SELFCHECK_GLASS").as_deref() == Ok("0") {
+                    self.settings.draft.glass_enabled = false;
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(tag("selfcheck-a")));
+                sc.phase = 1;
+                ctx.request_repaint();
+            }
+            1 => {
+                if sc.frames % 45 == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(tag("selfcheck-a")));
+                }
+                if let Some(img) = take_shot(ctx, "selfcheck-a") {
+                    sc.img_a = Some(img);
+                    if std::env::var("DUO_SELFCHECK_DRAG").as_deref() == Ok("1") {
+                        #[cfg(target_os = "windows")]
+                        crate::winproc::send_drag();
+                        sc.phase = 2;
+                        ctx.request_repaint();
+                    } else if std::env::var("DUO_SELFCHECK_WHEEL").as_deref() == Ok("1") {
+                        // 真输入路径取证：win32 合成滚轮（默认 3 格 -120）
+                        #[cfg(target_os = "windows")]
+                        crate::winproc::send_wheel(-120);
+                        sc.phase = 2;
+                        ctx.request_repaint();
+                    } else {
+                        let v: f32 = std::env::var("DUO_SELFCHECK_SCROLL")
+                            .ok()
+                            .and_then(|x| x.parse().ok())
+                            .unwrap_or(400.0);
+                        self.settings_scroll = v; // 绕过输入系统直注
+                        self.grid_scroll = v;
+                        sc.phase = 2;
+                        ctx.request_repaint();
+                    }
+                }
+            }
+            2 if sc.frames % 12 == 0 => {
+                sc.phase = 3;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(tag("selfcheck-b")));
+                ctx.request_repaint();
+            }
+            3 => {
+                if sc.frames % 45 == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(tag("selfcheck-b")));
+                }
+                if let Some(img) = take_shot(ctx, "selfcheck-b") {
+                    sc.img_b = Some(img);
+                    sc.phase = 4;
+                }
+            }
+            _ => {}
+        }
+        if sc.phase == 4 {
+            let (a, b) = (sc.img_a.clone().unwrap(), sc.img_b.clone().unwrap());
+            let clamped = self.settings_scroll;
+            let n = a.width().min(b.width()) * a.height().min(b.height());
+            let mut diff_px = 0usize;
+            if a.width() == b.width() && a.height() == b.height() {
+                for (pa, pb) in a.pixels.iter().zip(b.pixels.iter()) {
+                    if pa.r() as i32 - pb.r() as i32 != 0
+                        || pa.g() as i32 - pb.g() as i32 != 0
+                        || pa.b() as i32 - pb.b() as i32 != 0
+                    {
+                        diff_px += 1;
+                    }
+                }
+            }
+            let save = |img: &egui::ColorImage, p: &str| {
+                let pixels: Vec<u8> = img
+                    .pixels
+                    .iter()
+                    .flat_map(|c| [c.r(), c.g(), c.b()])
+                    .collect();
+                let _ = image::save_buffer(
+                    p,
+                    &pixels,
+                    img.width() as u32,
+                    img.height() as u32,
+                    image::ColorType::Rgb8,
+                );
+            };
+            let dir = std::path::Path::new(&sc.out)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let case = std::env::var("DUO_SELFCHECK_CASE").unwrap_or_else(|_| "x".into());
+            save(
+                &a,
+                &dir.join(format!("selfcheck_{case}_a.png"))
+                    .to_string_lossy(),
+            );
+            save(
+                &b,
+                &dir.join(format!("selfcheck_{case}_b.png"))
+                    .to_string_lossy(),
+            );
+            let verdict = format!(
+                "screen={:?}\nppp={}\nscroll_set=400 scroll_after_clamp={}\ndiff_px={} of {} ({:.2}%)\nscrolled={}\nwheel_hits={} drag_hits={} down_frames={} press={}\n",
+                ctx.screen_rect(),
+                ctx.pixels_per_point(),
+                clamped,
+                diff_px, n,
+                diff_px as f32 * 100.0 / n.max(1) as f32,
+                diff_px as f32 > n as f32 * 0.005,
+                crate::settings::WHEEL_HITS.load(std::sync::atomic::Ordering::Relaxed),
+                crate::settings::DRAG_HITS.load(std::sync::atomic::Ordering::Relaxed),
+                crate::settings::PTR_DOWN_FRAMES.load(std::sync::atomic::Ordering::Relaxed),
+                crate::settings::PTR_PRESS.load(std::sync::atomic::Ordering::Relaxed),
+            );
+            let _ = std::fs::write(&sc.out, verdict);
+            self.selfcheck = None;
+            let hold: u64 = std::env::var("DUO_SELFCHECK_HOLD")
+                .ok()
+                .and_then(|x| x.parse().ok())
+                .unwrap_or(0);
+            if hold > 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(hold);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(tag("selfcheck-hold")));
+                let _ = deadline;
+            }
+            self.selfcheck_hold_until =
+                std::time::Instant::now() + std::time::Duration::from_secs(hold);
+            ctx.request_repaint();
+        }
+    }
+
     fn sync_visuals(&self, ctx: &egui::Context) {
         let t = self.tokens;
         let is_dark = matches!(t.kind, ThemeKind::Dark);
@@ -1473,9 +1686,9 @@ impl PanelApp {
             egui::Stroke::new(
                 1.0_f32,
                 if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                    crate::theme::srgba(255, 255, 255, 26)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+                    crate::theme::srgba(0, 0, 0, 26)
                 },
             )
         };
@@ -1510,6 +1723,138 @@ impl PanelApp {
         });
     }
 
+    /// 滚动层级虚化（参考 ColorOS 17 / iOS 导航栏景深）：玻璃+动画都开
+    /// 时，页顶盖 bg 色软凸形渐变幕（双端零透明度，无硬边/无横线——
+    /// 2026-09-20 用户反馈：横线多余、亮色发闷、上下有色彩断层）。
+    /// 任一开关关闭则不画（原始硬裁边，零开销）。
+    /// 悬浮玻璃岛（七修：活合成背板——内容色全知，无需截图。键=
+    /// 页/滚动量化/主题，滚动即重建（56×12 图，微秒级）→ 模糊永远
+    /// 跟手、零闪烁；染层烤入贴图=单层无错位）。胶囊岛用纵向色带
+    /// 剖面（设置页卡片带 / 首页设备卡）。
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn island_glass(
+        &self,
+        ctx: &egui::Context,
+        pill: Rect,
+        slot: usize,
+        page_tag: u8,
+        scroll: f32,
+        bands: &[(f32, f32, Color32)],
+        blocks: &[(Rect, Color32)],
+    ) -> Option<TextureHandle> {
+        let dark = matches!(self.tokens.kind, ThemeKind::Dark);
+        let key = (
+            page_tag,
+            (scroll / 3.0).round() as u32,
+            if dark { 1 } else { 0 },
+            (ctx.pixels_per_point() * 8.0).round() as u8,
+            pill,
+        );
+        if let Some((k, tex)) = self.island_tex.borrow().get(slot).and_then(|e| e.as_ref()) {
+            if *k == key {
+                return Some(tex.clone());
+            }
+        }
+        // 细背板：1 设备像素/格，外扩 8px（lensing 采样边距）
+        let ppp = ctx.pixels_per_point().max(0.1);
+        let margin = 8.0;
+        let cover = pill.expand(margin);
+        let w = (cover.width() * ppp).round() as usize;
+        let h = (cover.height() * ppp).round() as usize;
+        if w < 8 || h < 8 {
+            return None;
+        }
+        let bg = self.tokens.bg;
+        let mut syn = ColorImage {
+            size: [w, h],
+            pixels: vec![bg; w * h],
+        };
+        for row in 0..h {
+            let page_y = cover.top() + (row as f32 + 0.5) / h as f32 * cover.height();
+            let content_y = page_y + scroll;
+            let mut c = bg;
+            for (y0, y1, col) in bands.iter().rev() {
+                if content_y >= *y0 && content_y < *y1 {
+                    c = *col;
+                    break;
+                }
+            }
+            for col_i in 0..w {
+                let page_x = cover.left() + (col_i as f32 + 0.5) / w as f32 * cover.width();
+                let mut px = c;
+                for (r, col) in blocks {
+                    if page_x >= r.left()
+                        && page_x < r.right()
+                        && content_y >= r.top()
+                        && content_y < r.bottom()
+                    {
+                        px = *col;
+                        break;
+                    }
+                }
+                syn.pixels[row * w + col_i] = px;
+            }
+        }
+        let knobs = crate::glass::LiquidKnobs::resting(pill.height().min(pill.width()), dark);
+        let tex = crate::glass::build_liquid_texture(
+            ctx,
+            &format!("duo-island-{slot}"),
+            &syn,
+            cover,
+            pill,
+            ppp,
+            dark,
+            &knobs,
+        );
+        if let Some(t) = &tex {
+            self.island_tex.borrow_mut()[slot] = Some((key, t.clone()));
+        }
+        tex
+    }
+
+    /// 胶囊岛绘制（内容之上、胶囊之下）。
+    fn floating_glass(&mut self, ui: &mut egui::Ui) {
+        if !(self.settings.draft.glass_enabled && cfg!(target_os = "windows")) {
+            return;
+        }
+        let full = ui.max_rect();
+        // 八修：岛=轨道同矩形（旧外扩 12/6 的"大外圈胶囊"读作双层
+        // 且像 BUG）——玻璃即控件本体（iOS 26 液态玻璃分段语义）
+        let cap_w = 200.0_f32.min(full.width() - 40.0).max(0.0);
+        let pill = Rect::from_min_size(
+            Pos2::new(full.center().x - cap_w / 2.0, full.top() + 16.0),
+            Vec2::new(cap_w, 32.0),
+        );
+        let (page_tag, scroll) = match self.page {
+            Page::Home => (0u8, 0.0),
+            Page::Settings => (1u8, self.settings_scroll),
+        };
+        let bands = self.island_bands.clone();
+        let blocks = self.island_blocks.clone();
+        let tex = self.island_glass(ui.ctx(), pill, 0, page_tag, scroll, &bands, &blocks);
+        self.island_drawn[0] = tex.is_some();
+        if let Some(tex) = tex {
+            // 浮岛软投影（Opus Q2：blur 8 α0.08，克制不抢 rim）
+            let shadow = egui::Shadow {
+                offset: [0, 2],
+                blur: 8,
+                spread: 0,
+                color: crate::theme::srgba(0, 0, 0, 20),
+            };
+            ui.painter()
+                .add(shadow.as_shape(pill, egui::CornerRadius::same(16)));
+            ui.painter().add(egui::Shape::image(
+                tex.id(),
+                pill.expand(8.0),
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                crate::theme::srgba(255, 255, 255, 255),
+            ));
+            // （十修）外描边删除：液态贴图自带 rim，描边=用户判读的
+            // 「多余细线」
+        }
+    }
+
     /// 顶栏分段导航（2026-09-19 修订，学 iOS UISegmentedControl /
     /// COLOROS 17 分段控件）：紧凑居中胶囊轨道（不再通栏对半），拇指
     /// 滑动动画 + 轻投影，亮色 = 灰轨道 vs 纯白拇指的强对比（旧版
@@ -1531,13 +1876,19 @@ impl PanelApp {
         );
         ui.allocate_rect(rect, Sense::hover());
         let is_dark = t.kind == ThemeKind::Dark;
+        // 七修补丁：岛画成时轨道全透（岛材质即轨道；旧半透 α=「透明层」
+        // 双层残留），岛缺失帧回退半透轨道
         let track = if self.settings.draft.glass_enabled {
-            egui::Color32::from_rgba_unmultiplied(
-                t.segment_track.r(),
-                t.segment_track.g(),
-                t.segment_track.b(),
-                if is_dark { 200 } else { 220 },
-            )
+            if self.island_drawn[0] {
+                egui::Color32::TRANSPARENT
+            } else {
+                crate::theme::srgba(
+                    t.segment_track.r(),
+                    t.segment_track.g(),
+                    t.segment_track.b(),
+                    if is_dark { 185 } else { 205 },
+                )
+            }
         } else {
             t.segment_track
         };
@@ -1561,48 +1912,85 @@ impl PanelApp {
         } else {
             rect.right() - inset - seg_w
         };
-        let x = ui
-            .ctx()
-            .animate_value_with_time(egui::Id::new("duo-tab-thumb"), target_x, 0.22);
+        // 拇指动画（2026-09-20 二修：首版 get_or_insert 直接把目标当
+        // 原点，Δ恒 0 → 动画退化成瞬移；改为记忆上帧渲染位，目标变化时
+        // 从当前位置 ease-out-cubic 0.18s，中断可续接）。
+        let x = if self.settings.draft.animations_enabled {
+            let now = std::time::Instant::now();
+            let prev = self.tab_pos.unwrap_or(target_x);
+            if (prev - target_x).abs() <= 0.5 {
+                self.tab_anim = None;
+                self.tab_pos = Some(target_x);
+                target_x
+            } else {
+                let (from, t0) = self.tab_anim.unwrap_or((prev, now));
+                let p = ease_out_cubic(now.duration_since(t0).as_secs_f32() / 0.18);
+                let cur = from + (target_x - from) * p;
+                if p < 1.0 {
+                    self.tab_anim = Some((from, t0));
+                    ui.ctx().request_repaint();
+                } else {
+                    self.tab_anim = None;
+                }
+                self.tab_pos = Some(cur);
+                cur
+            }
+        } else {
+            self.tab_anim = None;
+            self.tab_pos = None;
+            target_x
+        };
         let thumb =
             egui::Rect::from_min_size(egui::pos2(x, rect.top() + inset), Vec2::new(seg_w, thumb_h));
         // 拇指（gemini 方案 A：Apple HIG 精修）——纯色填充 + 1px 发丝描边
         // + 紧致双层浅影：杜绝渐变发脏与缝隙焦黑（禁忌清单见
         // docs/ui/DESIGN.md §3.2）。
+        // 玻璃上拇指清晰度（gemini 交叉验证 #3：透明轨道上拇指需自带
+        // 对比——暗色提亮+强高光边，亮色加描边+重影）
+        // 十三修：亮色线条减负——白拇指砍接触影+发丝线（旧版
+        // rim+双影+发丝+低对比边 4 层线=认知负担），只留一层柔影；
+        // 暗色保持双影+发丝（强对比下读作一个整体）
         let (fill, hairline) = if is_dark {
             (
-                egui::Color32::from_rgb(0x3C, 0x3C, 0x3E),
-                egui::Color32::from_white_alpha(31),
+                egui::Color32::from_rgb(0x48, 0x48, 0x4A),
+                egui::Color32::from_white_alpha(52),
             )
         } else {
-            (egui::Color32::WHITE, egui::Color32::from_black_alpha(13))
+            (egui::Color32::WHITE, egui::Color32::TRANSPARENT)
         };
         let contact = egui::Shadow {
             offset: [0, 1],
             blur: 1,
             spread: 0,
-            color: egui::Color32::from_black_alpha(if is_dark { 76 } else { 26 }),
+            color: egui::Color32::from_black_alpha(if is_dark { 96 } else { 0 }),
         };
         let ambient = egui::Shadow {
             offset: [0, 2],
-            blur: if is_dark { 3 } else { 2 },
+            blur: 4,
             spread: 0,
-            color: egui::Color32::from_black_alpha(if is_dark { 46 } else { 13 }),
+            color: egui::Color32::from_black_alpha(if is_dark { 60 } else { 30 }),
         };
-        for sh in [&ambient, &contact] {
+        if is_dark {
+            for sh in [&ambient, &contact] {
+                ui.painter()
+                    .add(sh.as_shape(thumb, egui::CornerRadius::same(13)));
+            }
+        } else {
             ui.painter()
-                .add(sh.as_shape(thumb, egui::CornerRadius::same(13)));
+                .add(ambient.as_shape(thumb, egui::CornerRadius::same(13)));
         }
         crate::paint::rounded_fill(ui.painter(), thumb, 13.0, fill);
-        ui.painter().rect_stroke(
-            egui::Rect::from_min_size(
-                egui::pos2(thumb.left() + 0.5, thumb.top() + 0.5),
-                Vec2::new(thumb.width() - 1.0, thumb.height() - 1.0),
-            ),
-            egui::CornerRadius::same(13),
-            egui::Stroke::new(1.0_f32, hairline),
-            egui::StrokeKind::Inside,
-        );
+        if hairline != egui::Color32::TRANSPARENT {
+            ui.painter().rect_stroke(
+                egui::Rect::from_min_size(
+                    egui::pos2(thumb.left() + 0.5, thumb.top() + 0.5),
+                    Vec2::new(thumb.width() - 1.0, thumb.height() - 1.0),
+                ),
+                egui::CornerRadius::same(13),
+                egui::Stroke::new(1.0_f32, hairline),
+                egui::StrokeKind::Inside,
+            );
+        }
         let mut clicked = None;
         for (i, (page, label)) in [(Page::Home, "首页"), (Page::Settings, "设置")]
             .into_iter()
@@ -1627,7 +2015,7 @@ impl PanelApp {
                 seg.center(),
                 label,
                 13.5,
-                selected,
+                false, // Apple 分段控件：两段同字重，选中态靠颜色/拇指区分
                 if selected { t.ink } else { t.ink2 },
             );
             if resp.clicked() {
@@ -2172,9 +2560,12 @@ impl eframe::App for PanelApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.settings.draft.glass_enabled {
-            crate::blur::apply_glass(frame, self.tokens.blur_tint());
+        if self.selfcheck.is_none() && self.selfcheck_hold_until > std::time::Instant::now() {
+            ctx.request_repaint();
+            return; // 停留：冻结画面供外部实拍
         }
+        self.pump_selfcheck(ctx);
+        self.sync_glass(frame);
         if self.shot.is_some() {
             ctx.request_repaint(); // 出图模式：静态画面也推进帧计数
         }
@@ -2187,6 +2578,7 @@ impl eframe::App for PanelApp {
         if self.tokens.kind != kind {
             self.tokens = Tokens::of(kind);
             self.menu_snapshot = None;
+            self.glass_applied = false; // 换 tint 重挂一次 DWM blur
         }
         let prev_page = self.page;
         // QML Shortcut：Ctrl+, 打开设置；Esc 在设置页 = 保存并返回
@@ -2207,13 +2599,13 @@ impl eframe::App for PanelApp {
         self.pump_shot(ctx);
         self.pump_shot_menu(ctx, frame);
 
-        // 画布（bg + 六枚色斑）铺满；卡片自管边距（QML x:20 语义）
+        // 画布铺满（色斑 2026-09-20 撤除）；卡片自管边距（QML x:20 语义）
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full = ui.max_rect();
                 let bg = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
-                    egui::Color32::from_rgba_unmultiplied(
+                    crate::theme::srgba(
                         self.tokens.bg.r(),
                         self.tokens.bg.g(),
                         self.tokens.bg.b(),
@@ -2223,19 +2615,21 @@ impl eframe::App for PanelApp {
                     self.tokens.bg
                 };
                 ui.painter().rect_filled(full, 0, bg);
+                // 岛背板剖面每帧重建（页内 show() 填充）
+                self.island_bands.clear();
+                self.island_blocks.clear();
+                self.island_drawn = [false, false];
                 match self.page {
-                    // 设置页自铺无斑底（QML Rectangle 盖色斑）+ 内容，
-                    // 之后胶囊恒在最上（跨页常驻）
                     Page::Home => {
-                        crate::paint::canvas_spots(ui.painter(), &self.tokens, full);
                         crate::home::show(self, ui);
-                        self.top_capsule(ui);
                     }
                     Page::Settings => {
                         self.settings_page(ui);
-                        self.top_capsule(ui);
                     }
                 }
+                // 悬浮玻璃岛（胶囊之下、内容之上）
+                self.floating_glass(ui);
+                self.top_capsule(ui);
             });
         // Wayland 出图：托管菜单浮层（Area，先于 Toast）
         self.show_harness_menu(ctx);
@@ -2266,6 +2660,15 @@ impl Drop for PanelApp {
     }
 }
 
+/// ease-out cubic（p∈[0,1]，尾端减速；标签拇指动画用）。
+fn ease_out_cubic(p: f32) -> f32 {
+    let p = p.clamp(0.0, 1.0);
+    1.0 - (1.0 - p).powi(3)
+}
+
+/// 岛贴图缓存键：页 / 滚动量化 / 暗色 / 岛矩形。
+type IslandKey = (u8, u32, u8, u8, Rect);
+
 /// 菜单行高与悬停皮肤（高 32、行距 0、8% 白悬停洗色，详见 docs/ui/glass-recipe.md §8）。
 fn menu_row_style(ui: &mut egui::Ui, t: &Tokens) {
     ui.style_mut().spacing.interact_size.y = 32.0;
@@ -2275,12 +2678,12 @@ fn menu_row_style(ui: &mut egui::Ui, t: &Tokens) {
     let hover_fill = if is_dark {
         egui::Color32::from_rgba_premultiplied(12, 12, 12, 20)
     } else {
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 15)
+        crate::theme::srgba(0, 0, 0, 15)
     };
     let active_fill = if is_dark {
         egui::Color32::from_rgba_premultiplied(24, 24, 24, 36)
     } else {
-        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 26)
+        crate::theme::srgba(0, 0, 0, 26)
     };
     let widgets = &mut ui.style_mut().visuals.widgets;
     for state in [
@@ -2325,7 +2728,7 @@ pub(crate) fn menu_hairline(ui: &mut egui::Ui, t: &Tokens) {
         egui::vec2(MENU_INNER_WIDTH - 16.0, 1.0),
     );
     let color = if matches!(t.kind, ThemeKind::Dark) {
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 36)
+        crate::theme::srgba(255, 255, 255, 36)
     } else {
         t.hairline_on_card
     };

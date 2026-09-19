@@ -61,24 +61,79 @@ impl HomeLayout {
 }
 
 /// 主页面（app.rs update 调度；胶囊在 app.rs 顶部已画）。
+/// 网格可滚时，页面任意处滚轮/拖拽都驱动网格（触摸屏无滚轮事件，
+/// 拖拽平移补位；2026-09-20 与设置页同构）。
 pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     let chips = app.running_chips();
     let chips_h = running_card_height(ui.max_rect().width(), &chips, ui);
+    let entries: Vec<AppEntry> = app.grid_entries();
     let layout = HomeLayout::compute_with_chips_height(
         ui.max_rect().width(),
         ui.max_rect().height(),
         app.has_pinned(),
         chips_h,
     );
+    let full = ui.max_rect();
+    let pan_zone = Rect::from_min_max(
+        Pos2::new(full.left(), full.top() + 52.0),
+        Pos2::new(full.right(), full.bottom()),
+    );
+    let pan = ui.allocate_rect(pan_zone, Sense::drag());
+    let menu_open = app.menu_effectively_open(ui.ctx());
+    let max_scroll = grid_metrics(layout.grid, &entries).2;
+    if max_scroll > 0.0 && !menu_open {
+        if ui.rect_contains_pointer(pan_zone) {
+            let dy = ui.input(|i| i.raw_scroll_delta.y);
+            app.grid_scroll = (app.grid_scroll - dy).clamp(0.0, max_scroll);
+        }
+        if pan.dragged() {
+            app.grid_scroll = (app.grid_scroll - pan.drag_delta().y).clamp(0.0, max_scroll);
+        }
+    }
+    app.island_bands.push((
+        full.top(),
+        full.bottom(),
+        if matches!(app.tokens.kind, crate::theme::ThemeKind::Dark) {
+            crate::theme::hex("#1C1C1E")
+        } else {
+            crate::theme::hex("#F2F2F7")
+        },
+    ));
     device_card(app, ui, layout.device);
+    app.island_bands
+        .push((layout.device.top(), layout.device.bottom(), app.tokens.card));
+    if app.has_pinned() {
+        app.island_bands
+            .push((layout.pinned.top(), layout.pinned.bottom(), app.tokens.card));
+    }
+    app.island_bands
+        .push((layout.mirror.top(), layout.mirror.bottom(), app.tokens.card));
     if app.has_pinned() {
         pinned_card(app, ui, layout.pinned);
     }
     mirror_card(app, ui, layout.mirror);
-    search_capsule(app, ui, layout.search);
-    grid(app, ui, layout.grid);
+    // 六修：网格先画（磁贴从搜索岛底下滚过），搜索岛+胶囊后画盖其上
+    let glass_on = app.settings.draft.glass_enabled && cfg!(target_os = "windows");
+    let grid_clip = if glass_on {
+        Rect::from_min_max(
+            Pos2::new(layout.grid.left(), layout.search.top()),
+            Pos2::new(layout.grid.right(), layout.grid.bottom()),
+        )
+    } else {
+        layout.grid
+    };
+    grid(app, ui, layout.grid, grid_clip, &entries);
+
+    search_island(app, ui, layout.search, glass_on);
     running_card(app, ui, ui.max_rect(), chips_h);
     ui.allocate_rect(ui.max_rect(), Sense::hover());
+}
+
+/// (cols, content_h, max_scroll)：show 的输入路由与 grid 的裁剪共用。
+fn grid_metrics(rect: Rect, entries: &[AppEntry]) -> (usize, f32, f32) {
+    let cols = ((rect.width() / 92.0).floor() as usize).max(2);
+    let content_h = entries.len().div_ceil(cols) as f32 * 102.0;
+    (cols, content_h, (content_h - rect.height()).max(0.0))
 }
 
 fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
@@ -259,6 +314,40 @@ fn volume_slider(app: &mut PanelApp, ui: &mut egui::Ui, zone: Rect) {
     }
 }
 
+/// 搜索悬浮玻璃岛（七修：活合成背板——磁贴色块全知，滚动即重建，
+/// 模糊跟手零闪烁；染层烤入=单层）。
+fn search_island(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, glass_on: bool) {
+    if glass_on {
+        // 八修：岛=搜索框同矩形（旧外扩 10/6 环=「外面一层透明」双层
+        // 读取的根源）
+        let pill = rect;
+        let bands: Vec<(f32, f32, egui::Color32)> = Vec::new();
+        let blocks = app.island_blocks.clone();
+        let grid_scroll = app.grid_scroll;
+        let tex = app.island_glass(ui.ctx(), pill, 1, 0, grid_scroll, &bands, &blocks);
+        app.island_drawn[1] = tex.is_some();
+        if let Some(tex) = tex {
+            // 浮岛软投影 + 液态贴图（rim 已烤入，不再描边）；聚焦与
+            // 静止同材质（十修：聚焦不再换材质/压暗）
+            let shadow = egui::Shadow {
+                offset: [0, 2],
+                blur: 8,
+                spread: 0,
+                color: crate::theme::srgba(0, 0, 0, 20),
+            };
+            ui.painter()
+                .add(shadow.as_shape(pill, egui::CornerRadius::same(18)));
+            ui.painter().add(egui::Shape::image(
+                tex.id(),
+                pill.expand(8.0),
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                crate::theme::srgba(255, 255, 255, 255),
+            ));
+        }
+    }
+    search_capsule(app, ui, rect);
+}
+
 fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     // Main.qml searchCapsule：h36 r18、searchFill↔聚焦 flyoutFill、
     // 放大镜 16px@12、TextField 13px、清空钮 28×28
@@ -266,14 +355,35 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     let focused = ui
         .ctx()
         .memory(|m| m.has_focus(egui::Id::new("duo-search")));
-    let fill = if focused { t.search_focus } else { t.search };
-    paint::rounded_fill(ui.painter(), rect, 18.0, fill);
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(18),
-        egui::Stroke::new(1.0_f32, t.card_border),
-        egui::StrokeKind::Inside,
-    );
+    // 六修：玻璃开时胶囊透染（底下是玻璃岛，实心填充会盖死玻璃感）
+    let glassy = app.settings.draft.glass_enabled && cfg!(target_os = "windows");
+    // 十修：聚焦与静止同材质——玻璃岛画成即无填充，非玻璃路径才区分
+    // 静止/聚焦底色
+    let fill = if glassy && app.island_drawn[1] {
+        egui::Color32::TRANSPARENT
+    } else if focused {
+        t.search_focus
+    } else if glassy {
+        let translucent = matches!(t.kind, crate::theme::ThemeKind::Dark);
+        if translucent {
+            crate::theme::srgba(44, 44, 46, 210)
+        } else {
+            crate::theme::srgba(255, 255, 255, 225)
+        }
+    } else {
+        t.search
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        paint::rounded_fill(ui.painter(), rect, 18.0, fill);
+    }
+    if !glassy {
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(18),
+            egui::Stroke::new(1.0_f32, t.card_border),
+            egui::StrokeKind::Inside,
+        );
+    }
     let glass_center = Pos2::new(rect.left() + 12.0 + 8.0, rect.center().y);
     paint::magnifier(ui.painter(), glass_center, t.ink2);
     let field = Rect::from_min_max(
@@ -287,11 +397,26 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     );
     let edit = egui::TextEdit::singleline(&mut app.search)
         .id(egui::Id::new("duo-search"))
-        .hint_text("搜索")
         .font(egui::FontId::proportional(13.0))
         .frame(false)
         .desired_width(field.width());
     let resp = child.add(edit);
+    // 手绘提示字：egui weak_text_color 在玻璃体上无对比（亮档白上白
+    // Δ1），显式取主题对比色
+    if app.search.is_empty() {
+        let hint = if matches!(t.kind, crate::theme::ThemeKind::Dark) {
+            crate::theme::srgba(168, 168, 176, 210)
+        } else {
+            crate::theme::srgba(108, 108, 116, 210)
+        };
+        child.painter().text(
+            Pos2::new(field.left() + 2.0, field.center().y),
+            egui::Align2::LEFT_CENTER,
+            "搜索",
+            egui::FontId::proportional(13.0),
+            hint,
+        );
+    }
     // Esc 清空失焦（QML Keys.onEscapePressed）
     if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && !app.search.is_empty()
     {
@@ -323,8 +448,7 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
 }
 
 /// 应用网格（Main.qml grid：cellW = w/max(2,floor(w/92))、cellH 102）。
-fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
-    let entries: Vec<AppEntry> = app.grid_entries();
+fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, clip: Rect, entries: &[AppEntry]) {
     let installed_count = entries.iter().filter(|e| e.installed).count();
     if installed_count == 0 {
         // 空态（Main.qml 无已装应用 Column）
@@ -378,18 +502,11 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     let cell_h = 102.0;
     let rows = entries.len().div_ceil(cols);
     let content_h = rows as f32 * cell_h;
-    // 网格区内部滚动（QML interactive: contentHeight > height）：滚轮
-    // 驱动 grid_scroll 偏移；绘制走 with_clip_rect（绝对坐标在 UI 光标
-    // 之外，ScrollArea 的光标式裁剪裁不到，实测会截断——改显式裁剪）。
+    // 网格区内部裁剪（QML clip:true）；滚轮/拖拽路由在 show 顶部，
+    // 绘制走 with_clip_rect（绝对坐标在 UI 光标之外，ScrollArea 的光标
+    // 式裁剪裁不到，实测会截断——改显式裁剪）。
     let max_scroll = (content_h - rect.height()).max(0.0);
     app.grid_scroll = app.grid_scroll.clamp(0.0, max_scroll);
-    let scroll_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), rect.height()));
-    if ui.rect_contains_pointer(scroll_rect) {
-        let dy = ui.input(|i| i.raw_scroll_delta.y);
-        if dy != 0.0 && max_scroll > 0.0 {
-            app.grid_scroll = (app.grid_scroll - dy).clamp(0.0, max_scroll);
-        }
-    }
     let scroll = app.grid_scroll;
     for (i, entry) in entries.iter().enumerate() {
         let col = i % cols;
@@ -401,10 +518,37 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             ),
             Vec2::new(cell_w, cell_h),
         );
-        if cell.bottom() < rect.top() || cell.top() > rect.bottom() {
+        if cell.bottom() < clip.top() || cell.top() > clip.bottom() {
             continue; // 视口外跳过
         }
-        tile(app, ui, entry, cell, rect);
+        tile(app, ui, entry, cell, clip);
+        // 岛背板剖面：图标主色块 + 标签墨色块（内容坐标=视口坐标+scroll）
+        let t = app.tokens;
+        let icon = Rect::from_min_size(
+            Pos2::new(cell.center().x - 30.0, cell.top() + 10.0 + scroll),
+            Vec2::splat(60.0),
+        );
+        let c = crate::theme::fallback_color(&entry.package);
+        app.island_blocks.push((icon, c));
+        let label = Rect::from_min_size(
+            Pos2::new(cell.left() + 4.0, cell.top() + 76.0 + scroll),
+            Vec2::new(cell.width() - 8.0, 16.0),
+        );
+        app.island_blocks.push((label, t.ink2));
+    }
+    // 六修：底缘 12px 小气垫（bg 色、α55、随到底距离归零）——托住
+    // 运行卡上沿，替代五修的重霜带（用户：通透，不要屏障）。
+    if max_scroll > 0.0 && app.settings.draft.glass_enabled {
+        let t = app.tokens;
+        let painter = ui.painter().with_clip_rect(rect);
+        let k_bottom = ((max_scroll - scroll) / 24.0).clamp(0.0, 1.0);
+        if k_bottom > 0.0 {
+            let band = Rect::from_min_max(
+                Pos2::new(rect.left(), rect.bottom() - 12.0),
+                Pos2::new(rect.right(), rect.bottom()),
+            );
+            crate::paint::v_fade_grad(&painter, band, t.bg, 0, (55.0 * k_bottom) as u8);
+        }
     }
 }
 
@@ -626,7 +770,7 @@ fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect, flow_h: f32) 
     );
     ui.allocate_rect(card, Sense::hover());
     if app.settings.draft.glass_enabled {
-        let glass_bg = egui::Color32::from_rgba_unmultiplied(
+        let glass_bg = crate::theme::srgba(
             t.card.r(),
             t.card.g(),
             t.card.b(),
@@ -681,7 +825,7 @@ fn chip_ui(
     let t = app.tokens;
     let resp = ui.allocate_rect(rect, Sense::click());
     let chip_bg = if app.settings.draft.glass_enabled {
-        egui::Color32::from_rgba_unmultiplied(
+        crate::theme::srgba(
             t.card.r(),
             t.card.g(),
             t.card.b(),
@@ -775,7 +919,7 @@ pub fn toast(app: &PanelApp, ctx: &egui::Context) {
 
 fn mul_alpha(c: egui::Color32, a: f32) -> egui::Color32 {
     let alpha = (f32::from(c.a()) * a).round() as u8;
-    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
+    crate::theme::srgba(c.r(), c.g(), c.b(), alpha)
 }
 
 #[cfg(test)]

@@ -54,6 +54,9 @@ pub struct Settings {
     /// iPhone/iPad 式 squircle 比例。
     pub corner_size_dip: i64,
     pub glass_enabled: bool,
+    /// 动画与滚动视效（2026-09-20）：关 = 拇指直跳、无滚动虚化等全部
+    /// 动效，弱机回退最原始观感（配合 glass_enabled=false 即全静态）。
+    pub animations_enabled: bool,
     /// 外观主题（2026-09-12 暗色模式）：light / dark / system。
     pub theme: String,
     /// latest = 新会话带音频时其他音频会话自动重启为 --no-audio；
@@ -82,6 +85,7 @@ impl Default for Settings {
             corner_mode: "system".into(),
             corner_size_dip: 48,
             glass_enabled: true,
+            animations_enabled: true,
             theme: "light".into(),
             audio_policy: "latest".into(),
             video_codec: "auto".into(),
@@ -323,6 +327,12 @@ pub fn sanitize(raw: &serde_json::Map<String, Value>, problems: &mut Vec<String>
         problems,
     );
     let glass_enabled = bool_field(raw, "glass_enabled", defaults.glass_enabled, problems);
+    let animations_enabled = bool_field(
+        raw,
+        "animations_enabled",
+        defaults.animations_enabled,
+        problems,
+    );
     let theme = enum_field(raw, "theme", &VALID_THEMES, &defaults.theme, problems);
     let audio_policy = enum_field(
         raw,
@@ -365,6 +375,7 @@ pub fn sanitize(raw: &serde_json::Map<String, Value>, problems: &mut Vec<String>
         corner_mode,
         corner_size_dip,
         glass_enabled,
+        animations_enabled,
         theme,
         audio_policy,
         video_codec,

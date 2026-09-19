@@ -125,6 +125,11 @@ impl SettingsPageModel {
         self.touch();
     }
 
+    pub fn set_animations(&mut self, on: bool) {
+        self.draft.animations_enabled = on;
+        self.touch();
+    }
+
     pub fn set_theme(&mut self, theme: &str) {
         if THEME_CHOICES.contains(&theme) {
             self.draft.theme = theme.into();
@@ -207,6 +212,7 @@ mod tests {
         model.set_audio_policy("all");
         model.set_bar_mode(true, "none");
         model.set_glass(false);
+        model.set_animations(false);
         model.set_theme("dark");
         assert!(model.dirty);
         model.save();
@@ -220,6 +226,7 @@ mod tests {
         assert_eq!(reloaded.draft.audio_policy, "all");
         assert_eq!(reloaded.draft.top_bar_mode, "none");
         assert!(!reloaded.draft.glass_enabled);
+        assert!(!reloaded.draft.animations_enabled);
         assert_eq!(reloaded.draft.theme, "dark");
         let _ = std::fs::remove_dir_all(&dir);
     }
