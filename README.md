@@ -2,9 +2,19 @@
 
 [![CI](https://github.com/iluluyu/duo/actions/workflows/ci.yml/badge.svg)](https://github.com/iluluyu/duo/actions/workflows/ci.yml)
 
-> **让安卓设备成为 Windows 的应用服务器。**
+> Turn your Android device into a headless application server for Windows.  
+> **Keywords**: `scrcpy` · `Android apps on Windows` · `virtual display` · `headless Android` · `USB mirroring` · `Rust`
 
-设备熄屏插电，USB 连电脑；Windows 大屏 + 键鼠直接使用安卓应用（背单词、阅读、视频……），设备屏幕全程熄灭。
+Duo 是一款基于 Rust 开发的 Windows 桌面应用。通过编排 scrcpy 与 adb，将安卓设备转化为电脑的无头应用服务器：手机熄屏插电、USB 直连电脑，即可在 Windows 大屏上以原生键鼠体验流畅运行各类安卓应用（背单词、阅读、视频等）。手机端屏幕全程熄灭，无发热与电量焦虑。
+
+## 核心特性
+
+- **应用会话（Virtual Display）**：在独立 2560×1440 虚拟显示屏中启动应用，完全不干扰物理屏。窗口具备原生 Windows 窗口行为，支持自由拖拽缩放、方向信 APP、异步下发尺寸。
+- **整机镜像**：一键把整个设备画面投进 Windows 窗口，等比缩放，键鼠可直接操控整机。
+- **窗口体验与沉浸交互**：无边框窗口设计，搭配 C# overlay 现场编译呈现的悬停胶囊与下巴控件；内置防旋转风暴机制，控制台调用全局静默（`CREATE_NO_WINDOW`），杜绝黑框闪烁。
+- **高品质低延迟传输**：自动探测硬件编码器（H.264 优先），60fps 基准，支持 FLAC 音频传输与单会话独占仲裁，提供 1.0×~3.0× 渲染倍率线性换算。
+
+> 初代 Python 验证栈（pyduo）已退役，完整生平与找回方式见 [docs/history/pyduo.md](docs/history/pyduo.md)。
 
 ## 架构
 
@@ -15,13 +25,6 @@
    ├── C# 悬停控件 (DuoChromeOverlay.exe, csc.exe 现场编译) ──> 无边框窗口与胶囊交互
    └── scrcpy 4.1+ 引擎 ──> adb ──> Android（无头应用服务器）
 ```
-
-- **整机镜像**：设备画面投窗，等比缩放。
-- **应用会话（flex）**：独立 2560×1440 虚拟屏运行，不碰物理屏。窗口纯 Windows 行为：自由拖改、方向信 APP、异步下发尺寸。
-- **窗口体验**：无边框窗口 + 沉浸式胶囊/下巴（C# overlay）+ 方向锁定（防旋转风暴）+ 全局无闪烁控制台（`CREATE_NO_WINDOW`）。
-- **投屏质量**：自动探测硬件编码器（H.264 优先）、60fps 基准、FLAC 音频、单音频独占仲裁、渲染倍率（1.0×~3.0×）线性换算。
-
-初代 Python 验证栈（pyduo）已于 2026-09-19 退役，生平与找回方式见 [docs/history/pyduo.md](docs/history/pyduo.md)。
 
 ## 快速开始
 
