@@ -61,7 +61,9 @@ pub fn font_id(px: f32, strong: bool) -> FontId {
 fn galley_inked(painter: &egui::Painter, pos: Pos2, galley: &egui::text::Galley, color: Color32) {
     let galley: std::sync::Arc<egui::text::Galley> = galley.clone().into();
     painter.galley(pos, galley.clone(), Color32::WHITE);
-    let lum = (u32::from(color.r()) * 299 + u32::from(color.g()) * 587 + u32::from(color.b()) * 114) / 1000;
+    let lum =
+        (u32::from(color.r()) * 299 + u32::from(color.g()) * 587 + u32::from(color.b()) * 114)
+            / 1000;
     if lum < 128 {
         painter.galley(pos, galley, Color32::WHITE);
     }
@@ -226,18 +228,20 @@ pub fn g2_gradient_feathered(
         if nx * (cx - pts[i].0) + ny * (cy - pts[i].1) < 0.0 {
             (nx, ny) = (-nx, -ny);
         }
-        let outer = Pos2::new(
-            rect.left() + pts[i].0 as f32,
-            rect.top() + pts[i].1 as f32,
-        );
-        let inner = Pos2::new(
-            outer.x + nx as f32 * feather,
-            outer.y + ny as f32 * feather,
-        );
+        let outer = Pos2::new(rect.left() + pts[i].0 as f32, rect.top() + pts[i].1 as f32);
+        let inner = Pos2::new(outer.x + nx as f32 * feather, outer.y + ny as f32 * feather);
         let solid = color_at(inner.y);
         let fade = Color32::from_rgba_unmultiplied(solid.r(), solid.g(), solid.b(), 0);
-        vertices.push(egui::epaint::Vertex { pos: outer, uv: egui::Pos2::ZERO, color: fade });
-        vertices.push(egui::epaint::Vertex { pos: inner, uv: egui::Pos2::ZERO, color: solid });
+        vertices.push(egui::epaint::Vertex {
+            pos: outer,
+            uv: egui::Pos2::ZERO,
+            color: fade,
+        });
+        vertices.push(egui::epaint::Vertex {
+            pos: inner,
+            uv: egui::Pos2::ZERO,
+            color: solid,
+        });
     }
     for i in 0..n {
         let j = (i + 1) % n;

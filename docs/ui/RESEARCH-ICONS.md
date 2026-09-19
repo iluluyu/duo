@@ -2,7 +2,7 @@
 
 > 目标：解决三个现状痛点——① 不规则图标（圆形 logo、异形）提取后观感差；
 > ② 大 APK（QQ/微信 >200MB）无图标；③ 预设 SVG / 哈希色 / 真实提取三来源混排不统一。
-> 本文只做调研与方案推荐，不改代码。事实底账见 RESEARCH.md §2，视觉规范见 DESIGN.md §3.1。
+> 本文只做调研与方案推荐，不改代码。事实底账见 [docs/history/research-baseline.md](../history/research-baseline.md) §2，视觉规范见 DESIGN.md §3.1。
 > **实施进展（2026-09-13）见 §8。**
 
 ## 0. 背景与现状（对照基线）

@@ -1524,9 +1524,7 @@ impl PanelApp {
         let track_h = 32.0_f32;
         let inset = 3.0;
         let thumb_h = track_h - 2.0 * inset;
-        let cap_w = (2.0 * 97.0 + 2.0 * inset)
-            .min(full.width() - 40.0)
-            .max(0.0);
+        let cap_w = (2.0 * 97.0 + 2.0 * inset).min(full.width() - 40.0).max(0.0);
         let rect = egui::Rect::from_min_size(
             egui::pos2(full.center().x - cap_w / 2.0, full.top() + 16.0),
             Vec2::new(cap_w, track_h),
@@ -1553,10 +1551,7 @@ impl PanelApp {
             ui.painter().rect_stroke(
                 inner,
                 egui::CornerRadius::same(16),
-                egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_black_alpha(10),
-                ),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(10)),
                 egui::StrokeKind::Inside,
             );
         }
@@ -1569,10 +1564,8 @@ impl PanelApp {
         let x = ui
             .ctx()
             .animate_value_with_time(egui::Id::new("duo-tab-thumb"), target_x, 0.22);
-        let thumb = egui::Rect::from_min_size(
-            egui::pos2(x, rect.top() + inset),
-            Vec2::new(seg_w, thumb_h),
-        );
+        let thumb =
+            egui::Rect::from_min_size(egui::pos2(x, rect.top() + inset), Vec2::new(seg_w, thumb_h));
         // 拇指（gemini 方案 A：Apple HIG 精修）——纯色填充 + 1px 发丝描边
         // + 紧致双层浅影：杜绝渐变发脏与缝隙焦黑（禁忌清单见
         // docs/ui/DESIGN.md §3.2）。
@@ -1582,10 +1575,7 @@ impl PanelApp {
                 egui::Color32::from_white_alpha(31),
             )
         } else {
-            (
-                egui::Color32::WHITE,
-                egui::Color32::from_black_alpha(13),
-            )
+            (egui::Color32::WHITE, egui::Color32::from_black_alpha(13))
         };
         let contact = egui::Shadow {
             offset: [0, 1],
@@ -1623,7 +1613,10 @@ impl PanelApp {
             } else {
                 rect.right() - inset - seg_w
             };
-            let seg = egui::Rect::from_min_size(egui::pos2(seg_x, rect.top() + inset), Vec2::new(seg_w, thumb_h));
+            let seg = egui::Rect::from_min_size(
+                egui::pos2(seg_x, rect.top() + inset),
+                Vec2::new(seg_w, thumb_h),
+            );
             let selected = self.page == page;
             let resp = ui.allocate_rect(seg, Sense::click());
             if !selected && resp.hovered() {

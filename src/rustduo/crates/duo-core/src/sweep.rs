@@ -11,7 +11,7 @@ use crate::devicon::finish_device_icon;
 use crate::quiet::quiet_command;
 
 pub const ICON_CACHE_SUFFIX: &str = ".r20.png";
-const DEX_BYTES: &[u8] = include_bytes!("../../../../pyduo/resources/duo_icons.dex");
+const DEX_BYTES: &[u8] = include_bytes!("../resources/duo_icons.dex");
 const DEVICE_OUT: &str = "/data/local/tmp/duo_icons_out";
 const DEVICE_LIST: &str = "/data/local/tmp/duo_icons_pkgs.txt";
 const DEVICE_DEX: &str = "/data/local/tmp/duo_icons.dex";

@@ -114,8 +114,8 @@ alpha，layer 模糊 ≈5.6px）+ 顶层清晰文字（普通光栅路径，字�
 | **软光晕 2.8px（实装）** | +0% | 10.2:1（亮）/ 13.2:1（暗） | 1.00 / 1.05 |
 | 无保底 | +0% | 2.4–2.9:1（字丢） | — |
 
-契约测试 `tests/test_menu_legibility.py` + `tests/test_qml_app.py`；选型可重跑
-`docs/ui/probes/menu_halo_candidates.py`；出图在 `docs/validation/assets/`。
+选型可重跑 `docs/ui/probes/menu_halo_candidates.py`；出图在 `docs/validation/assets/`
+（史前契约测试随 pyduo 退役，见 `docs/history/pyduo.md`）。
 
 ## 8. egui 实装与上巴/下巴移植基线（duo-panel，2026-09-18 定稿）
 

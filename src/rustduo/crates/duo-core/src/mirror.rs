@@ -97,7 +97,9 @@ pub fn pick_serial(explicit: Option<&str>, states: &DeviceStates) -> Result<Stri
 /// 最大整数密度（1440 短边 → 140，字框 ~917dp > 900dp 阈值留 17dp 余量）。
 fn parallel_view_dpi_cap(short_side_px: i64) -> i64 {
     let letterbox_px = short_side_px as f64 * 9.0 / 16.0;
-    (letterbox_px * 160.0 / 925.0).round().clamp(80.0, DEFAULT_VD_DPI as f64) as i64
+    (letterbox_px * 160.0 / 925.0)
+        .round()
+        .clamp(80.0, DEFAULT_VD_DPI as f64) as i64
 }
 
 /// 窗口标题：--title > 目录预设名 > 包名（M2 的设备标签 sweep 到位后
@@ -337,11 +339,11 @@ pub fn plan_display(
     }
     let mut dpi = args.dpi.or(settings.dpi);
     if dpi.is_none() {
-        dpi = density_probe.or(Some(DEFAULT_VD_DPI as u32)).map(|d| d as i64);
+        dpi = density_probe
+            .or(Some(DEFAULT_VD_DPI as u32))
+            .map(|d| d as i64);
     }
-    let custom_density = settings
-        .dpi
-        .is_some_and(|d| d != DEFAULT_VD_DPI);
+    let custom_density = settings.dpi.is_some_and(|d| d != DEFAULT_VD_DPI);
     if args.display == DisplayMode::Fixed && args.dpi.is_none() && !custom_density {
         if let (Some(w), Some(h)) = (args.width, args.height) {
             if w >= h {
@@ -406,8 +408,7 @@ pub fn plan_display(
             // 桌面密度时代的物理尺寸；钳进工作区，小屏放不下时退回
             // 工作区适配。
             let text_scale = if parallel_capped {
-                (DEFAULT_VD_DPI as f64 / f64::from(dpi.unwrap_or(DEFAULT_VD_DPI) as u32))
-                    .min(2.0)
+                (DEFAULT_VD_DPI as f64 / f64::from(dpi.unwrap_or(DEFAULT_VD_DPI) as u32)).min(2.0)
             } else {
                 1.0
             };
@@ -540,8 +541,11 @@ pub fn build_engine_args(
     // --serial 而未暴露，2026-09-19 修）。
     let mut engine = EngineArgs::new(serial.to_string());
     // borderless 随 chrome/上巴模式推导（chrome.rs 2026-09-09 真机定稿）。
-    engine.borderless =
-        args.chrome && borderless_for(&resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode));
+    engine.borderless = args.chrome
+        && borderless_for(&resolve_bar_mode(
+            args.chrome_top.as_deref(),
+            &settings.top_bar_mode,
+        ));
     engine.display = plan.display.clone();
     engine.video = video;
     engine.app_package = args.app.clone();
@@ -748,8 +752,7 @@ pub fn run(argv: &[String]) -> i32 {
         {
             use crate::chrome::{read_top_pin, top_pin_path, ChromeOverlay, OverlayArgs};
             use crate::settings::corner_radius_dip;
-            let top_bar_mode =
-                resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode);
+            let top_bar_mode = resolve_bar_mode(args.chrome_top.as_deref(), &settings.top_bar_mode);
             let bottom_bar_mode =
                 resolve_bar_mode(args.chrome_bottom.as_deref(), &settings.bottom_bar_mode);
             // 视频尺寸 seed 只给 fixed（比例锁）；flex 纯自由窗口，
@@ -1059,12 +1062,21 @@ mod tests {
         assert!(plan.diag.contains("new-display=2560x1440/140"));
         // 窗口补偿：2560×1440 × 160/140 ≈ 2926×1646（屏上文字回到
         // 降密前尺寸；4K 工作区放得下）。
-        assert_eq!((plan.window_width, plan.window_height), (Some(2926), Some(1646)));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(2926), Some(1646))
+        );
         // 1:1 也算横屏（竖屏锁定应用同样被信箱化）。
         let mut sq = a.clone();
         sq.width = Some(1440);
         sq.height = Some(1440);
-        assert_eq!(plan_display(&sq, &settings(), AREA, None).unwrap().display.dpi, Some(140));
+        assert_eq!(
+            plan_display(&sq, &settings(), AREA, None)
+                .unwrap()
+                .display
+                .dpi,
+            Some(140)
+        );
     }
 
     #[test]
@@ -1075,12 +1087,18 @@ mod tests {
         a.display = DisplayMode::Fixed;
         a.width = Some(2560);
         a.height = Some(1440);
-        let tiny = WorkArea { width: 2000, height: 1200 };
+        let tiny = WorkArea {
+            width: 2000,
+            height: 1200,
+        };
         let plan = plan_display(&a, &settings(), tiny, None).unwrap();
         assert_eq!(plan.display.dpi, Some(140));
         let w = plan.window_width.unwrap() as f64;
         let h = plan.window_height.unwrap() as f64;
-        assert!(w <= 1960.0 && h <= 1140.0, "window {w}x{h} must fit work area");
+        assert!(
+            w <= 1960.0 && h <= 1140.0,
+            "window {w}x{h} must fit work area"
+        );
     }
 
     #[test]
@@ -1093,7 +1111,10 @@ mod tests {
         let mut pinned = a.clone();
         pinned.dpi = Some(320);
         assert_eq!(
-            plan_display(&pinned, &settings(), AREA, None).unwrap().display.dpi,
+            plan_display(&pinned, &settings(), AREA, None)
+                .unwrap()
+                .display
+                .dpi,
             Some(320)
         );
         // 用户自定义全局密度（≠出厂 160）不被改写。

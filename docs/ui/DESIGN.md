@@ -32,12 +32,13 @@
    可读性保底光晕：无方向、同向色（亮底白晕 / 暗底黑晕）、alpha 额度
    亮 ≤ 40% / 暗 ≤ 55%、模糊半径 ≤ 8px，且必须在主题画布上实测不可见
    （可见度 ≤ 1.3）。按钮标签、标题、图标、卡片均不得使用；
-   配方与实测见 glass-recipe.md §7，额度由
-   `tests/test_menu_legibility.py::test_halo_stays_within_the_rule_budget`
-   看住。
+   配方、额度与实测见 glass-recipe.md §7（历史 pytest 守卫随
+   pyduo 退役，见 docs/history/pyduo.md）。
 9. **新组件必须归入四层之一**（见 §1），不引入第五层。
-10. **改动必须出图对比**（`python scripts/qml_shots.py`，offscreen 渲染），
-    主观视觉拿不准交视觉顾问（agy Opus）裁决，不再口头争论。
+10. **改动必须出图对比**（`duo-panel --shot out.png --page home|settings
+    --theme light|dark`，菜单出图加 `DUO_SHOT_MENU`；命令模板见根
+    TODO.md「出图 / 对拍回路」），主观视觉拿不准交视觉顾问（agy Opus）
+    裁决，不再口头争论。
 
 ## 1. 材质四层
 
@@ -290,7 +291,9 @@ saturation 0.45/0.50 不变；brightness 暗 +0.05/+0.07（亮 +0.02/+0.04，
 
 ## 6. 出图验收
 
-- `python scripts/qml_shots.py`（offscreen）对每个改动出 PNG，亮/暗四张
-  （qml-main / qml-settings / qml-main-dark / qml-settings-dark）；
-- 视觉拿不准 → agy Opus 评审；用户预览走 `docs/ui/mockup`（HTML 方案稿）；
-  暗色截图可用 zai 视觉工具做对比度相验（2026-09-12 两轮验收先例）。
+- `duo-panel --shot <out.png> --page home|settings --theme light|dark`
+  对每个改动出 PNG，亮/暗四张（菜单浮层加 `DUO_SHOT_MENU`）；
+- 视觉拿不准 → agy Opus 评审；用户预览走 `docs/ui/mockups`（HTML 方案稿）；
+  暗色截图可用 zai 视觉工具做对比度相验（2026-09-12 两轮验收先例）；
+- 历史冻结基线：`docs/validation/assets/qml-*.png`（pyduo 时代产物，
+  不可再生成，作视觉合同参照）。
