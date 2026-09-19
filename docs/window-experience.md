@@ -523,6 +523,13 @@ scrcpy.exe + 会话 Duo.exe，还握着 panel 日志句柄（次日 WinError 32 
   MessageBox 后以 85 退出。会话 CLI 不经过 `run_app`，不受锁约束——它们
   是面板的孩子，不是竞争面板。多面板互抢虚拟显示的历史事故（2026-09-06
   「全部失效」）见 gui_entry 旧注释存档。
+- **二次点击 = 激活田实例（2026-09-20，rustduo）**：开始菜单/桌面再点
+  Duo 时不再弹「已在运行」死胡同框（旧行为产生两个同名任务栏项，用户
+  视角即「开始菜单的 Duo 无法使用」）；改为枚举窗口按进程名（duo.exe，
+  大小写不敏感）找到首个实例主窗口，最小化则 SW_RESTORE、再
+  SetForegroundWindow，随后静默退出。找不到可激活窗口（僵尸进程）才
+  回退提示框并附任务管理器指引。实现：`duo-panel/src/winproc.rs`
+  `activate_existing`。
 
 ## §13 下巴材质统一 + 玻璃材质总开关（2026-09-12，claude-opus-4-6 裁决）
 

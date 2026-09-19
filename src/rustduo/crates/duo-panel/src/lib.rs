@@ -66,25 +66,33 @@ fn parse_shot_args() -> Option<ShotArgs> {
 pub fn run() {
     let shot = parse_shot_args();
     if shot.is_none() && !winproc::single_instance("DuoPanel") {
-        winproc::notify_already_running("Duo 面板已在运行。");
+        // 已在跑：拉回已有窗口并静默退出（不再弹同题死胡同对话框）
+        winproc::activate_existing("Duo");
         return;
     }
     let mut viewport = viewport();
+    // 宽屏/高分取证：DUO_SHOT_W/H 覆盖逻辑尺寸（默认 420x660），
+    // DUO_SELFCHECK 自检同样生效（全屏滚动问题取证）。
+    let env_f = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
+    let sw = env_f("DUO_SHOT_W").unwrap_or(420.0);
+    let sh = env_f("DUO_SHOT_H").unwrap_or(660.0);
     if let Some(s) = &shot {
         // 高分取证：视口物理尺寸×ppp + 钉住 pixels_per_point，出图即
         // 设备像素（Wayland 无头端平台 ppp 恒 1，两者一起才生效）。
-        if s.ppp > 0.0 {
-            viewport = viewport.with_inner_size([420.0 * s.ppp, 660.0 * s.ppp]);
-        }
-        // 宽屏取证：DUO_SHOT_W/H 覆盖逻辑尺寸（默认 420x660）。
-        let env_f = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
-        let sw = env_f("DUO_SHOT_W").unwrap_or(420.0);
-        let sh = env_f("DUO_SHOT_H").unwrap_or(660.0);
         let ppp = s.ppp.max(1.0);
         viewport = viewport.with_inner_size([sw * ppp, sh * ppp]);
+    } else if sw != 420.0 || sh != 660.0 {
+        viewport = viewport.with_inner_size([sw, sh]);
     }
     let options = eframe::NativeOptions {
         viewport,
+        // FifoRelaxed + 帧延迟 1：错过 vsync 窗口时免排队堆积（Windows
+        // 短动画偶发顿挫的常见缓解；DWM 合成下无撕裂风险）。
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: eframe::egui_wgpu::wgpu::PresentMode::FifoRelaxed,
+            desired_maximum_frame_latency: Some(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     if let Err(err) = eframe::run_native(
@@ -105,6 +113,13 @@ pub fn run() {
                     app.settings.draft.theme = theme.clone();
                 }
                 app.shot = Some((s.path.clone(), 0, std::time::Instant::now()));
+                if let Some(v) = std::env::var("DUO_SHOT_SCROLL")
+                    .ok()
+                    .and_then(|x| x.parse::<f32>().ok())
+                {
+                    app.settings_scroll = v;
+                    app.grid_scroll = v;
+                }
             }
             Ok(Box::new(app))
         }),

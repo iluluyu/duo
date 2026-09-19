@@ -31,6 +31,19 @@ pub fn hex(s: &str) -> Color32 {
 }
 
 /// 半透明色叠在不透明底上（QML/Qt 同式 sRGB 直混；u8 域）。
+/// 编码域(sRGB)预乘半透明色。
+///
+/// ecolor 0.31 `from_rgba_unmultiplied` 在**线性光域**预乘（gamma 解码→
+/// 乘 alpha→再编码），而本工程实际管线（Windows mingw 交叉构建实测）
+/// 在**编码域**做 One/OneMinusSrcAlpha 混合：线性预乘值叠上目标直达
+/// 255 钳白——亮色模式白带/断层（2026-09-20 真机四档 alpha 对照定位）。
+/// 纹理像素数据（ColorImage 构造）仍用 ecolor 原生函数，只有绘制
+/// 顶点色走这里。
+pub fn srgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    let m = |v: u8| ((u16::from(v) * u16::from(a) + 127) / 255) as u8;
+    Color32::from_rgba_premultiplied(m(r), m(g), m(b), a)
+}
+
 pub fn over(base: Color32, rgb: Color32, a: f32) -> Color32 {
     let mix = |b: u8, t: u8| (f32::from(b) * (1.0 - a) + f32::from(t) * a).round() as u8;
     Color32::from_rgb(
@@ -112,9 +125,6 @@ pub struct Tokens {
     /// 投屏钮禁用态（accent@40% over bg，Main.qml opacity 0.4）。
     pub btn_disabled: Color32,
     pub btn_disabled_text: Color32,
-    /// 色斑原色（CPU 合成用：(色, 设计alpha) ×3 层同心）。
-    pub spot_blue: [(Color32, f32); 3],
-    pub spot_green: [(Color32, f32); 3],
 }
 
 impl Tokens {
@@ -151,8 +161,8 @@ impl Tokens {
             menu_fill: hex("#2C2C2E"),
             // X=(34-0.10*28)/0.90=35 → #232324；alpha 字节=0.8688*255
             // （Windows 着色 alpha 非线性 a^0.75，0.8688^0.75≈0.90 有效）
-            menu_glass: Color32::from_rgba_unmultiplied(35, 35, 36, 221),
-            menu_glass_border: Color32::from_rgba_unmultiplied(255, 255, 255, 36),
+            menu_glass: srgba(35, 35, 36, 221),
+            menu_glass_border: srgba(255, 255, 255, 36),
             control_fill: hex("#28282A"),
             pill: over(bg, hex("#48484A"), 0.90),
             hover_on_canvas: over(bg, white, 0.06),
@@ -161,25 +171,19 @@ impl Tokens {
             danger_on_card: over(card, hex("#FF3B30"), 0.08),
             btn_disabled: over(bg, hex("#0A84FF"), 0.40),
             btn_disabled_text: over(bg, white, 0.40),
-            spot_blue: [
-                (hex("#007AFF"), 0.028),
-                (hex("#007AFF"), 0.039),
-                (hex("#007AFF"), 0.071),
-            ],
-            spot_green: [
-                (hex("#34C759"), 0.020),
-                (hex("#34C759"), 0.035),
-                (hex("#34C759"), 0.063),
-            ],
         }
     }
 
     pub fn light() -> Self {
-        let bg = hex("#F5F5F7");
+        // 2026-09-20 亮色层级重做（用户裁决：灰画布×纯白卡——iOS
+        // systemGroupedBackground 语言）。旧方案 bg≈F5F5F7 + 卡 0.82 白
+        // 仅 5 级色差，层级几乎不可见；新方案画布 F2F2F7 灰、卡/胶囊/
+        // 控件纯白 #FFFFFF，对比 13 级 + 灰发丝卡边。
+        let bg = hex("#F2F2F7");
         let white = hex("#FFFFFF");
-        let card = over(bg, white, 0.72);
-        let capsule = over(bg, white, 0.60);
-        let chip = over(card, white, 0.72);
+        let card = white;
+        let capsule = white;
+        let chip = white;
         Self {
             kind: ThemeKind::Light,
             bg,
@@ -192,40 +196,30 @@ impl Tokens {
             warn: hex("#FF9F0A"),
             danger: hex("#FF3B30"),
             card,
-            card_hover: over(card, hex("#000000"), 0.04),
-            card_border: over(card, white, 0.65),
+            card_hover: over(card, hex("#000000"), 0.03),
+            card_border: over(bg, hex("#000000"), 0.07),
             chip,
-            chip_border: over(chip, white, 0.65),
-            hairline_on_card: over(card, hex("#000000"), 0.12),
+            chip_border: over(bg, hex("#000000"), 0.08),
+            hairline_on_card: over(card, hex("#000000"), 0.10),
             capsule,
-            capsule_hover: over(capsule, hex("#000000"), 0.04),
-            capsule_border: over(capsule, white, 0.65),
+            capsule_hover: over(capsule, hex("#000000"), 0.03),
+            capsule_border: over(bg, hex("#000000"), 0.08),
             segment_fill: white,
             segment_track: over(bg, hex("#000000"), 0.06),
-            search: over(bg, white, 0.72),
-            search_focus: capsule,
-            menu_fill: hex("#F7F7F9"),
-            // X=(250-0.10*245)/0.90=251 → #FBFBFF；同 0.8688 原始 alpha
-            menu_glass: Color32::from_rgba_unmultiplied(251, 251, 255, 221),
-            menu_glass_border: Color32::from_rgba_unmultiplied(0, 0, 0, 31),
+            search: white,
+            search_focus: white,
+            menu_fill: white,
+            // X=(250-0.10*242)/0.90≈251；同 0.8688 原始 alpha
+            menu_glass: srgba(252, 252, 255, 221),
+            menu_glass_border: srgba(0, 0, 0, 31),
             control_fill: white,
             pill: over(bg, hex("#1D1D1F"), 0.90),
             hover_on_canvas: over(bg, hex("#000000"), 0.04),
-            hover_on_card: over(card, hex("#000000"), 0.04),
-            press_on_card: over(card, hex("#000000"), 0.08),
+            hover_on_card: over(card, hex("#000000"), 0.03),
+            press_on_card: over(card, hex("#000000"), 0.06),
             danger_on_card: over(card, hex("#FF3B30"), 0.08),
             btn_disabled: over(bg, hex("#007AFF"), 0.40),
             btn_disabled_text: over(bg, white, 0.40),
-            spot_blue: [
-                (hex("#007AFF"), 0.035),
-                (hex("#007AFF"), 0.055),
-                (hex("#007AFF"), 0.086),
-            ],
-            spot_green: [
-                (hex("#34C759"), 0.027),
-                (hex("#34C759"), 0.047),
-                (hex("#34C759"), 0.078),
-            ],
         }
     }
 
@@ -244,18 +238,6 @@ impl Tokens {
         }
     }
 }
-
-/// 画布色斑几何（Main.qml bgLayer 逐行照抄）：(x, y, 直径)。
-pub const SPOTS_BLUE: [(f32, f32, f32); 3] = [
-    (-272.0, -212.0, 504.0),
-    (-180.0, -120.0, 320.0),
-    (-132.0, -72.0, 224.0),
-];
-pub const SPOTS_GREEN: [(f32, f32, f32); 3] = [
-    (205.0, 385.0, 570.0),
-    (310.0, 490.0, 360.0),
-    (370.0, 550.0, 240.0),
-];
 
 /// 未知应用 fallback 色板（Style.fallbackPalette 顺序照抄；取色 =
 /// 包名 charCode 和 % 12）。
@@ -320,11 +302,15 @@ mod tests {
 
     #[test]
     fn light_tokens_match_style_qml() {
+        // 2026-09-20 亮色重做（灰画布×纯白卡，iOS systemGroupedBackground）
         let t = Tokens::light();
+        assert_eq!(t.bg, hex("#F2F2F7"));
+        assert_eq!(t.card, hex("#FFFFFF"));
         assert_eq!(t.control_fill, hex("#FFFFFF"));
-        assert_eq!(t.menu_fill, hex("#F7F7F9"));
-        // 搜索 = 72% 白 over #F5F5F7
-        assert_eq!(t.search, hex("#FCFCFD"));
+        assert_eq!(t.search, hex("#FFFFFF"));
+        assert_eq!(t.menu_fill, hex("#FFFFFF"));
+        assert_eq!(t.capsule, hex("#FFFFFF"));
+        assert_eq!(t.chip, hex("#FFFFFF"));
     }
 
     #[test]
@@ -350,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn light_spots_and_disabled_button() {
+    fn light_disabled_button() {
         let t = Tokens::light();
         // 投屏钮禁用 = accent@40% over bg
         assert_eq!(t.btn_disabled, over(t.bg, hex("#007AFF"), 0.40));
@@ -389,10 +375,7 @@ mod tests {
             for (o, want) in outs.into_iter().zip(wants) {
                 assert!((i32::from(o) - i32::from(want)).abs() <= 1, "{o} vs {want}");
             }
-            assert_eq!(
-                t.menu_glass,
-                egui::Color32::from_rgba_unmultiplied(rgb.0, rgb.1, rgb.2, 221)
-            );
+            assert_eq!(t.menu_glass, srgba(rgb.0, rgb.1, rgb.2, 221));
             assert_eq!(t.menu_glass.a(), 221);
         }
     }

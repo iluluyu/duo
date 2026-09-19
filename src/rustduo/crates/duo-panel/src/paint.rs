@@ -53,20 +53,12 @@ pub fn font_id(px: f32, strong: bool) -> FontId {
     }
 }
 
-/// 亮色模式文字覆盖率补偿：egui 0.31 在 sRGB 直混（无 gamma 校正）下，
-/// 深字浅底的 AA 边缘视觉厚度不足（有效覆盖 ≈ a，正确值 ≈ a^0.45），
-/// 字形看起来瘦而毛糙。同位叠画第二遍使边缘覆盖变为
-/// 2a-a²（≈ a^0.45 的良好近似，内部 a=1 不变）——只影响暗色文字，
-/// 白字/暗底主题不动。见 docs/ui/DESIGN.md §2 修订注。
-fn galley_inked(painter: &egui::Painter, pos: Pos2, galley: &egui::text::Galley, color: Color32) {
+/// 文字形绘制（单遍）。旧版对暗字双遍叠画补偿 AA 厚度（2a-a²）——
+/// 但 2026-09-20 srgba 修复后混合已正确，双遍即「观感太粗」（用户
+/// 反馈），回归单遍。
+fn galley_inked(painter: &egui::Painter, pos: Pos2, galley: &egui::text::Galley, _color: Color32) {
     let galley: std::sync::Arc<egui::text::Galley> = galley.clone().into();
-    painter.galley(pos, galley.clone(), Color32::WHITE);
-    let lum =
-        (u32::from(color.r()) * 299 + u32::from(color.g()) * 587 + u32::from(color.b()) * 114)
-            / 1000;
-    if lum < 128 {
-        painter.galley(pos, galley, Color32::WHITE);
-    }
+    painter.galley(pos, galley, Color32::WHITE);
 }
 
 /// 居中文本（QML Text anchors.centerIn 对译）。
@@ -145,30 +137,95 @@ pub fn text_left_at_center(painter: &egui::Painter, pos: Pos2, s: &str, px: f32,
     galley_inked(painter, pos, &galley, color);
 }
 
-/// 半透明色叠在不透明底上（theme::over 的本地别名，语义同 QML）。
-fn blend_over(base: Color32, rgb: Color32, a: f32) -> Color32 {
-    crate::theme::over(base, rgb, a)
+/// 垂直软渐变幕（滚动层级虚化）：
+/// - `v_fade_bump`：0 → peak → 0 平滑凸形（双端零透明度，用于页顶景深幕；
+///   硬边即「色彩断层」，2026-09-20 用户反馈修订）。
+/// - `v_fade_grad`：a_top → a_bottom smoothstep（用于网格上/下沿单向淡出）。
+///
+/// 配方与回退条件见 docs/ui/DESIGN.md §滚动层级虚化。
+pub fn v_fade_bump(painter: &egui::Painter, rect: Rect, rgb: Color32, peak_a: u8) {
+    let steps = 14;
+    let peak_t = 0.35;
+    let alpha = |t: f32| -> f32 {
+        let k = if t < peak_t {
+            (t / peak_t).clamp(0.0, 1.0)
+        } else {
+            1.0 - ((t - peak_t) / (1.0 - peak_t)).clamp(0.0, 1.0)
+        };
+        // smoothstep 抛物线，双端斜率 0，彻底无断层
+        let s = k * k * (3.0 - 2.0 * k);
+        f32::from(peak_a) * s
+    };
+    let h = rect.height();
+    let mut vertices = Vec::with_capacity((steps + 1) * 2);
+    let mut indices = Vec::with_capacity(steps * 6);
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let y = rect.top() + h * t;
+        let c = crate::theme::srgba(
+            rgb.r(),
+            rgb.g(),
+            rgb.b(),
+            alpha(t).round().clamp(0.0, 255.0) as u8,
+        );
+        vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(rect.left(), y),
+            uv: Pos2::ZERO,
+            color: c,
+        });
+        vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(rect.right(), y),
+            uv: Pos2::ZERO,
+            color: c,
+        });
+        if i > 0 {
+            let b = (i * 2) as u32;
+            indices.extend_from_slice(&[b - 2, b - 1, b, b - 1, b + 1, b]);
+        }
+    }
+    let mesh = egui::epaint::Mesh {
+        vertices,
+        indices,
+        texture_id: egui::TextureId::default(),
+    };
+    painter.add(Shape::Mesh(std::sync::Arc::new(mesh)));
 }
 
-/// 画布色斑：六枚同心衰减圆（Main.qml bgLayer 照抄）。三层 alpha 预合成
-/// 为不透明色——egui 增量重绘不擦除，半透明逐帧叠加会饱和（实测教训）。
-pub fn canvas_spots(painter: &egui::Painter, t: &Tokens, canvas: Rect) {
-    let stack = |layers: [(Color32, f32); 3]| {
-        let c0 = blend_over(t.bg, layers[0].0, layers[0].1);
-        let c1 = blend_over(c0, layers[1].0, layers[1].1);
-        let c2 = blend_over(c1, layers[2].0, layers[2].1);
-        [c0, c1, c2]
+/// 单向软渐变（a_top → a_bottom，smoothstep 插值）。
+pub fn v_fade_grad(painter: &egui::Painter, rect: Rect, rgb: Color32, a_top: u8, a_bottom: u8) {
+    let steps = 10;
+    let at = f32::from(a_top);
+    let ab = f32::from(a_bottom);
+    let h = rect.height();
+    let mut vertices = Vec::with_capacity((steps + 1) * 2);
+    let mut indices = Vec::with_capacity(steps * 6);
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let s = t * t * (3.0 - 2.0 * t);
+        let a = (at + (ab - at) * s).round().clamp(0.0, 255.0) as u8;
+        let c = crate::theme::srgba(rgb.r(), rgb.g(), rgb.b(), a);
+        let y = rect.top() + h * t;
+        vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(rect.left(), y),
+            uv: Pos2::ZERO,
+            color: c,
+        });
+        vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(rect.right(), y),
+            uv: Pos2::ZERO,
+            color: c,
+        });
+        if i > 0 {
+            let b = (i * 2) as u32;
+            indices.extend_from_slice(&[b - 2, b - 1, b, b - 1, b + 1, b]);
+        }
+    }
+    let mesh = egui::epaint::Mesh {
+        vertices,
+        indices,
+        texture_id: egui::TextureId::default(),
     };
-    let blues = stack(t.spot_blue);
-    let greens = stack(t.spot_green);
-    for (i, (x, y, d)) in crate::theme::SPOTS_BLUE.iter().enumerate() {
-        let r = Rect::from_min_size(canvas.left_top() + Vec2::new(*x, *y), Vec2::splat(*d));
-        painter.circle_filled(r.center(), d / 2.0, blues[i]);
-    }
-    for (i, (x, y, d)) in crate::theme::SPOTS_GREEN.iter().enumerate() {
-        let r = Rect::from_min_size(canvas.left_top() + Vec2::new(*x, *y), Vec2::splat(*d));
-        painter.circle_filled(r.center(), d / 2.0, greens[i]);
-    }
+    painter.add(Shape::Mesh(std::sync::Arc::new(mesh)));
 }
 
 /// G2 squircle 路径（QML AppGlyph.g2SquircleSource 同构：n=2/5 超椭圆，
@@ -207,7 +264,7 @@ pub fn g2_gradient_feathered(
     let lerp = |a: u8, b: u8, t: f32| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
     let color_at = |y: f32| {
         let t = ((y - rect.top()) / h.max(1e-3)).clamp(0.0, 1.0);
-        Color32::from_rgba_unmultiplied(
+        crate::theme::srgba(
             lerp(top.r(), bottom.r(), t),
             lerp(top.g(), bottom.g(), t),
             lerp(top.b(), bottom.b(), t),
@@ -231,7 +288,7 @@ pub fn g2_gradient_feathered(
         let outer = Pos2::new(rect.left() + pts[i].0 as f32, rect.top() + pts[i].1 as f32);
         let inner = Pos2::new(outer.x + nx as f32 * feather, outer.y + ny as f32 * feather);
         let solid = color_at(inner.y);
-        let fade = Color32::from_rgba_unmultiplied(solid.r(), solid.g(), solid.b(), 0);
+        let fade = crate::theme::srgba(solid.r(), solid.g(), solid.b(), 0);
         vertices.push(egui::epaint::Vertex {
             pos: outer,
             uv: egui::Pos2::ZERO,

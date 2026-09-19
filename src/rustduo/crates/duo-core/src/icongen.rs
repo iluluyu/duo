@@ -93,9 +93,20 @@ pub fn panel_icon_rgba(input: &[u8], out_size: u32) -> Result<RgbaImage, String>
         return Err("out_size must be at least 1".to_string());
     }
     let decoded = decode_rgba(input)?;
-    let scaled = resize_premultiplied(&decoded, out_size, out_size);
-    Ok(apply_g2_mask(&scaled, DEFAULT_RADIUS_RATIO))
+    // 2026-09-20：内缩 EDGE_TRIM_RATIO 裁边后再打蒙版——设备描的图标
+    // 外缘常烤有半透明浅色环（QQ/文件管理实测环 RGB≈255、α≈170-200，
+    // 落到任何底色上读作灰晕）；裁掉烤入边后由 G2 蒙版给出干净新边缘，
+    // 满幅艺术图标只失 4% 边缘（60px 下不可见）。
+    let r = EDGE_TRIM_RATIO;
+    let grown = (f64::from(out_size) / (1.0 - 2.0 * f64::from(r))).round() as u32;
+    let scaled = resize_premultiplied(&decoded, grown, grown);
+    let crop0 = (grown - out_size) / 2;
+    let cropped = image::imageops::crop_imm(&scaled, crop0, crop0, out_size, out_size).to_image();
+    Ok(apply_g2_mask(&cropped, DEFAULT_RADIUS_RATIO))
 }
+
+/// 面板图标内缩裁边比（见 panel_icon_rgba 文档）。
+const EDGE_TRIM_RATIO: f32 = 0.04;
 
 // ---------------------------------------------------------------------------
 // ① G2 圆角 alpha 蒙版（apply_rounded_mask）

@@ -150,7 +150,8 @@ fn create_job() -> Result<HANDLE, ()> {
     }
 }
 
-/// 单实例：Windows 命名互斥体；已占用弹原生提示框后由调用方退出。
+/// 单实例：Windows 命名互斥体；已占用时拉回已有窗口而非弹死胡同提示
+/// （2026-09-20：二次点击开始菜单直接激活旧窗口并静默退出）。
 pub fn single_instance(key: &str) -> bool {
     #[cfg(windows)]
     {
@@ -172,6 +173,79 @@ pub fn single_instance(key: &str) -> bool {
         true
     }
 }
+
+/// 枚举回调命中标记（windows 侧）。
+#[cfg(windows)]
+static ACTIVATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 二次启动：找到首个实例的主窗口拉回前台（枚举窗口按进程名匹配，
+/// 不靠标题撞名；找不到窗口才退回提示框）。
+#[cfg(windows)]
+pub fn activate_existing(title: &str) {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+    let _ = title;
+    extern "system" fn on_window(hwnd: HWND, _l: LPARAM) -> BOOL {
+        unsafe {
+            let mut pid = 0_u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 || pid == GetCurrentProcessId() || !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, BOOL(0), pid) else {
+                return BOOL(1);
+            };
+            let mut name = [0_u16; 260];
+            let mut len = name.len() as u32;
+            let is_duo = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(name.as_mut_ptr()),
+                &mut len,
+            )
+            .is_ok()
+                && String::from_utf16_lossy(&name[..len as usize])
+                    .to_ascii_lowercase()
+                    .ends_with("duo.exe");
+            let _ = CloseHandle(process);
+            if !is_duo {
+                return BOOL(1);
+            }
+            let mut text = [0_u16; 64];
+            let n = GetWindowTextW(hwnd, &mut text);
+            if n > 0 {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                ACTIVATED.store(true, std::sync::atomic::Ordering::Relaxed);
+                return BOOL(0);
+            }
+            BOOL(1)
+        }
+    }
+    unsafe {
+        let _ = EnumWindows(Some(on_window), LPARAM(0));
+    }
+    if !ACTIVATED.load(std::sync::atomic::Ordering::Relaxed) {
+        notify_already_running(
+            "Duo 面板已在运行，但未找到可激活的窗口（进程可能已失去响应）。\n可在任务管理器结束 Duo 后重试。",
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn activate_existing(_title: &str) {}
 
 /// 已有实例提示框（无控制台窗口进程的 stderr 不可见）。
 pub fn notify_already_running(message: &str) {
@@ -195,5 +269,110 @@ pub fn notify_already_running(message: &str) {
     #[cfg(not(windows))]
     {
         eprintln!("{message}");
+    }
+}
+
+/// 自检取证：向本进程窗口中心发一记滚轮（duo 内部使用）。
+#[cfg(target_os = "windows")]
+pub fn send_wheel(delta: i32) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    };
+    unsafe {
+        let mi = MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: delta as u32,
+            dwFlags: MOUSEEVENTF_WHEEL,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        let inp = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 { mi },
+        };
+        // 指针放到本窗口物理中心，保证 WM_MOUSEWHEEL 落在本窗口
+        let (cx, cy) = window_center();
+        windows::Win32::UI::WindowsAndMessaging::SetCursorPos(cx, cy).ok();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        SendInput(&[inp], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// 自检取证：在本窗口中心偏上处按下左键、上拖 200px、抬起。
+#[cfg(target_os = "windows")]
+pub fn send_drag() {
+    // 后台线程合成：主线程不阻塞，事件跨多帧到达（同帧 press+release
+    // 会被 egui 判成点击而非拖拽——取证缺陷非产品缺陷）
+    std::thread::spawn(|| unsafe { send_drag_impl() });
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn send_drag_impl() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    {
+        let (vx, vy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        let norm = |x: i32, y: i32| {
+            (
+                (x as i32 * 65535) / vx.max(1),
+                (y as i32 * 65535) / vy.max(1),
+            )
+        };
+        let (cx, cy) = crate::winproc::window_center();
+        // 起点取窗口中心（设置页卡片带上）
+        let (mut x, mut y) = (cx, cy);
+        let (nx, ny) = norm(x, y);
+        let move_abs =
+            |px: i32,
+             py: i32,
+             extra: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS| {
+                let (ax, ay) = norm(px, py);
+                let mi = MOUSEINPUT {
+                    dx: ax as i32,
+                    dy: ay as i32,
+                    mouseData: 0,
+                    dwFlags: MOUSEEVENTF_MOVE
+                        | MOUSEEVENTF_ABSOLUTE
+                        | MOUSEEVENTF_VIRTUALDESK
+                        | extra,
+                    time: 0,
+                    dwExtraInfo: 0,
+                };
+                let inp = INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 { mi },
+                };
+                SendInput(&[inp], std::mem::size_of::<INPUT>() as i32);
+            };
+        move_abs(x, y, MOUSEEVENTF_LEFTDOWN);
+        for _ in 0..20 {
+            y -= 10;
+            move_abs(
+                x,
+                y,
+                windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS(0),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        move_abs(x, y, MOUSEEVENTF_LEFTUP);
+    }
+}
+
+/// 本进程主窗口物理中心。
+#[cfg(target_os = "windows")]
+pub fn window_center() -> (i32, i32) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+    unsafe {
+        let name: Vec<u16> = "Duo".encode_utf16().chain(std::iter::once(0)).collect();
+        let hwnd = FindWindowW(PCWSTR::null(), PCWSTR(name.as_ptr())).unwrap_or_default();
+        let mut rc = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rc);
+        ((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2)
     }
 }

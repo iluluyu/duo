@@ -177,7 +177,7 @@ pub(crate) fn build_texture(
         box_pass(&mut buf, w, h, r, true);
         box_pass(&mut buf, w, h, r, false);
     }
-    apply_gains(&mut buf, params);
+    apply_gains_proportional(&mut buf, params); // 十二修：菜单（两级）比例缩放
 
     // 圆角蒙版：菜单矩形落在裁剪内的设备坐标，r 与羽化随 ppp 缩放。
     let m_left = menu_rect.left() * ppp - x0 as f32;
@@ -341,6 +341,97 @@ fn apply_gains(buf: &mut [f32], params: &GlassParams) {
     }
 }
 
+/// 十二修（菜单专用）：分段仿射**比例缩放**替代膝截断——用户反馈
+/// 「强行压暗/提亮让图标糊成一团」：软膝把超阈值的亮图标全部钉到
+/// ceiling 尾线（Δ 被压缩到 ~slope 倍）失去内部结构。改为
+/// [lmin,lmax] → [base, top] 仿射映射：相对比例 100% 保留，亮图标
+/// 群内部层次不糊。亮档 base=shadow_floor、top=ceiling（暗部抬、
+/// 高光收）；暗档无地板则 base=lmin、top=ceiling 且仅压缩不放大。
+/// 菜单背板为开档瞬间快照（冻结）→ 逐贴图系数恒定无闪烁。
+fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
+    let contrast_k = 1.0 + params.contrast;
+    let (mut lmin, mut lmax) = (f32::INFINITY, f32::NEG_INFINITY);
+    for px in buf.chunks_exact_mut(3) {
+        for c in px.iter_mut() {
+            let delta = *c - params.pivot;
+            let expanded = if delta > 0.0 {
+                delta * contrast_k
+            } else {
+                delta
+            };
+            *c = expanded + params.pivot + params.brightness;
+        }
+        let luma = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+        for c in px.iter_mut() {
+            *c = luma + (*c - luma) * params.saturation;
+        }
+        let luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.0);
+        lmin = lmin.min(luma);
+        lmax = lmax.max(luma);
+    }
+    if let Some((tint, alpha)) = params.tint {
+        let tr = f32::from(tint.r()) / 255.0;
+        let tg = f32::from(tint.g()) / 255.0;
+        let tb = f32::from(tint.b()) / 255.0;
+        for px in buf.chunks_exact_mut(3) {
+            px[0] = px[0] * (1.0 - alpha) + tr * alpha;
+            px[1] = px[1] * (1.0 - alpha) + tg * alpha;
+            px[2] = px[2] * (1.0 - alpha) + tb * alpha;
+        }
+    }
+    let range = lmax - lmin;
+    if range < 1e-3 {
+        // 平背板：无段可缩，保持锚点落位（防把整块抬/压离锚）
+        for px in buf.chunks_exact_mut(3) {
+            for c in px.iter_mut() {
+                *c = c.clamp(0.0, 1.0);
+            }
+        }
+        return;
+    }
+    match (params.highlight_ceiling, params.shadow_floor) {
+        (Some(ceiling), floor) => {
+            let base = floor.unwrap_or(lmin);
+            let top = if lmax > ceiling || floor.is_some() {
+                ceiling.max(base + 1e-3)
+            } else {
+                // 暗档内容未超天花：不放大（比例 1:1 直通）
+                lmax
+            };
+            let k = (top - base) / range;
+            if (k - 1.0).abs() > 1e-4 {
+                for px in buf.chunks_exact_mut(3) {
+                    let luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
+                    let out = base + (luma - lmin) * k;
+                    let scale = (out / luma).clamp(0.0, 16.0);
+                    for c in px.iter_mut() {
+                        *c *= scale;
+                    }
+                }
+            }
+        }
+        (None, Some(floor)) => {
+            let k = ((lmax + 1e-3) - floor) / range;
+            if k < 1.0 - 1e-4 {
+                for px in buf.chunks_exact_mut(3) {
+                    let luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
+                    let out = floor + (luma - lmin) * k;
+                    let scale = (out / luma).clamp(0.0, 16.0);
+                    for c in px.iter_mut() {
+                        *c *= scale;
+                    }
+                }
+            }
+        }
+        (None, None) => {}
+    }
+    for px in buf.chunks_exact_mut(3) {
+        for c in px.iter_mut() {
+            *c = c.clamp(0.0, 1.0);
+        }
+    }
+}
+
 /// 3×box 近似高斯的盒宽序列（box blur → σ 换算经典式）。
 fn boxes_for_gauss(sigma: f32, n: u32) -> Vec<usize> {
     let sigma = sigma.max(0.2);
@@ -400,6 +491,251 @@ fn box_pass(buf: &mut [f32], w: usize, h: usize, r: usize, horizontal: bool) {
         }
     }
     buf.copy_from_slice(&out);
+}
+
+/// 液态玻璃旋钮（Opus 终裁 2026-09-22：满材质/定向 rim/保守折射/
+/// 聚焦实体化，方案与取舍见 docs/ui/liquid-glass-plan.md）。
+pub(crate) struct LiquidKnobs {
+    /// 漫散射 σ（设备 px，box×3）：控件高度 25%。
+    pub(crate) sigma: f32,
+    /// rim 顶/底 α（纵向衰减 α(t)=top×(1−0.78t)）。
+    pub(crate) rim_top: f32,
+    pub(crate) rim_bot: f32,
+    /// 边缘折射带 UV 偏移（设备 px，向外形变=背景包覆）。
+    pub(crate) lens_k: f32,
+    /// 暗静止抬升：向 [48,48,50] 混合（溶底修复，Grok C）。
+    pub(crate) rest_lift: f32,
+    /// 内阴影强度（暗 0.18 / 亮 0.10，Grok D）。
+    pub(crate) inner_shadow: f32,
+    /// 顶部环境微光（仅暗档——亮档与 sheen 叠乘打穿天花，Grok A）。
+    pub(crate) ambient: f32,
+    /// 亮档整体压暗系数（Grok 复验补充：亮静止体 246 贴天花 248，
+    /// rim 无落差——压至 ~237 让 rim 出 8-14 落差）。
+    pub(crate) body_dim: f32,
+}
+
+impl LiquidKnobs {
+    /// 静止态（σ=高度 25%，k=0.02×短边；rim/rest_lift/ambient 分主题，
+    /// Grok 终审 A/B/C）。
+    pub(crate) fn resting(short_side: f32, dark: bool) -> Self {
+        Self {
+            sigma: (short_side * 0.25).clamp(6.0, 12.0),
+            rim_top: if dark { 0.34 } else { 0.22 },
+            rim_bot: if dark { 0.20 } else { 0.14 },
+            lens_k: (short_side * 0.02).clamp(0.5, 1.0),
+            rest_lift: if dark { 0.10 } else { 0.0 },
+            inner_shadow: if dark { 0.10 } else { 0.06 },
+            ambient: if dark { 0.030 } else { 0.0 },
+            body_dim: if dark { 1.0 } else { 0.965 },
+        }
+    }
+}
+
+/// 液态玻璃合成器：细背板（1px/格，含 lensing 边距）→ σ 漫散射 →
+/// SDF 梯度边缘折射（单通道，Opus 砍色散）→ 菜单光学增益 → 背板
+/// 均值 12% 回注（ColorOS 混色，替代灰 tint）→ 定向 rim（1px 亮核+
+/// 2px Hermite 软坡，顶亮底暗）→ 内阴影厚度 → 满圆角蒙版 α255。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_liquid_texture(
+    ctx: &Context,
+    tex_name: &str,
+    syn: &ColorImage,
+    syn_cover: Rect,
+    pill: Rect,
+    ppp: f32,
+    dark: bool,
+    knobs: &LiquidKnobs,
+) -> Option<TextureHandle> {
+    let (w, h) = (syn.width(), syn.height());
+    if w < 4 || h < 4 || ppp <= 0.0 {
+        return None;
+    }
+    // 背板均值（ColorOS 混色回注）
+    let (mut mr, mut mg, mut mb) = (0.0_f32, 0.0_f32, 0.0_f32);
+    for px in &syn.pixels {
+        mr += f32::from(px.r());
+        mg += f32::from(px.g());
+        mb += f32::from(px.b());
+    }
+    let n = (w * h) as f32;
+    let mean = [mr / n, mg / n, mb / n];
+
+    let mut buf = vec![0.0_f32; w * h * 3];
+    for (i, px) in syn.pixels.iter().enumerate() {
+        buf[i * 3] = f32::from(px.r()) / 255.0;
+        buf[i * 3 + 1] = f32::from(px.g()) / 255.0;
+        buf[i * 3 + 2] = f32::from(px.b()) / 255.0;
+    }
+    for r in boxes_for_gauss(knobs.sigma, 3) {
+        box_pass(&mut buf, w, h, r, true);
+        box_pass(&mut buf, w, h, r, false);
+    }
+    // Grok E：液态暗档滚动过艳（糖纸渍）——液态路径专用饱和度，
+    // 菜单 main_params 配方不动
+    let mut params = main_params(dark);
+    params.saturation = if dark { 1.35 } else { 1.30 };
+    apply_gains(&mut buf, &params);
+
+    // pill 的设备几何（syn 内坐标）
+    let cx = (pill.center().x - syn_cover.left()) * ppp;
+    let cy = (pill.center().y - syn_cover.top()) * ppp;
+    let hw = pill.width() * ppp / 2.0;
+    let hh = pill.height() * ppp / 2.0;
+    let radius = hh.min(hw);
+    let band = (knobs.lens_k * 6.0).max(3.0); // 折射作用带
+    let sdf = |x: f32, y: f32| {
+        let qx = (x - cx).abs() - (hw - radius);
+        let qy = (y - cy).abs() - (hh - radius);
+        Vec2::new(qx.max(0.0), qy.max(0.0)).length() + qx.max(qy).min(0.0) - radius
+    };
+    let sample = |buf: &[f32], x: f32, y: f32| -> [f32; 3] {
+        // 双线性
+        let x0 = x.floor().clamp(0.0, (w - 1) as f32);
+        let y0 = y.floor().clamp(0.0, (h - 1) as f32);
+        let x1 = (x0 + 1.0).min((w - 1) as f32);
+        let y1 = (y0 + 1.0).min((h - 1) as f32);
+        let fx = (x - x0).clamp(0.0, 1.0);
+        let fy = (y - y0).clamp(0.0, 1.0);
+        let at = |xx: usize, yy: usize| {
+            let b = (yy * w + xx) * 3;
+            [buf[b], buf[b + 1], buf[b + 2]]
+        };
+        let c00 = at(x0 as usize, y0 as usize);
+        let c10 = at(x1 as usize, y0 as usize);
+        let c01 = at(x0 as usize, y1 as usize);
+        let c11 = at(x1 as usize, y1 as usize);
+        [
+            c00[0] * (1.0 - fx) * (1.0 - fy)
+                + c10[0] * fx * (1.0 - fy)
+                + c01[0] * (1.0 - fx) * fy
+                + c11[0] * fx * fy,
+            c00[1] * (1.0 - fx) * (1.0 - fy)
+                + c10[1] * fx * (1.0 - fy)
+                + c01[1] * (1.0 - fx) * fy
+                + c11[1] * fx * fy,
+            c00[2] * (1.0 - fx) * (1.0 - fy)
+                + c10[2] * fx * (1.0 - fy)
+                + c01[2] * (1.0 - fx) * fy
+                + c11[2] * fx * fy,
+        ]
+    };
+    // 边缘折射：带内采样点沿 SDF 梯度（外向）偏移 → 背景包覆形变
+    let src = buf.clone();
+    for row in 0..h {
+        for col in 0..w {
+            let x = col as f32 + 0.5;
+            let y = row as f32 + 0.5;
+            let d = sdf(x, y);
+            if d > -band || d < 1.0 {
+                let e = 0.5;
+                let gx = sdf(x + e, y) - sdf(x - e, y);
+                let gy = sdf(x, y + e) - sdf(x, y - e);
+                let gl = gx.hypot(gy).max(1e-5);
+                let k = knobs.lens_k * ((band + d) / band).clamp(0.0, 1.0);
+                let sx = x + gx / gl * k;
+                let sy = y + gy / gl * k;
+                let c = sample(&src, sx, sy);
+                let b = (row * w + col) * 3;
+                buf[b] = c[0];
+                buf[b + 1] = c[1];
+                buf[b + 2] = c[2];
+            }
+        }
+    }
+    // 混色回注 + 定向 rim + 内阴影 + 蒙版
+    let lift = [48.0 / 255.0, 48.0 / 255.0, 50.0 / 255.0];
+    let ceil = if dark { 255.0 } else { 248.0 };
+    let mut pixels = Vec::with_capacity(w * h);
+    for row in 0..h {
+        let t_row = row as f32 / h as f32;
+        let sheen = 1.0 + params.sheen * (0.5 - t_row) * 2.0;
+        // 微光层仅暗档（Grok A：亮档与 sheen 叠乘打穿天花钳白）
+        let ambient = knobs.ambient * (1.0 - t_row / 0.35).clamp(0.0, 1.0);
+        let rim_a = knobs.rim_top * (1.0 - 0.78 * t_row) + knobs.rim_bot * t_row;
+        for col in 0..w {
+            let x = col as f32 + 0.5;
+            let y = row as f32 + 0.5;
+            let d = sdf(x, y);
+            let b = (row * w + col) * 3;
+            let mut c = [buf[b], buf[b + 1], buf[b + 2]];
+            // 混色回注 12%（ColorOS）
+            for i in 0..3 {
+                c[i] = c[i] * 0.88 + mean[i] / 255.0 * 0.12;
+            }
+            // 暗静止抬升（Grok C：溶底修复，体 L 34→42-46）
+            if knobs.rest_lift > 0.0 {
+                for i in 0..3 {
+                    c[i] = c[i] * (1.0 - knobs.rest_lift) + lift[i] * knobs.rest_lift;
+                }
+            }
+            let dim_all = knobs.body_dim;
+            let mut r = (c[0] * (sheen + ambient) * 255.0 * dim_all)
+                .round()
+                .clamp(0.0, ceil);
+            let mut g = (c[1] * (sheen + ambient) * 255.0 * dim_all)
+                .round()
+                .clamp(0.0, ceil);
+            let mut bl = (c[2] * (sheen + ambient) * 255.0 * dim_all)
+                .round()
+                .clamp(0.0, ceil);
+            // 内阴影（厚度）：从 rim 内沿向内 1.5px 渐弱暗带（Grok D；
+            // 不得与 rim 核带 d∈[-1.5,-0.5] 重叠——先压后亮互相抵消）
+            if d > -4.5 && d < -2.0 {
+                let w_in = (d + 4.5) / 2.5;
+                let dim = 1.0 - knobs.inner_shadow * w_in;
+                r *= dim;
+                g *= dim;
+                bl *= dim;
+            }
+            // 定向 rim（十修后：双侧 smoothstep——内升 d∈[-3.6,-1.1]、
+            // 外降 d∈[-1.1,+0.3]，峰在 α=255 体内 1.1px；弧线全程无
+            // 单像素大跳=抗锯齿根治）
+            let rise = ((d + 3.6) / 2.5).clamp(0.0, 1.0);
+            let fall = ((0.3 - d) / 1.4).clamp(0.0, 1.0);
+            let ss = |v: f32| v * v * (3.0 - 2.0 * v);
+            let wgt = ss(rise) * ss(fall);
+            if wgt > 0.0 {
+                let a = (rim_a * wgt).clamp(0.0, 1.0);
+                // rim 目标 255（p95≤248 约束的是体，Grok；亮档体 240
+                // 需 8-14 落差，rim 线压在 248 无落差）
+                r += (255.0 - r) * a;
+                g += (255.0 - g) * a;
+                bl += (255.0 - bl) * a;
+            }
+            // 2.2px 羽化抗锯齿（分数 ppp 下弧线需 ≥3 级中间值）
+            let alpha = (((1.1 - d) / 2.2).clamp(0.0, 1.0) * 255.0).round() as u8;
+            pixels.push(Color32::from_rgba_unmultiplied(
+                r as u8, g as u8, bl as u8, alpha,
+            ));
+        }
+    }
+    // 取证：DUO_DUMP_ISLAND=1 倾印岛贴图本体（诊断锯齿/rim 形状）
+    if std::env::var("DUO_DUMP_ISLAND").is_ok() {
+        let dir = std::path::PathBuf::from(
+            std::env::var("DUO_DUMP_DIR")
+                .unwrap_or_else(|_| r"C:\Users\Administrator\Desktop\duo_shots".into()),
+        );
+        let _ = std::fs::create_dir_all(&dir);
+        let px: Vec<u8> = pixels
+            .iter()
+            .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
+            .collect();
+        let _ = image::save_buffer(
+            dir.join(format!("island_dump_{tex_name}.png")),
+            &px,
+            w as u32,
+            h as u32,
+            image::ColorType::Rgba8,
+        );
+    }
+    Some(ctx.load_texture(
+        tex_name,
+        ColorImage {
+            size: [w, h],
+            pixels,
+        },
+        TextureOptions::LINEAR,
+    ))
 }
 
 #[cfg(test)]
@@ -625,6 +961,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn proportional_rescale_keeps_ratios_dark_menu() {
+        // 十二修：暗色菜单——亮图标群糊成一团的回归。构造 bg+两档亮度
+        // 图标，比例缩放后：最大值压到 ceiling 邻域、但相对差保持仿射
+        // （旧软膝把 0.75/0.95 压成 ~0.47/0.49 的糊带）。
+        let params = main_params(true);
+        let ceiling = params.highlight_ceiling.unwrap();
+        let bg = 0.11_f32;
+        let (dim, bright) = (0.75_f32, 0.95_f32);
+        let mk = |v: f32| vec![v, v, v];
+        let mut buf = [mk(bg), mk(bg), mk(dim), mk(bright)].concat();
+        apply_gains_proportional(&mut buf, &params);
+        let lum =
+            |i: usize| 0.2126 * buf[i * 3] + 0.7152 * buf[i * 3 + 1] + 0.0722 * buf[i * 3 + 2];
+        let (l0, l2, l3) = (lum(0), lum(2), lum(3));
+        assert!(l3 <= ceiling + 2e-3, "最亮应压到 ceiling 邻域: {l3}");
+        // 仿射比例保留： (bright−dim)/(bright−bg) == (l3−l2)/(l3−l0)
+        let want = (bright - dim) / (bright - bg);
+        let got = (l3 - l2) / (l3 - l0);
+        assert!(
+            (want - got).abs() < 3e-3,
+            "相对比例应保留: want {want:.3} got {got:.3}"
+        );
+        assert!(l3 - l2 > 0.03, "亮图标内部层次可见: Δ={}", l3 - l2);
+    }
+
+    #[test]
+    fn proportional_lifts_floor_light_menu() {
+        // 亮色菜单：暗部抬到 floor 之上且保持单调（比例不反转变糊）
+        let params = main_params(false);
+        let floor = params.shadow_floor.unwrap();
+        let mut buf = [vec![0.05_f32; 3], vec![0.9_f32; 3], vec![0.4_f32; 3]].concat();
+        apply_gains_proportional(&mut buf, &params);
+        let l = |i: usize| 0.2126 * buf[i * 3] + 0.7152 * buf[i * 3 + 1] + 0.0722 * buf[i * 3 + 2];
+        assert!(l(0) >= floor - 2e-3, "最暗应抬到 floor: {}", l(0));
+        assert!(l(2) > l(0) && l(1) > l(2), "单调保持");
+        let ceiling = params.highlight_ceiling.unwrap();
+        assert!(l(1) <= ceiling + 2e-3, "最亮不超 ceiling: {}", l(1));
+    }
+
+    #[test]
+    fn proportional_flat_backdrop_noop() {
+        // 平背板（无段可缩）直通：锚点落位不变
+        let params = main_params(false);
+        let mut buf = vec![245.0 / 255.0; 3];
+        let before = buf[0];
+        apply_gains_proportional(&mut buf, &params);
+        // brightness/sat 仍作用（直通仅指不缩放），但无段缩放炸点：
+        assert!(buf[0] <= 1.0 && buf[0] > 0.9, "平背板不越界: {}", buf[0]);
+        let _ = before;
+    }
+
     /// 出图 probe（DUO_GLASS_PROBE=1 cargo test probe_dump_units）：
     /// 暗色/亮色默认档对合成背景（平画布 + 色斑 + 黑白灰验垫）各烘
     /// 一块菜单玻璃并合成落盘 /tmp/glass_probe/，供参数目验。
@@ -694,7 +1082,7 @@ mod tests {
                 box_pass(&mut buf, w, h, r, true);
                 box_pass(&mut buf, w, h, r, false);
             }
-            apply_gains(&mut buf, &params);
+            apply_gains_proportional(&mut buf, &params);
             let mut out = vec![0u8; bw * bh * 3];
             for row in 0..bh {
                 for col in 0..bw {
@@ -729,7 +1117,7 @@ mod tests {
         }
     }
 
-    /// probe 用：同心三层矩形逼近径向色斑（近似 paint::canvas_spots）。
+    /// probe 用：同心三层矩形逼近径向色斑（旧画布色斑的验垫近似）。
     fn paint_spot(
         bg: &mut [f32],
         bw: usize,

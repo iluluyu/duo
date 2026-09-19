@@ -1,6 +1,6 @@
 //! 设置页像素渲染（SettingsPage.qml 逐组照抄；模型在 settings_view.rs）。
 //!
-//! 页面骨架：bg 实底无色斑；滚动区 x16..w-16 / y64..footer 顶；卡间距
+//! 页面骨架：bg 实底；滚动区 x16..w-16 / y64..页底；卡间距
 //! 12；GlassCard = r14 cardFill + cardBorder + 内边 12 + 内距 9 + 标题
 //! 13px DemiBold。底部保存主按钮（w76 h32 r10 accent，右缘 16 底 12）。
 
@@ -468,6 +468,15 @@ mod geom {
     pub const TOP: f32 = 64.0; // 胶囊下让位
 }
 
+/// 拖拽诊断计数（selfcheck 取证用，静态零开销）。
+pub(crate) static DRAG_HITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// 滚轮事件命中计数。
+pub(crate) static WHEEL_HITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// 指针按住帧数 / 按下事件数。
+pub(crate) static PTR_DOWN_FRAMES: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+pub(crate) static PTR_PRESS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// 设置页布局（两遍绘制解耦：先算全部 rect，再画卡底，再画内容）。
 pub struct SettingsLayout {
     /// 滚动视口（内容 clip 区）。
@@ -502,6 +511,8 @@ pub struct SettingsLayout {
     pub theme_label: Pos2,
     pub theme_row: [Rect; 3],
     pub glass_row: Rect,
+    /// 动画效果开关行（玻璃之下；关 = 全静态回退原始观感）。
+    pub anim_row: Rect,
     pub content_h: f32,
 }
 
@@ -513,17 +524,20 @@ pub struct Card {
 }
 
 impl SettingsLayout {
-    pub fn compute(w: f32, h: f32, problems: &str, engine_locked: bool) -> Self {
+    pub fn compute(w: f32, h: f32, problems: &str, engine_locked: bool, full_bleed: bool) -> Self {
         use geom::*;
         // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8。
         // 宽屏限宽居中（KISS）：列宽封顶 560，窗口更宽时两侧留白，
         // 避免路径行/模式钮/滑条拉伸成横幅（2026-09-19）。
+        // 六修 full_bleed：玻璃开时视口顶到 0（内容从胶囊玻璃岛下滚
+        // 过），内容起始 y 不变；关玻璃回 64 硬让位。
         let cw = (w - (MARGIN + 8.0) * 2.0).min(560.0);
         let left = ((w - cw) / 2.0).max(MARGIN + 8.0);
-        let vp = Rect::from_min_max(Pos2::new(left, TOP), Pos2::new(left + cw, h));
+        let vp_top = if full_bleed { 0.0 } else { TOP };
+        let vp = Rect::from_min_max(Pos2::new(left, vp_top), Pos2::new(left + cw, h));
         let inner_w = cw - PAD * 2.0;
         let x = left + PAD;
-        let mut y = vp.top();
+        let mut y = TOP;
 
         let problem = (!problems.is_empty()).then(|| {
             let lines = problems.lines().count().max(1) as f32;
@@ -620,7 +634,7 @@ impl SettingsLayout {
         y += wb_h + CARD_SP;
 
         // 外观卡
-        let ap_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + ROW_H;
+        let ap_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + ROW_H + SP + ROW_H;
         let ap_h = CARD_EXTRA + ap_items;
         let appearance = card_frame(Pos2::new(left, y), cw, ap_h);
         let mut cy = appearance.title.y + TITLE_H + SP;
@@ -629,6 +643,8 @@ impl SettingsLayout {
         let theme_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let glass_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
+        cy += ROW_H + SP;
+        let anim_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
 
         Self {
             vp,
@@ -662,6 +678,7 @@ impl SettingsLayout {
             theme_label,
             theme_row,
             glass_row,
+            anim_row,
             content_h: y + ap_h,
         }
     }
@@ -696,23 +713,94 @@ fn seg_row(x: f32, y: f32, w: f32, n: usize) -> Vec<Rect> {
 
 /// 设置页主体（app.rs Page::Settings 分发；布局 + 双遍绘制 + 滚动）。
 pub fn show(app: &mut PanelApp, ui: &mut Ui) {
+    let (down, press) = ui.input(|i| {
+        (
+            i.pointer.primary_down(),
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    }
+                )
+            }),
+        )
+    });
+    if down {
+        PTR_DOWN_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if press {
+        PTR_PRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let t = app.tokens;
     let full = ui.max_rect();
-    // QML SettingsPage 页面底色：不透明 Style.bg 盖住主面板（含色斑）
-    // ——设置页背景必须干净（SettingsPage.qml Rectangle 页面底色）
+    // 页面底色：不透明 Style.bg（设置页背景必须干净）
     ui.painter().rect_filled(full, 0, t.bg);
 
     let problems = app.settings_problems();
     let engine_locked = app.engine_locked();
-    let layout = SettingsLayout::compute(full.width(), full.height(), &problems, engine_locked);
+    let full_bleed = app.settings.draft.glass_enabled && cfg!(target_os = "windows");
+    let layout = SettingsLayout::compute(
+        full.width(),
+        full.height(),
+        &problems,
+        engine_locked,
+        full_bleed,
+    );
 
-    // 滚轮（视口内；超出才滚）
+    // 整页滚动（2026-09-20 修「设置滚不动」）：滚轮不再局限内容列 vp——
+    // 宽屏留白是死区；另补拖拽/触摸平移（触摸屏滑动没有滚轮事件）。
+    // 胶囊带不参与；拖拽捕获层垫底，控件（滑杆/文本框）优先拿走拖拽。
     let max_scroll = (layout.content_h - layout.vp.height()).max(0.0);
-    if ui.rect_contains_pointer(layout.vp) && max_scroll > 0.0 {
-        let dy = ui.input(|i| i.raw_scroll_delta.y);
-        app.settings_scroll = (app.settings_scroll - dy).clamp(0.0, max_scroll);
+    let pan_zone = Rect::from_min_max(
+        Pos2::new(full.left(), full.top() + 52.0),
+        Pos2::new(full.right(), full.bottom()),
+    );
+    let pan = ui.allocate_rect(pan_zone, Sense::drag());
+    // 无条件 clamp：先滑到底再放大窗口（max_scroll 变小/归零）时旧
+    // scroll 残留会把内容顶出视口且滚动分支被闸关死（真机卡死根因）
+    app.settings_scroll = app.settings_scroll.min(max_scroll);
+    let menu_open = app.menu_effectively_open(ui.ctx());
+    if max_scroll > 0.0 && !menu_open {
+        if ui.rect_contains_pointer(pan_zone) {
+            let dy = ui.input(|i| i.raw_scroll_delta.y);
+            if dy != 0.0 {
+                WHEEL_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            app.settings_scroll = (app.settings_scroll - dy).clamp(0.0, max_scroll);
+        }
+        if pan.dragged() {
+            app.settings_scroll = (app.settings_scroll - pan.drag_delta().y).clamp(0.0, max_scroll);
+        }
     }
     let scroll = app.settings_scroll;
+    // （十修）内容放得下时垂直光学居中（0.38 偏上），消「顶死+底部
+    // 空洞」读作滚不动的错觉；off = 统一内容坐标 → 页面坐标的位移
+    let pad = ((layout.vp.height() - layout.content_h) * 0.38).max(0.0);
+    let off = scroll - pad;
+
+    // 岛背板剖面（内容坐标）：问题条 + 各卡底板，缺省 bg
+    // （胶囊岛跨这些色带滚动时透出颜色变化——活模糊）
+    app.island_bands.push((
+        layout.vp.top() + pad,
+        layout.vp.top() + layout.content_h + pad + 200.0,
+        t.bg,
+    ));
+    if let Some((bar, _)) = &layout.problem {
+        app.island_bands
+            .push((bar.top() + pad, bar.bottom() + pad, t.warn));
+    }
+    for card in [
+        &layout.engine,
+        &layout.quality,
+        &layout.windowbar,
+        &layout.appearance,
+    ] {
+        app.island_bands
+            .push((card.bg.top() + pad, card.bg.bottom() + pad, t.card));
+    }
 
     // 视口内裁剪（QML ScrollView clip：滚动底之下的控件——如 DPI 数字
     // 框——不得溢出）
@@ -727,7 +815,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         &layout.windowbar,
         &layout.appearance,
     ] {
-        let shifted = Rect::from_min_size(Pos2::new(c.bg.min.x, c.bg.min.y - scroll), c.bg.size());
+        let shifted = Rect::from_min_size(Pos2::new(c.bg.min.x, c.bg.min.y - off), c.bg.size());
         paint::rounded_fill(&painter, shifted, 14.0, t.card);
         paint::rounded_stroke(&painter, shifted, 14.0, t.card_border);
         card_title(
@@ -740,7 +828,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     // 问题红条
     if let Some((bar, text)) = &layout.problem {
-        let bar = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y - scroll), bar.size());
+        let bar = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y - off), bar.size());
         paint::rounded_fill(&painter, bar, 10.0, over(t.bg, t.danger, 0.10));
         paint::rounded_stroke(&painter, bar, 10.0, over(t.bg, t.danger, 0.35));
         paint::text_left_weight(
@@ -754,8 +842,8 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
 
     // 引擎卡内容
-    let sy = |r: Rect| Rect::from_min_size(Pos2::new(r.min.x, r.min.y - scroll), r.size());
-    let py = |p: Pos2| Pos2::new(p.x, p.y - scroll);
+    let sy = |r: Rect| Rect::from_min_size(Pos2::new(r.min.x, r.min.y - off), r.size());
+    let py = |p: Pos2| Pos2::new(p.x, p.y - off);
 
     let mut scrcpy = app.settings.draft.scrcpy_path.clone();
     let pill_scrcpy = app.probe_pill_for("scrcpy");
@@ -1019,6 +1107,80 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     ) {
         app.settings.set_glass(!app.settings.draft.glass_enabled);
     }
+    if switch_row(
+        &mut ui,
+        &t,
+        egui::Id::new("animations"),
+        sy(layout.anim_row),
+        "动画效果",
+        app.settings.draft.animations_enabled,
+    ) {
+        app.settings
+            .set_animations(!app.settings.draft.animations_enabled);
+    }
+
+    // （十修）顶层拖拽间隙层：卡底/标题/页边在控件之上可拖动平移——
+    // 旧底层 pan 层被满列控件遮死（真实拖拽 0.6% 无效，取证见
+    // docs/ui/DESIGN.md 十修）。控件矩形不并入（滑杆/文本框要拖拽）。
+    if max_scroll > 0.0 && !menu_open {
+        let mut widgets = vec![
+            layout.scrcpy_row,
+            layout.adb_row,
+            layout.fps_cell,
+            layout.bitrate_cell,
+            layout.rs_slider,
+            layout.dpi_switch,
+            layout.dpi_cell,
+            layout.tso_row,
+            layout.glass_row,
+            layout.anim_row,
+        ];
+        widgets.extend(layout.codec_row);
+        widgets.extend(layout.audio_row);
+        widgets.extend(layout.top_row);
+        widgets.extend(layout.bottom_row);
+        widgets.extend(layout.theme_row);
+        widgets.sort_by_key(|r| r.top() as i32);
+        let col = layout.vp;
+        let mut gaps: Vec<Rect> = Vec::new();
+        let mut cur = col.top() + pad;
+        for w in &widgets {
+            let top = w.top() - off;
+            if top > cur + 1.0 {
+                gaps.push(Rect::from_min_max(
+                    Pos2::new(col.left(), cur),
+                    Pos2::new(col.right(), top),
+                ));
+            }
+            cur = cur.max(w.bottom() - off);
+        }
+        if col.bottom() > cur + 1.0 {
+            gaps.push(Rect::from_min_max(
+                Pos2::new(col.left(), cur),
+                Pos2::new(col.right(), col.bottom()),
+            ));
+        }
+        if full.left() < col.left() - 1.0 {
+            gaps.push(Rect::from_min_max(
+                Pos2::new(full.left(), full.top() + 52.0),
+                Pos2::new(col.left(), full.bottom()),
+            ));
+        }
+        if full.right() > col.right() + 1.0 {
+            gaps.push(Rect::from_min_max(
+                Pos2::new(col.right(), full.top() + 52.0),
+                Pos2::new(full.right(), full.bottom()),
+            ));
+        }
+        for (i, g) in gaps.iter().enumerate() {
+            let resp = ui.interact(*g, egui::Id::new("settings-pan-gap").with(i), Sense::drag());
+            if resp.dragged() {
+                DRAG_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                app.settings_scroll =
+                    (app.settings_scroll - resp.drag_delta().y).clamp(0.0, max_scroll);
+            }
+        }
+    }
 }
 
 /// 画卡标题时从引用反查名字（绘制循环需要；四次调用对应四卡）。
@@ -1040,7 +1202,7 @@ mod tests {
 
     #[test]
     fn settings_layout_y_chain_and_grouping() {
-        let layout = SettingsLayout::compute(420.0, 660.0, "", false);
+        let layout = SettingsLayout::compute(420.0, 660.0, "", false, false);
         assert!(layout.engine.bg.top() < layout.quality.bg.top());
         assert!(layout.quality.bg.top() < layout.windowbar.bg.top());
         assert!(layout.windowbar.bg.top() < layout.appearance.bg.top());
@@ -1052,5 +1214,273 @@ mod tests {
         assert!(title_to_caption > 0.0);
         assert!(caption_to_next > title_to_caption);
         assert!((title_to_caption - 20.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    //! 整页滚动的无头回归（kittest 泵帧 + 合成事件）。「设置滚不动」
+    //! 2026-09-20 报障后建立：滚轮不局限内容列、触摸/鼠标拖拽平移、
+    //! 顶到上下限钳位。
+    use crate::app::{Page, PanelApp};
+
+    fn new_app(ctx: &egui::Context, page: Page) -> PanelApp {
+        std::env::set_var("DUO_SKIP_SWEEP", "1");
+        crate::fonts::install_fonts(ctx);
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = PanelApp::new(&cc);
+        app.page = page;
+        app
+    }
+
+    fn pump(app: &mut PanelApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        pump_at(app, ctx, egui::vec2(420.0, 660.0), events);
+    }
+
+    fn pump_at(
+        app: &mut PanelApp,
+        ctx: &egui::Context,
+        screen: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| match app.page {
+                    Page::Home => crate::home::show(app, ui),
+                    Page::Settings => crate::settings::show(app, ui),
+                });
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn settings_probe_fullscreen_drag() {
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Settings);
+        pump_at(
+            &mut app,
+            &ctx,
+            egui::vec2(1536.0, 864.0),
+            vec![
+                egui::Event::PointerMoved(egui::pos2(768.0, 500.0)),
+                wheel(-80.0),
+            ],
+        );
+        assert!(
+            app.settings_scroll > 0.0,
+            "最大化（内容超出视口）应能滚动，实得 {}",
+            app.settings_scroll
+        );
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Settings);
+        // 1080p @125% 最大化（1536x864 逻辑）：内容 ~1206 > 视口，必须能滚
+        pump_at(
+            &mut app,
+            &ctx,
+            egui::vec2(1536.0, 864.0),
+            vec![
+                egui::Event::PointerMoved(egui::pos2(768.0, 500.0)),
+                wheel(-80.0),
+            ],
+        );
+        assert!(
+            app.settings_scroll > 0.0,
+            "最大化（内容超出视口）应能滚动，实得 {}",
+            app.settings_scroll
+        );
+        // 触摸/拖拽平移在最大化下同样有效（探测各点）
+        for pt in [
+            egui::pos2(768.0, 500.0),
+            egui::pos2(768.0, 550.0),
+            egui::pos2(768.0, 600.0),
+            egui::pos2(768.0, 650.0),
+            egui::pos2(150.0, 600.0),
+        ] {
+            let before = app.settings_scroll;
+            pump_at(
+                &mut app,
+                &ctx,
+                egui::vec2(1536.0, 864.0),
+                vec![
+                    egui::Event::PointerMoved(pt),
+                    egui::Event::PointerButton {
+                        pos: pt,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+            pump_at(
+                &mut app,
+                &ctx,
+                egui::vec2(1536.0, 864.0),
+                vec![egui::Event::PointerMoved(pt - egui::vec2(0.0, 60.0))],
+            );
+            pump_at(
+                &mut app,
+                &ctx,
+                egui::vec2(1536.0, 864.0),
+                vec![egui::Event::PointerButton {
+                    pos: pt - egui::vec2(0.0, 60.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            );
+            eprintln!(
+                "probe {:?} scroll {} -> {}",
+                pt, before, app.settings_scroll
+            );
+        }
+    }
+
+    fn wheel(delta: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta),
+            modifiers: Default::default(),
+        }
+    }
+
+    fn press(at: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]
+    }
+
+    fn move_to(at: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(at)]
+    }
+
+    fn release(at: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]
+    }
+
+    #[test]
+    fn settings_wheel_scrolls_anywhere_below_capsule() {
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Settings);
+        pump(&mut app, &ctx, vec![]);
+        // 指针在内容列左外侧（宽屏留白死区）也应滚动
+        pump(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(5.0, 300.0)),
+                wheel(-50.0),
+            ],
+        );
+        assert!(app.settings_scroll > 0.0, "页面空白处滚轮应滚动设置页");
+        // 胶囊带内不滚
+        let at = app.settings_scroll;
+        pump(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(210.0, 30.0)),
+                wheel(-50.0),
+            ],
+        );
+        assert_eq!(app.settings_scroll, at, "胶囊带不是滚动区");
+    }
+
+    #[test]
+    fn settings_drag_pans_and_clamps() {
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Settings);
+        pump(&mut app, &ctx, vec![]);
+        // 按下与位移分帧送入（真实输入即逐帧到达）
+        pump(&mut app, &ctx, press(egui::pos2(210.0, 400.0)));
+        pump(&mut app, &ctx, move_to(egui::pos2(210.0, 340.0)));
+        assert!(app.settings_scroll > 0.0, "上拖应滚出下方内容");
+        // 疯狂上拖钳在 max（1206 高内容 vs 596 视口 ≈ 610）
+        pump(&mut app, &ctx, move_to(egui::pos2(210.0, 60.0)));
+        pump(&mut app, &ctx, release(egui::pos2(210.0, 60.0)));
+        assert!(app.settings_scroll < 2000.0);
+        let maxed = app.settings_scroll;
+        pump(&mut app, &ctx, press(egui::pos2(210.0, 100.0)));
+        pump(&mut app, &ctx, move_to(egui::pos2(210.0, 650.0)));
+        pump(&mut app, &ctx, release(egui::pos2(210.0, 650.0)));
+        assert_eq!(app.settings_scroll, 0.0, "下拖回顶");
+        assert!(maxed > 0.0);
+    }
+
+    #[test]
+    fn home_wheel_scrolls_grid_from_page_margin() {
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Home);
+        let seeded: Vec<String> = duo_core::catalog::APP_CATALOG
+            .iter()
+            .take(20)
+            .map(|p| p.package.to_string())
+            .collect();
+        app.apps.rebuild(&seeded, &Default::default());
+        pump(&mut app, &ctx, vec![]);
+        // 指针在搜索胶囊（网格外）滚轮也应驱动网格
+        pump(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(210.0, 246.0)),
+                wheel(-50.0),
+            ],
+        );
+        assert!(app.grid_scroll > 0.0, "页面任意处滚轮应驱动网格");
+        pump(&mut app, &ctx, move_to(egui::pos2(210.0, 400.0)));
+        pump(&mut app, &ctx, press(egui::pos2(210.0, 400.0)));
+        pump(&mut app, &ctx, move_to(egui::pos2(210.0, 350.0)));
+        pump(&mut app, &ctx, release(egui::pos2(210.0, 350.0)));
+        assert!(app.grid_scroll >= 90.0, "拖拽平移网格（滚轮50+拖拽50）");
+    }
+
+    #[test]
+    fn settings_scroll_resized_to_fit_snaps_back() {
+        // 真机卡死回归：小窗滑到底（scroll=max），放大窗口后内容放得下
+        // （max_scroll=0）——旧 scroll 残留把内容顶出视口且滚动分支被
+        // 闸关死。修复：无条件 clamp。
+        let ctx = egui::Context::default();
+        let mut app = new_app(&ctx, Page::Settings);
+        pump_at(
+            &mut app,
+            &ctx,
+            egui::vec2(420.0, 660.0),
+            vec![
+                egui::Event::PointerMoved(egui::pos2(210.0, 400.0)),
+                wheel(-2000.0),
+            ],
+        );
+        assert!(app.settings_scroll > 0.0, "小窗应已滚到底");
+        // 放大到内容放得下（2261×1529 逻辑 > content_h）
+        pump_at(&mut app, &ctx, egui::vec2(2261.0, 1529.0), vec![]);
+        assert_eq!(
+            app.settings_scroll, 0.0,
+            "放得下时 scroll 必须钳回 0（顶部可见）"
+        );
+        // 再缩回小窗：仍可正常滚动（不残留死状态）
+        pump_at(
+            &mut app,
+            &ctx,
+            egui::vec2(420.0, 660.0),
+            vec![
+                egui::Event::PointerMoved(egui::pos2(210.0, 400.0)),
+                wheel(-80.0),
+            ],
+        );
+        assert!(app.settings_scroll > 0.0, "缩回后滚动应恢复");
     }
 }
