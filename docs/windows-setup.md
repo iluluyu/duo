@@ -2,8 +2,9 @@
 
 > Duo 原生运行环境部署、双架构构建与使用指引。
 >
-> - **生产推荐（Rust 原生栈）**：`duo-panel`（`Duo.exe` 面板）+ `duo-core`（`duo-core.exe` 核心引擎），零 Python 运行时依赖，秒启、低内存占用，静默无控制台黑窗。
-> - **参考验证（Python 栈）**：`src/pyduo`（PyQt6-QML 面板 + CLI），作为功能对译基准与快速原型验证。
+> 生产栈：`duo-panel`（`Duo.exe` 面板）+ `duo-core`（`duo-core.exe` 核心引擎），
+> 零 Python 运行时依赖，秒启、低内存占用，静默无控制台黑窗。
+> （初代 Python 栈已退役，见 `docs/history/pyduo.md`。）
 
 ---
 
@@ -57,29 +58,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 
 ---
 
-## 3. Python 验证栈（可选，开发参考）
-
-供对比行为与运行现有 pytest 套件：
-
-```powershell
-# 1. 环境准备（Python 3.11+）
-winget install -e --id Python.Python.3.12
-
-# 2. 拉取依赖并以可编辑模式安装
-cd C:\duo
-py -m venv .venv
-.venv\Scripts\pip install -e ".[gui,build]"
-
-# 3. 启动 Python GUI 面板
-.venv\Scripts\duo --gui
-
-# 4. （可选）打包 Python 版单文件 exe 产物
-powershell -ExecutionPolicy Bypass -File scripts\build_pyduo.ps1
-```
-
----
-
-## 4. 产物功能校验清单
+## 3. 产物功能校验清单
 
 - [ ] **面板启动**：双击 `Duo.exe` → 瞬时启动，正常显示设备状态卡与已安装应用磁贴。
 - [ ] **投屏开窗**：点击应用图标或主界面「投屏」→ 启动对应虚拟屏会话与 C# overlay 交互条（首窗编译 C# 约 2s，后续秒开）。
@@ -90,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_pyduo.ps1
 
 ---
 
-## 5. 常见问题与排查
+## 4. 常见问题与排查
 
 | 现象 | 原因分析 | 解决方案 |
 |---|---|---|

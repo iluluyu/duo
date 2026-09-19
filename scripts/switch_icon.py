@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CANDIDATES_DIR = ROOT / "docs" / "ui" / "mockups" / "icon_candidates"
-TARGET = ROOT / "assets" / "duo.ico"
+TARGET = ROOT / "src" / "rustduo" / "assets" / "duo.ico"
 
 OPTIONS = {
         "pure_black": "do_equal_glass_pure_black.ico",

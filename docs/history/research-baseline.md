@@ -1,3 +1,6 @@
+> **历史存档**（2026-09-19 自 `docs/ui/RESEARCH.md` 移入 docs/history/）。内容冻结于归档时点，
+> 不再维护；与现状冲突时以活文档（README / docs/）为准。
+
 # UI 优化摸底结论（2026-09-07）
 
 > 任务起点的事实底账。决策与规范见 DESIGN.md；方案稿见 mockups/。

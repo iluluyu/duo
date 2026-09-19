@@ -3,7 +3,7 @@ name = "duo-core"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Duo core logic, sunk from Python (TODO 0.2: pure-logic + process layer, pytest contracts mirrored 1:1)"
+description = "Duo core logic + process layer: devices/watch/session/mirror/apps CLI (JSON-lines protocol)"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

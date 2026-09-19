@@ -1,9 +1,9 @@
 //! duo-core: Duo 核心逻辑的 Rust 下沉（TODO 0.2 第一档）。
 //!
-//! 模块逐个从 `src/pyduo/core/*.py` 对译，pytest 合同逐条镜像为 `#[cfg(test)]`。
+//! 模块由初代 Python 栈逐个对译（史话见 docs/history/pyduo.md），行为
+//! 合同全部镜像为 #[cfg(test)]。
 //! 纯逻辑层零外部依赖；进程层（session/adb/monitor/apps）与宿主窗口在
-//! 0.2.2/0.3 进入本 crate 的 bin 目标。设计记录：docs/window-experience.md
-//! §14 与 TODO.md §0。
+//! 0.2.2/0.3 进入本 crate 的 bin 目标。设计记录：docs/window-experience.md §14。
 
 pub mod adb;
 pub mod apps;

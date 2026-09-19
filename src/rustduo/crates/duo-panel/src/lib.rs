@@ -77,9 +77,7 @@ pub fn run() {
             viewport = viewport.with_inner_size([420.0 * s.ppp, 660.0 * s.ppp]);
         }
         // 宽屏取证：DUO_SHOT_W/H 覆盖逻辑尺寸（默认 420x660）。
-        let env_f = |k: &str| {
-            std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok())
-        };
+        let env_f = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         let sw = env_f("DUO_SHOT_W").unwrap_or(420.0);
         let sh = env_f("DUO_SHOT_H").unwrap_or(660.0);
         let ppp = s.ppp.max(1.0);
@@ -130,7 +128,7 @@ pub fn viewport() -> egui::ViewportBuilder {
 }
 
 fn load_icon() -> Option<egui::IconData> {
-    let bytes = include_bytes!("../../../../../assets/duo.png");
+    let bytes = include_bytes!("../../../assets/duo.png");
     let img = image::load_from_memory(bytes).ok()?.into_rgba8();
     let (width, height) = img.dimensions();
     Some(egui::IconData {

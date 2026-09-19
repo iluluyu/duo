@@ -19,7 +19,7 @@ use crate::paths::{data_dir, logs_dir};
 use crate::quiet::quiet_command;
 
 /// overlay 源（pyduo resources 里同一份 chrome_overlay.cs，编译期嵌入）。
-pub const OVERLAY_SOURCE_TEXT: &str = include_str!("../../../../pyduo/resources/chrome_overlay.cs");
+pub const OVERLAY_SOURCE_TEXT: &str = include_str!("../resources/chrome_overlay.cs");
 
 /// .NET Framework 编译器候选，优先后用（C:\ 与 /mnt/c/ 两形态，存在性探测）。
 pub const CSC_CANDIDATES: [&str; 4] = [
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn overlay_source_shipped() {
-        // 源随二进制内嵌；关键防退化标记（完整清单在 pytest 侧）抽查。
+        // 源随二进制内嵌；关键防退化标记抽查。
         assert!(OVERLAY_SOURCE_TEXT.contains("UpdateLayeredWindow"));
         assert!(OVERLAY_SOURCE_TEXT.contains("SetProcessDPIAware"));
         assert!(OVERLAY_SOURCE_TEXT.contains("--pin-file"));
@@ -812,7 +812,7 @@ mod tests {
             }
             Ok(_) => {
                 // 有真 csc（Windows/WSL 互操作）：实编译守门（CS0122 类
-                // 事故只被括号配平检查放过，见 pytest 同名测试）。
+                // 事故只被括号配平检查放过）。
                 let exe = ensure_built(Some(&base)).expect("real csc build");
                 assert!(exe.is_file());
                 let stamp =

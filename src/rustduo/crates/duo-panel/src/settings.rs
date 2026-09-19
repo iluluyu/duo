@@ -444,9 +444,10 @@ fn path_row(
 
 // ---------------------------------------------------------------- 布局
 
-/// 布局常量（SettingsPage.qml 逐值照抄；几何取证 = scripts/geom_probe.py
-/// dump QML item 树：标题 13px 盒高 19、行标签 Item h20、CaptionText
-/// 盒高 18、开关行 Item h32、NumberCell 20+6+32=58、Slider h24）。
+/// 布局常量（SettingsPage.qml 逐值照抄；史前几何取证脚本 geom_probe.py
+/// 随 pyduo 退役，取值冻结于此并由单测守护：标题 13px 盒高 19、行标签
+/// Item h20、CaptionText 盒高 18、开关行 Item h32、NumberCell 20+6+32=58、
+/// Slider h24）。
 /// 保存钮已移除（返回首页自动保存）：scroller 直达页底。
 mod geom {
     /// 卡内容横 padding = shadowHost 8 + innerCol 12（对齐 QML 卡内区域）。

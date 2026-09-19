@@ -1,3 +1,6 @@
+> **历史存档**（2026-09-19 自 `docs/validation/window-experience.md` 移入 docs/history/）。内容冻结于归档时点，
+> 不再维护；与现状冲突时以活文档（README / docs/）为准。
+
 # 窗口体验验证记录
 
 - **日期**: 2026-09-05
