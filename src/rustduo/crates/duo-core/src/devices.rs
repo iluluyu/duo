@@ -145,10 +145,10 @@ mod tests {
 
     #[test]
     fn parse_known_states_and_skips_noise() {
-        let out = "List of devices attached\na1b2c3d4\tdevice\nabc\toffline\nxyz\tunauthorized\nr\trecovery\nbad\tmumbling\nincomplete\n";
+        let out = "List of devices attached\nTESTSERIAL\tdevice\nabc\toffline\nxyz\tunauthorized\nr\trecovery\nbad\tmumbling\nincomplete\n";
         let states = parse_device_states(out);
         assert_eq!(states.len(), 4);
-        assert_eq!(states.get("a1b2c3d4").map(String::as_str), Some("device"));
+        assert_eq!(states.get("TESTSERIAL").map(String::as_str), Some("device"));
         assert_eq!(states.get("r").map(String::as_str), Some("recovery"));
         assert!(!states.contains_key("bad"));
         assert!(!states.contains_key("incomplete"));
@@ -158,7 +158,9 @@ mod tests {
     #[test]
     fn query_failure_rides_grace_window() {
         let mut m = MonitorState::new();
-        let good: DeviceStates = [("a1b2c3d4".into(), "device".into())].into_iter().collect();
+        let good: DeviceStates = [("TESTSERIAL".into(), "device".into())]
+            .into_iter()
+            .collect();
         assert_eq!(m.apply_query(Ok(good.clone())), Some(good.clone()));
         // 单次失败：保持旧地图、无事件、标记 degraded。
         assert_eq!(m.apply_query(Err("flake".into())), None);

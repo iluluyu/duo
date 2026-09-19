@@ -650,13 +650,13 @@ mod tests {
         let argv = overlay_command(&args(
             "/x/DuoChromeOverlay.exe",
             "不背单词",
-            "a1b2c3d4",
+            "TESTSERIAL",
             "C:\\a.exe",
             true,
         ));
         assert_eq!(argv[0], "/x/DuoChromeOverlay.exe");
         assert_eq!(value_after(&argv, "--title"), "不背单词");
-        assert_eq!(value_after(&argv, "--serial"), "a1b2c3d4");
+        assert_eq!(value_after(&argv, "--serial"), "TESTSERIAL");
         assert_eq!(value_after(&argv, "--adb"), "C:\\a.exe");
         assert_eq!(value_after(&argv, "--home"), "1");
         assert!(!argv.join(" ").contains("TitleB64"));
