@@ -3,7 +3,7 @@
 //! 模块由初代 Python 栈逐个对译（史话见 docs/history/pyduo.md），行为
 //! 合同全部镜像为 #[cfg(test)]。
 //! 纯逻辑层零外部依赖；进程层（session/adb/monitor/apps）与宿主窗口在
-//! 0.2.2/0.3 进入本 crate 的 bin 目标。设计记录：docs/window-experience.md §14。
+//! 0.2.2/0.3 进入本 crate 的 bin 目标。设计记录：docs/history/window-overlay-experiments.md §14。
 
 pub mod adb;
 pub mod apps;

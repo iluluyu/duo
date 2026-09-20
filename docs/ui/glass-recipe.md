@@ -30,7 +30,7 @@ MenuGlassPlate（菜单大小）
 三表面家族（胶囊/菜单/下巴）统一 **tint 0%**——可辨性改由光学增益 +
 描边承担（用户链：72% 白 tint 判「奶白」）。饱和增益只在彩色底景有价值
 （无彩画布 ×1.45 不可感）；描边定 12% 黑（纯白画布 31 级暗刻防溶底）。
-视频侧胶囊对齐见 window-experience.md §11。
+视频侧胶囊对齐见 docs/history/window-overlay-experiments.md §11。
 
 ## 2. 硬规则
 
@@ -90,7 +90,7 @@ MenuGlassPlate（菜单大小）
 - **QML 菜单**：`Style.menuGlass = glassBlur && glassWanted`；任一为假走
   不透明 menuFill 回退（亮 #F7F7F9 / 暗 #2C2C2E）。
 - **会话窗上巴/下巴**：argv `--glass 0|1`（controller 每次 fresh-read）；
-  关 = C# 普通材质（window-experience.md §11）。
+  关 = C# 普通材质（window-experience.md §13 玻璃材质总开关）。
 - 语义：关玻璃 ≠ 降级——另一种正式材质，双主题都验收。
 
 ## 7. 文字保底光晕（QML 侧；2026-09-14 软光晕定稿）
@@ -236,7 +236,7 @@ contrast 0.06 单侧）**
   `ShadowKnee`（三次 Hermite，半宽 0.05）。
 - **保留**：DryGlass 干底待命、墨色/rim/hover/pill 自适应状态机、pin rim、
   `--glass 0` 普通材质（Win11 系统面 + hairline，window-experience.md
-  §11）、采样节奏与邻带替换（自反馈抑制）。
+  §13）、采样节奏与邻带替换（自反馈抑制）。
 - **验证**：Windows csc 真编译门禁过（tests/test_chrome.py 源码 marker 测
   试同步改钉 §8 符号）；glass.rs 亮/暗单位测试（黑底 ≥4.5:1、平画布落点
   251±2、双膝单调连续）+ PNG probe 对拍（DUO_GLASS_PROBE：旧亮配方冲白 +

@@ -10,8 +10,18 @@
 
 ## 1. 运行前置准备
 
-1. **环境工具**：
-   - `adb.exe` 与 `scrcpy.exe` 须在系统 `PATH`（推荐通过 `scoop install adb scrcpy` 安装，或在 Duo 设置页固定路径）。
+1. **环境工具**：`adb.exe` 与 `scrcpy.exe` 须在系统 `PATH`（或在 Duo
+   设置页「引擎」卡固定路径）。推荐 Scoop 安装（用户级、免管理员、
+   上游发版当天即可跟进，完整步骤见 [README ▸ 快速上手](../README.md#快速上手windows)）：
+
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   irm get.scoop.dev | iex
+   scoop install git
+   scoop install adb scrcpy     # 需要 scrcpy ≥ 4.1
+   # 日常保持最新：
+   scoop update && scoop update adb scrcpy
+   ```
 2. **安卓设备准备**：
    - 开启系统「开发者选项」并允许「USB 调试」。
    - 首次连接电脑时在手机/平板端勾选「一律允许此计算机进行调试」。

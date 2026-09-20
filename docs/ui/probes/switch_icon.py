@@ -4,7 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CANDIDATES_DIR = ROOT / "docs" / "ui" / "mockups" / "icon_candidates"
 TARGET = ROOT / "src" / "rustduo" / "assets" / "duo.ico"
 

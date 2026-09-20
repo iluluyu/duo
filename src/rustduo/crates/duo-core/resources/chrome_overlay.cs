@@ -334,7 +334,7 @@ namespace DuoChrome
             {
                 // TODO 0.1：SetParent 嵌入实验——宿主窗口 + 子窗口，全部
                 // 三明治面（下巴/胶囊/热区）不建。设计与验收见
-                // docs/window-experience.md §14。
+                // docs/history/window-overlay-experiments.md §14。
                 using (EmbedHost host = new EmbedHost(title, embedStyle))
                 {
                     Application.Run(host);
@@ -361,7 +361,7 @@ namespace DuoChrome
     // client. The scrcpy window becomes a pure video surface; every
     // hand-rolled affordance (edge strips, z-order sandwich,
     // location-change hooks, taskbar-guard chin) is replaced by the host.
-    // docs/window-experience.md §14.
+    // docs/history/window-overlay-experiments.md §14.
     //
     // Input: clicks land on the child directly; keyboard needs help -
     // focus follows the HOST on activation, so WM_ACTIVATE/WM_SETFOCUS
@@ -1036,7 +1036,7 @@ namespace DuoChrome
                 {
                     if (Supersample)
                     {
-                        // 3× 超采样和盒降采样配方见 docs/window-experience.md §11。
+                        // 3× 超采样和盒降采样配方见 docs/history/window-overlay-experiments.md §11。
                         const int Ss = 3;
                         using (Bitmap hi = new Bitmap(Width * Ss, Height * Ss,
                             PixelFormat.Format32bppArgb))
@@ -1203,7 +1203,7 @@ namespace DuoChrome
         /// semi-transparent pixel (capsule silhouette ramp, hairlines,
         /// hover washes, dry glass) rendered over-bright with a crunchy
         /// edge. rgb x a/255 in place before every push; opaque rows skip.
-        /// Root cause analysis: docs/window-experience.md §11 通透化修订.</summary>
+        /// Root cause analysis: docs/history/window-overlay-experiments.md §11 通透化修订.</summary>
         internal static void PremultiplyAlpha(Bitmap bmp)
         {
             Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
@@ -1598,7 +1598,7 @@ namespace DuoChrome
         /// TextRenderer is GDI text and alpha-blind - on the layered
         /// bitmap its anti-aliasing collapsed into hard jaggies. The
         /// GenericTypographic measure keeps the optical centering
-        /// TextRenderer had. See docs/window-experience.md §11 通透化修订.</summary>
+        /// TextRenderer had. See docs/history/window-overlay-experiments.md §11 通透化修订.</summary>
         internal static void DrawGlyph(Graphics g, string glyph, Font font,
             Rectangle box, Color color)
         {
@@ -1640,7 +1640,7 @@ namespace DuoChrome
                 Render();
             };
             // WinForms MouseClick 对右键同样触发：触键左键专属，右键语义
-            // （胶囊固定）由子类 WireInput 叠加（docs/window-experience.md §11）。
+            // （胶囊固定）由子类 WireInput 叠加（docs/window-experience.md §10）。
             MouseClick += delegate(object s, MouseEventArgs e)
             {
                 if (e.Button != MouseButtons.Left) return;
@@ -2564,7 +2564,7 @@ namespace DuoChrome
 
         /// <summary>毛玻璃底色自适应（Opus 裁决）：无白 tint 后字形/rim/
         /// hover 随采样底亮度翻转，阈值 0.50 ± 0.04 迟滞。判原始采样亮度
-        /// （矩阵 +0.07 lift 之前）。见 window-experience.md §11 毛玻璃化。</summary>
+        /// （矩阵 +0.07 lift 之前）。见 docs/history/window-overlay-experiments.md §11 毛玻璃化。</summary>
         public override void SetSample(Bitmap behind, Rectangle core)
         {
             base.SetSample(behind, core);
@@ -2611,7 +2611,7 @@ namespace DuoChrome
             if (old != null) old.Dispose();
         }
 
-        /// <summary>右键胶囊任意处 = 固定/取消固定（docs/window-experience.md §11）。
+        /// <summary>右键胶囊任意处 = 固定/取消固定（docs/window-experience.md §10）。
         /// 右键只切固定、绝不触键（触键左键专属，见共享 WireInput 守卫——
         /// 字形圆占胶囊宽度约八成，无守卫时右键按左键同效触发 ─/⤢/✕）。
         /// native 顶（真系统标题栏恒在）固定语义不适用：不接线，右键无操作。</summary>
@@ -3500,7 +3500,7 @@ namespace DuoChrome
 
         public bool BottomNone { get { return "none".Equals(_bottomMode); } }
 
-        /// <summary>右键胶囊固定态（docs/window-experience.md §11）：固定时
+        /// <summary>右键胶囊固定态（docs/window-experience.md §10）：固定时
         /// immersive 胶囊在 engaged 期间常驻，不再依赖顶缘近距露出；
         /// native 顶（系统标题栏恒在）与 none 顶不适用。</summary>
         public bool TopPinned { get { return _topPinned; } }
