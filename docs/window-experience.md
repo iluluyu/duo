@@ -536,6 +536,8 @@ scrcpy.exe + 会话 Duo.exe，还握着 panel 日志句柄（次日 WinError 32 
 > **2026-09-19**：下巴 native 已改「窗内浮动岛 + 非分层 DWM 窗」，
 > 几何/窗口形态/玻璃通道见 `docs/ui/chin-island-acrylic.md`；本节
 > frost 参数与 --glass/--bar-theme 契约仍是实现口径（历史定稿保留）。
+> **2026-09-23**：下巴再改「窗外系统条 + Mica，沉浸下巴玻璃胶囊」，
+> 见 chin-island-acrylic.md §6；本节 frost 参数仅余 frost 回落路径在用。
 
 ### 下巴 native 毛玻璃统一（与胶囊/菜单同族）
 

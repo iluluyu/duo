@@ -4,6 +4,9 @@
 > Windows 原生亚克力（或适合本场景的等价物），既美观又降低渲染压力；
 > 玻璃关闭时同样不得有像素块。本文是该改造的唯一论述文档；
 > glass-recipe.md §8.6 与 window-experience.md §10-§13 只留指路注释。
+>
+> **2026-09-23 §6 生效化改版**（沉浸下巴玻璃胶囊 + native 窗外 Mica）
+> 取代 §3 的几何/材质矩阵；§2 的机制链仍是唯一依据。
 
 ## 1. 根因：像素块 = corner ears
 
@@ -103,3 +106,55 @@ native 下巴 = **非分层普通窗**（去 `WS_EX_LAYERED`，保留
 - 遗留观察项：frost 300ms 心跳在动态视频上有拖影延迟（静态截图
   验不出，待真机视频自测）；accent 通道（pre-24H2）药丸恒白在亮
   视频帧上对比边际偏弱（已接受，SWCA 失败即不走该路）。
+
+## 6. 定稿（2026-09-23，三轮真机反馈收敛；当前实现）
+
+### 6.1 沉浸下巴 = 常驻液态玻璃小横条
+
+- 形态：一根 140×8 DIP 药丸，居中于 180×24 DIP 热区窗口，岛底距
+  client 底缘 6 DIP；engaged 即常驻、固定居中贴底。热区其余部分
+  alpha=1 ghost 填充保命中：点击=返回，长按 350ms 药丸长到 168 并
+  闪白 = HOME/关会话；热区外穿透。窗口过窄/过矮整岛隐藏。
+- 材质（`PaintImmersivePill` 三层）：§8.6 frost 直贴（背景透玻璃
+  可辨）→ 随背景反转调色纱（暗底白纱 58% / 亮底黑纱 36%，探针
+  `_barDark` 0.50±0.04 迟滞）→ 液态玻璃高光层（顶部镜面高光
+  150/96 自上衰减 + 底部反光 56/40 + 1px 内缩白描边，hover 增亮）。
+  `--glass 0` = 实色药丸随主题。采样：`SampleIsland`（PrintWindow
+  全窗采样 → 热区 + 3σ 裁剪 → `SetNativeSample` 烘焙，常驻 300ms
+  档，`CaptureWindowSample` 同拍 memo）。
+
+### 6.2 native 下巴 = 窗外系统条（全屏自动切沉浸）
+
+- 几何/层级：贴视频可见底缘下方通栏 32 DIP；顶部 tucked 8 DIP、
+  z 序沉到视频窗正下方（`InsertBelowVideo`）——视频盖住条的上缘/
+  接缝/上侧阴影（零缝），DWMWCP_ROUND 原生圆角与系统柔影只在
+  下/侧缘可见 = 窗口页脚观感（SetWindowRgn 区域圆角对 DWM
+  backdrop 无效，三轮实证弃用）。拖条 = 底边 resize；SyncChin
+  （tick + LOCATIONCHANGE 钩子）跟随。
+- 全屏切换（用户拍板）：放不下整条 / 假最大化 / 真最大化
+  （IsZoomed）→ 撤窗外条、换沉浸小横条（`_island`，native 模式
+  常建），还原后换回。
+- 材质：Mica = `DWMSBT_MAINWINDOW` +
+  `DwmExtendFrameIntoClientArea(-1)`，黑色像素透出（Win32 标准配
+  方；blurbehind+零 alpha 实证只透桌面，弃用）；零采样零 CPU。
+  药丸 AlphaBlend √A 补偿；暗模式随 --bar-theme。attr 38 失败
+  回落 frost（`SampleNativeChin` CopyFromScreen，配方同 §3.2）；
+  pre-22H2 ULW 路径同几何。
+
+### 6.3 待真机验收（当前）
+
+- 沉浸：常驻居中、黑底亮/亮底暗反转、液态玻璃高光、点击/长按
+  语义、拖窗跟随。
+- native：与视频零缝、底圆角+柔影、Mica 材质（日志
+  「chin mica live」；不显材质则 `_sysBackdrop=false` 一行回落
+  frost）、最大化/全屏切岛再撤回。
+- 125%/150% DPI 与双屏：热区居中、tuck、采样 margin。
+
+### 6.4 演进记录
+
+- 2026-09-23 一轮：生效化（胶囊岛 + 窗外 Mica；SWCA accent 退役）；
+  Gemini 3.8 Flash 评审 P1×3/P2×3 修复。
+- 二轮反馈：Mica 不可见 → ExtendFrameIntoClientArea 配方；有缝
+  → tuck；最大化浮岛 → 隐藏；胶囊壳否决 → 常驻小横条。
+- 三轮反馈：沉浸条加液态玻璃高光；底圆角失效 → z 下沉 + DWM
+  原生圆角；全屏切沉浸岛再撤回。
