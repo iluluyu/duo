@@ -16,10 +16,13 @@
 //                                   glass (docs/ui/glass-recipe.md §8.6);
 //                                   right-click on it toggles
 //                                   pin (stays revealed)
-//   always-on (window visible)   -> chin: "<" back (adb keyevent);
-//                                   "O" hold: HOME on every display
-//                                   (virtual-desktop layer hint; vendors
-//                                   may flesh it out - close is on ✕)
+//   always-on while engaged       -> immersive chin: ONE frosted-glass
+//                                   home-indicator pill, fixed at the
+//                                   bottom center (§8.6 frost + adaptive
+//                                   counter-tone scrim: dark bg -> light
+//                                   pill, light bg -> dark pill);
+//                                   tap pill = back (adb keyevent),
+//                                   hold = HOME / close session
 //
 // Resize policy comes from --display-mode: mirror/fixed windows stay glued
 // to the video aspect ratio (live sizes are tailed from the session log,
@@ -36,12 +39,13 @@
 // default - never a self-drawn bar. The overlay then paints exactly ONE
 // thing up there: the 4th caption button (aspect-preserving emulated
 // maximize) riding left of the system's own ─ □ ✕ cluster. --chrome-bottom
-// native keeps the C1 chin as a FLOATING island inset from the video
-// window's bottom corners (no seam, so no corner ears). On Win11 22H2+
-// the island is a plain non-layered window carrying the REAL system
-// acrylic (DWMSBT_TRANSIENTWINDOW + DwmEnableBlurBehindWindow alpha
-// channel); older systems keep the hand-sampled ULW frost
-// (docs/ui/glass-recipe.md §8.6; 全链设计 docs/ui/chin-island-acrylic.md).
+// native docks the chin OUTSIDE the window: a full-width 32 DIP bar TUCKED
+// flush under the video window's visible bottom edge (zero gap, no DWM
+// shadow at the seam, bottom corners rounded via window region), carrying
+// the REAL Mica (DWMSBT_MAINWINDOW + DwmExtendFrameIntoClientArea) on
+// Win11 22H2+ - zero sampling, zero CPU blur, DWM-side material; older
+// systems keep the hand-sampled ULW frost (docs/ui/glass-recipe.md §8.6;
+// 全链设计 docs/ui/chin-island-acrylic.md §6).
 //
 // None chrome (2026-09-09): --chrome-top/--chrome-bottom none = that edge never grows a visible bar (see docs/window-experience.md §10).
 //
@@ -50,19 +54,20 @@
 // window itself (PrintWindow PW_RENDERFULLCONTENT / CopyFromScreen), then
 // run through the §8 glass pipeline - 3×box blur σ8 → optical gains with
 // soft-knee rolloffs → vertical sheen - opaque plate, premultiplied before
-// the push (docs/ui/glass-recipe.md §8.2/§8.6).
-// No OS composition API dependency - the SetWindowCompositionAttribute
-// route returns E_FAIL on Win11 24H2.
+// the push (docs/ui/glass-recipe.md §8.2/§8.6). The one OS-composited
+// surface is the native chin's Mica (attr 38, DWM side); the SWCA
+// composition route stays retired (E_FAIL on Win11 24H2).
 //
 // The window is repaired after discovery: WS_THICKFRAME is re-asserted so
 // native edge resize (and Win11 snap) keeps working, and DWMWCP_ROUND is
 // declared so the corners follow the Windows 11 rounding convention
 // (2026-09-09 组合矩阵定稿：Windows 自带圆角无处不在). The native chin
-// never touches those corners anymore - it floats INSIDE the window with
-// margins (chin-island-acrylic.md), so the old corner ears (8 DIP seam
-// patches over the video's rounded bottom corners) are gone entirely.
-// Only the G2 region squares the video window (its own outline + AA
-// masks own every corner); no bar-mode combination ever does.
+// is its OWN square-top window TUCKED under the video window's bottom
+// edge - it never touches the video's corners from outside, so the old
+// corner ears (8 DIP seam patches over the video's rounded bottom
+// corners) stay retired. Only the G2 region squares the video window
+// (its own outline + AA masks own every corner); no bar-mode
+// combination ever does.
 //
 // Z-order: NO overlay surface is an always-on-top orphan. Each one is
 // inserted DIRECTLY ABOVE the video window (SetWindowPos with the video
@@ -177,12 +182,11 @@ namespace DuoChrome
         [DllImport("dwmapi.dll")]
             public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
         [DllImport("dwmapi.dll")]
-            public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT pv, int cb);
-        [DllImport("dwmapi.dll")]
-            public static extern int DwmEnableBlurBehindWindow(IntPtr h, ref DWM_BLURBEHIND bb);
+            public static extern int DwmExtendFrameIntoClientArea(IntPtr h, ref MARGINS m);
         [StructLayout(LayoutKind.Sequential)]
-            public struct DWM_BLURBEHIND
-            { public int Flags; public int Enable; public IntPtr Region; public int TransitionOnMaximized; }
+            public struct MARGINS { public int Left, Right, Top, Bottom; }
+        [DllImport("dwmapi.dll")]
+            public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT pv, int cb);
         [DllImport("gdi32.dll")] public static extern bool PatBlt(IntPtr dc, int x, int y, int w, int h, uint rop);
         [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
         [DllImport("msimg32.dll")]
@@ -198,15 +202,6 @@ namespace DuoChrome
                 public byte ProductType; public byte Reserved;
             }
         [DllImport("ntdll.dll")] public static extern int RtlGetVersion(ref OSVERSIONINFOEXW v);
-        [StructLayout(LayoutKind.Sequential)]
-            public struct ACCENT_POLICY
-            { public int State; public int Flags; public int GradientColor; public int AnimationId; }
-        [StructLayout(LayoutKind.Sequential)]
-            public struct WINDOWCOMPOSITIONATTRIBUTEDATA
-            { public int Attribute; public IntPtr Data; public int DataSize; }
-        [DllImport("user32.dll")]
-            public static extern int SetWindowCompositionAttribute(
-                IntPtr h, ref WINDOWCOMPOSITIONATTRIBUTEDATA data);
 
         public delegate void WinEventDelegate(IntPtr hHook, uint evt, IntPtr hwnd,
             int idObject, int idChild, uint thread, uint time);
@@ -1547,10 +1542,9 @@ namespace DuoChrome
         /// <summary>The bar's paint + hit footprint: the union of shapes
         /// the layered bitmap paints alpha into. Unpainted pixels stay
         /// alpha=0 and pass clicks through, so this Region IS the hit
-        /// region too. Default: the rounded bar body alone. The native
-        /// chin overrides it to add its corner ears (ChinWindow.ClipRegion
-        /// - 8 DIP squares lapping over the video window's rounded-corner
-        /// notches at the seam).</summary>
+        /// region too. Default: the rounded bar body alone (the native
+        /// chin's ULW fallback consumes it; ghost surfaces use MaskPath
+        /// instead).</summary>
         protected virtual Region ClipRegion()
         {
             using (GraphicsPath clip = RoundedPath(
@@ -1697,39 +1691,57 @@ namespace DuoChrome
     }
 
     // -------------------------------------------------------------------------
-    // The chin: persistent bottom bar with one centered control. Physical
-    // mirroring shows the mBack ring (tap = back, long-press = home on the
-    // phone's real launcher). Virtual displays (flex/fixed) show the same
-    // ring - one glyph, one gesture everywhere: long-press = HOME (the
-    // virtual-desktop layer; vendors may flesh it out later). Closing a
+    // The chin: persistent bottom affordance with one centered control
+    // (tap = BACK via adb keyevent, press-and-hold = HOME / close session).
+    // Two forms (2026-09-23 三轮真机反馈定稿, chin-island-acrylic.md §6):
+    // immersive = ONE always-on frosted-glass home-indicator pill, fixed
+    // at the bottom center - §8.6 frost of the video behind it plus an
+    // ADAPTIVE counter-tone scrim (dark bg -> light pill, light bg ->
+    // dark pill) and LIQUID-GLASS specular highlights (top gloss, bottom
+    // reflection, hairline rim); native = a full-width bar docked OUTSIDE
+    // the window, tucked flush under the video window's visible bottom
+    // edge (zero gap) and stacked BELOW the video window in z-order, so
+    // DWM native rounding + soft shadow show only below/sides (window-
+    // footer look) while the video covers the tucked top edge/seam;
+    // Mica on Win11 22H2+ (frost fallback on older systems). When the
+    // video is maximized/fullscreen the native form swaps to the
+    // immersive pill and back on restore (user 2026-09-23). Closing a
     // session lives on the capsule's ✕ only.
     // -------------------------------------------------------------------------
     internal sealed class ChinWindow : OverlayWindow
     {
         public const int LogicalHeight = 44;
-        public const int LogicalHeightNative = 32;   // native island 高（DIP）
+        public const int LogicalHeightNative = 32;   // native bar 高（DIP）
         private const int LogicalButton = 36;   // hit zone (paint is a 4px pill)
+        // 沉浸小横条（热区即窗口；药丸长条）：常驻、居中、贴底 6 DIP
+        private const int IslandW = 180;       // 热区宽（DIP，含按住生长余量）
+        private const int IslandH = 24;        // 热区高（DIP）
+        private const int PillRestW = 140;     // 药丸静止宽（DIP）
+        private const int PillHoldW = 168;     // 按住生长上限（DIP）
+        private const int PillH = 8;           // 药丸高（DIP，液态玻璃高光层）
+        private const int IslandSeat = 6;      // 岛底距窗口底缘（DIP）
         private const int HoldMs = 350;        // agy 2026-09-08: pill fully grown = HOME
-        // adaptive pill colors (native bar): dark on a bright bar, white on
-        // a dark bar - the ULW fallback picks by sampled luminance, the DWM
-        // island picks by the theme that chose its acrylic variant.
+        // adaptive pill colors: dark on a bright bar, white on a dark bar -
+        // the ULW paths pick by sampled luminance, the Mica island picks by
+        // the theme that chose its backdrop variant.
         private static readonly Color PillDark = Color.FromArgb(102, 29, 29, 31);
         private static readonly Color PillLight = Color.FromArgb(155, 255, 255, 255);
 
         private readonly bool _native;
         // DWM island path (Win11 22H2+): plain non-layered window with
-        // DWMWCP_ROUND + system shadow. Glass resolution order
-        // (chin-island-acrylic.md §2 真机证据链):
-        //   1. accent acrylic (SWCA ACCENT_ENABLE_ACRYLICBLURBEHIND) = REAL
-        //      native content blur where the OS still allows it (pre-24H2);
+        // DWMWCP_ROUND + native bottom corners/soft shadow, docked BELOW
+        // the video window in z-order and tucked flush under its visible
+        // bottom edge (the video covers the top edge/seam/shadow).
+        // Glass resolution (chin-island-acrylic.md §2/§6 真机证据链):
+        //   1. Mica (DWMSBT_MAINWINDOW + DwmExtendFrameIntoClientArea(-1))
+        //      - black pixels reveal the material, DWM-side, zero
+        //      sampling / zero CPU blur (blurbehind+zero-alpha was
+        //      measured showing plain transparency, not Mica);
         //   2. frost fallback = §8.6 hand-baked plate (CopyFromScreen + σ8
-        //      CPU blur) painted opaque onto the non-layered surface —
-        //      verified working on 24H2 (SWCA returns 0x1 there, handle-
-        //      created AND post-show, layered and not).
-        // DWMSBT_TRANSIENTWINDOW was measured sampling the wallpaper only
-        // (not window content) and is disqualified for over-video glass.
+        //      CPU blur) painted opaque onto the non-layered surface.
+        // The pill rides an AlphaBlend (√A compensation).
         private readonly bool _dwm;
-        private bool _glassAccent;
+        private bool _sysBackdrop;             // Mica live (DWM path)
         private bool _barDark = true;          // raw-sample luminance: dark bar -> white pill
         private Bitmap _frost;                // baked frost plate (SetNativeSample 烘焙）
         // σ8 device px 与 sheen 由共享 GlassSigma 承担（BakeGlassPlate）；
@@ -1743,41 +1755,49 @@ namespace DuoChrome
 
         public ChinWindow(Controller owner, bool home, string displayMode, string mode)
             : base(owner,
-                   (int)((NativeMode(mode) ? 8f : 0f) * ScaleOf()),
-                   (int)((NativeMode(mode) ? 8f : 18f) * ScaleOf()))
-        {
-            // Native mode: a real, always-visible floating island inset
-            // from the video window's bottom corners - no seam against
-            // the video's DWM rounding, so no corner ears exist anymore.
-            // Immersive keeps the ghost hot-zone - zero change.
+                   0,
+                   (int)((NativeMode(mode) ? 8f : 0f) * ScaleOf()))
+        {   // 顶边恒方（贴齐视频底无缝）；native 底两角圆（DWM 路径由
+            // ApplyBarRegion 区域负责，ULW 回落路径由本圆角 ClipRegion 负责）
+            // Native mode: an always-visible bar docked OUTSIDE the window,
+            // tucked flush under the video window's visible bottom edge.
+            // Immersive mode: the band is ONE always-on frosted-glass pill
+            // in a small fixed hot-zone window (ghost fill keeps the zone
+            // hit-testable; supersample keeps the pill edge AA).
             _native = NativeMode(mode);
             _dwm = _native && Controller.OsBuildNumber >= 22621;
             GhostBackdrop = !_native;
+            if (!_native) Supersample = true;   // pill AA
             if (_dwm)
             {
-                // DWM island paints straight onto the window surface
-                // (per-pixel alpha via DwmEnableBlurBehindWindow at handle
-                // creation); WinForms buffering would blit through GDI
-                // and lose the alpha channel.
+                // DWM bar paints straight onto the window surface (opaque
+                // GDI + AlphaBlend pill); WinForms buffering would blit
+                // through GDI and lose the alpha channel.
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque
                     | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
                 DoubleBuffered = false;
             }
             int btn = (int)(LogicalButton * Dpi);
             int h = BarHeight;
-            Size = new Size(600, h);           // width resynced by the controller
+            // 沉浸 = 小热区即窗口（药丸常驻其内）；native 保持通栏条，
+            // 宽度由控制器同步。
+            Size = _native ? new Size(600, h) : new Size(
+                (int)Math.Round(IslandW * Dpi), (int)Math.Round(IslandH * Dpi));
             // Glyph follows the DISPLAY TYPE, not the home flag: a flex
             // session without --app runs with home=1 but is still a virtual
             // display with no launcher to go home to (see ChinHold). The
             // single control stays centered either way - only the glyph
             // changes, so no layout or width bookkeeping is needed.
-            // mBack homage: one centered ring for every mode. Tap = BACK
+            // mBack homage: one centered pill for every mode. Tap = BACK
             // (AdbKey 4); press-and-hold = Ctrl.ChinHold() (HOME on physical
             // mirroring, session close on virtual displays). The glyph never
             // changes by mode - users learn one shape (2026-09-06: a mode-
             // switching glyph read as a regression; reverted).
+            // 2026-09-23 二轮：常驻小横条——热区即按钮。
             Buttons.Add(new NavButton(
-                new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn),
+                _native
+                    ? new Rectangle((600 - btn) / 2, (h - btn) / 2, btn, btn)
+                    : new Rectangle(0, 0, Width, Height),
                 1, delegate { Ctrl.AdbKey(4); }, false));
             _hold = new Timer { Interval = HoldMs };
             _hold.Tick += delegate
@@ -1808,10 +1828,10 @@ namespace DuoChrome
         /// <summary>True = DWM island path (non-layered window).</summary>
         internal bool DwmBackdrop { get { return _dwm; } }
 
-        /// <summary>True = accent acrylic live on the island (no sampling
+        /// <summary>True = 系统底材（Mica）live on the island (no sampling
         /// needed); false on the DWM path = frost fallback wants samples.
         /// Non-DWM (ULW fallback) path always wants samples.</summary>
-        internal bool GlassAccent { get { return _glassAccent; } }
+        internal bool SysBackdrop { get { return _sysBackdrop; } }
 
         /// <summary>Overscan 采样边距（物理 px）：≥ 3σ，模糊核永远采到
         /// 条可见区之外的真实内容（glass-recipe.md 硬规则 2）。</summary>
@@ -1918,58 +1938,171 @@ namespace DuoChrome
                 PaintNativePill(g);
                 return;
             }
-            // Invisible resize sliver along the very bottom (alpha=1 is enough
-            // to stay hit-testable while visually imperceptible).
-            using (SolidBrush band = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
-                g.FillRectangle(band, 0, Height - S6(), Width, S6());
-            foreach (NavButton b in Buttons)
+            PaintImmersivePill(g);
+        }
+
+        /// <summary>热区宽度（device px，SyncChin 退化守卫用）。</summary>
+        internal int IslandWidthPx { get { return (int)Math.Round(IslandW * Dpi); } }
+
+        /// <summary>沉浸小横条热区几何同步：client 底部居中，岛底距底缘
+        /// IslandSeat DIP；Bounds 变化才重排（拖窗跟随钩子每拍调用）。</summary>
+        public void SyncIsland(Rectangle client)
+        {
+            float w = IslandW * Dpi, h = IslandH * Dpi;
+            Rectangle want = new Rectangle(
+                client.Left + (int)Math.Round((client.Width - w) / 2f),
+                client.Bottom - (int)Math.Round(IslandSeat * Dpi)
+                    - (int)Math.Round(h),
+                (int)Math.Round(w), (int)Math.Round(h));
+            if (Bounds != want) Bounds = want;
+        }
+
+        /// <summary>药丸当前宽度（DIP，状态机）：静止 PillRestW，按住线性
+        /// 长到 PillHoldW（HOME 倒计时），闪白同 PillHoldW。</summary>
+        private float PillWidthNow()
+        {
+            NavButton b = Buttons[0];
+            if (_flashing) return PillHoldW;
+            if (b.Pressed)
             {
-                float cx = b.Circle.Left + b.Circle.Width / 2f;
-                // 2026-09-08: pill hugs the very bottom edge (center 9px up,
-                // iOS Home Indicator seating); the invisible 36px hit zone
-                // stays centered in the 44px band - it still covers the
-                // pill (zone spans y 4..40, pill spans y 7..11).
-                float cy = Height - 9f * Dpi;
-                // 2026-09-08 agy Opus verdict: AssistiveTouch glass disc is
-                // the wrong language for fixed chrome (suspension-ball
-                // cheapness); the back affordance is a horizontal PILL
-                // (iOS Home Indicator language): 4px tall, white, almost
-                // gone until touched. Tap = BACK, hold = the pill grows
-                // 28 -> 48 over HoldMs then flashes = HOME.
-                float alpha;
-                float widthL;
+                float t = Math.Min(1f, (float)
+                    (DateTime.UtcNow - _pressStart).TotalMilliseconds / HoldMs);
+                return PillRestW + (PillHoldW - PillRestW) * t;
+            }
+            return PillRestW;
+        }
+
+        /// <summary>全圆角胶囊路径（rt=rb=h/2，与 RoundedPath 同弧序）。</summary>
+        private static GraphicsPath CapsulePath(float x, float y, float w, float h)
+        {
+            GraphicsPath p = new GraphicsPath();
+            float r = h / 2f;
+            p.AddArc(x, y, 2f * r, 2f * r, 180, 90);
+            p.AddArc(x + w - 2f * r, y, 2f * r, 2f * r, 270, 90);
+            p.AddArc(x + w - 2f * r, y + h - 2f * r, 2f * r, 2f * r, 0, 90);
+            p.AddArc(x, y + h - 2f * r, 2f * r, 2f * r, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        /// <summary>沉浸下巴（2026-09-23 三轮真机反馈定稿）：**只有一根**
+        // 常驻小横条（不再有胶囊壳、不再近距触发）：居中、贴底固定座；
+        // 材质 = §8.6 frost 直贴（背景信息透过毛玻璃可辨）+ **随背景反
+        // 转的调色纱**（暗底 → 白纱提亮、亮底 → 黑纱压暗）+ **液态玻璃
+        // 高光层**（顶部镜面高光自上而下衰减 + 底部反光 + 1px 玻璃边
+        // 界描边，hover 增亮一档）——三层叠加 = Apple Liquid Glass 观感
+        // 的桌面化。明暗探针 _barDark 驱动纱色与高光强度。热区其余
+        // 部分 alpha=1 ghost 填充保命中。普通材质（--glass 0）= 实色
+        // 药丸（明暗随面板主题，无高光层）。</summary>
+        private void PaintImmersivePill(Graphics g)
+        {
+            using (SolidBrush ghost = new SolidBrush(Color.FromArgb(1, 0, 0, 0)))
+                g.FillRectangle(ghost, 0, 0, Width, Height);
+            float w = PillWidthNow() * Dpi, h = PillH * Dpi;
+            float x = (Width - w) / 2f, y = (Height - h) / 2f;
+            bool hot = Buttons[0].Hover;
+            using (GraphicsPath pill = CapsulePath(x, y, w, h))
+            {
+                if (!Ctrl.Glass)
+                {
+                    bool darkState = Ctrl.BarThemeDark;
+                    using (SolidBrush fill = new SolidBrush(darkState
+                        ? Color.FromArgb(210, 255, 255, 255)
+                        : Color.FromArgb(170, 29, 29, 31)))
+                        g.FillPath(fill, pill);
+                    return;
+                }
                 if (_flashing)
                 {
-                    alpha = 250f;
-                    widthL = 48f;
+                    using (SolidBrush flash = new SolidBrush(
+                        Color.FromArgb(250, 255, 255, 255)))
+                        g.FillPath(flash, pill);
+                    return;
                 }
-                else if (b.Pressed)
+                if (_frost == null)
                 {
-                    float t = Math.Min(1f, (float)
-                        (DateTime.UtcNow - _pressStart).TotalMilliseconds / HoldMs);
-                    alpha = 210f - 35f * t;          // 210 -> 175 while growing
-                    widthL = 28f + 20f * t;           // 28 -> 48
+                    using (SolidBrush dry = new SolidBrush(DryGlass))
+                        g.FillPath(dry, pill);
+                    return;
                 }
-                else
+                // frost 板与窗口 1:1 对齐，按药丸形状裁贴
+                g.SetClip(pill);
+                g.DrawImage(_frost, 0, 0, Width, Height);
+                using (SolidBrush scrim = new SolidBrush(_barDark
+                    ? Color.FromArgb(148, 255, 255, 255)   // 暗底 → 亮玻璃 58%
+                    : Color.FromArgb(92, 0, 0, 0)))        // 亮底 → 暗玻璃 36%
+                    g.FillRectangle(scrim, x, y, w, h);
+                // 液态玻璃高光（三层）：镜面高光 / 底部反光都垂直渐变，
+                // 强度随 _barDark 与 hover 自适应；描边勾玻璃边界
+                int spec = (_barDark ? 150 : 96) + (hot ? 40 : 0);
+                int refl = (_barDark ? 56 : 40) + (hot ? 16 : 0);
+                using (LinearGradientBrush top = new LinearGradientBrush(
+                    new RectangleF(x, y, w, h),
+                    Color.FromArgb(spec, 255, 255, 255),
+                    Color.FromArgb(0, 255, 255, 255),
+                    LinearGradientMode.Vertical))
+                    g.FillRectangle(top, x, y, w, h);
+                using (LinearGradientBrush bot = new LinearGradientBrush(
+                    new RectangleF(x, y, w, h),
+                    Color.FromArgb(0, 255, 255, 255),
+                    Color.FromArgb(refl, 255, 255, 255),
+                    LinearGradientMode.Vertical))
+                    g.FillRectangle(bot, x, y, w, h);
+                g.ResetClip();
+                using (Pen rim = new Pen(Color.FromArgb(
+                    (_barDark ? 76 : 52) + (hot ? 24 : 0), 255, 255, 255), 1f))
                 {
-                    alpha = b.Hover ? 155f : 95f;
-                    widthL = 36f;
+                    rim.Alignment = PenAlignment.Inset;
+                    g.DrawPath(rim, pill);
                 }
-                float h = 4f * Dpi, w = widthL * Dpi, r = h / 2f;
-                using (GraphicsPath pill = new GraphicsPath())
-                {
-                    float x = cx - w / 2f, y = cy - h / 2f;
-                    // pill: two cap circles (diameter = pill height) +
-                    // auto-connecting straight edges; each box is h×h
-                    pill.AddArc(x, y, h, h, 180, 90);           // left cap, top
-                    pill.AddArc(x + w - h, y, h, h, 270, 90);   // right cap, top
-                    pill.AddArc(x + w - h, y, h, h, 0, 90);     // right cap, bottom
-                    pill.AddArc(x, y, h, h, 90, 90);            // left cap, bottom
-                    pill.CloseFigure();
-                    using (SolidBrush white = new SolidBrush(Color.FromArgb(
-                        (int)alpha, 255, 255, 255)))
-                        g.FillPath(white, pill);
-                }
+            }
+        }
+
+        /// <summary>自适应药丸（返回/HOME 状态机共用）：darkState 决定药丸
+        /// 明暗（玻璃态跟采样亮度 _barDark，普通材质跟面板主题）；rest 28-
+        /// >36 DIP 宽，按住 350ms 长到 48 后闪白 = HOME。</summary>
+        private void PaintPill(Graphics g, float cx, float cy, bool darkState)
+        {
+            NavButton b = Buttons[0];
+            Color rgb = darkState ? PillLight : PillDark;
+            int restA = Ctrl.Glass ? (darkState ? 155 : 102) : (darkState ? 191 : 153);
+            int hoverA = Ctrl.Glass ? (darkState ? 204 : 166)
+                                    : Math.Min(255, restA + 50);
+            float alpha;
+            float widthL;
+            if (_flashing)
+            {
+                alpha = 250f;
+                widthL = 48f;
+            }
+            else if (b.Pressed)
+            {
+                float t = Math.Min(1f, (float)
+                    (DateTime.UtcNow - _pressStart).TotalMilliseconds / HoldMs);
+                alpha = darkState ? 215f - 30f * t : 170f - 30f * t;
+                widthL = 28f + 20f * t;           // 28 -> 48 (HOME countdown)
+            }
+            else
+            {
+                alpha = b.Hover ? hoverA : restA;
+                widthL = 36f;
+            }
+            float h = 4f * Dpi, w = widthL * Dpi;
+            Color fill = _flashing
+                ? Color.FromArgb(250, 255, 255, 255)
+                : Color.FromArgb((int)alpha, rgb.R, rgb.G, rgb.B);
+            using (GraphicsPath pill = new GraphicsPath())
+            {
+                float x = cx - w / 2f, y = cy - h / 2f;
+                // pill: two cap circles (diameter = pill height) +
+                // auto-connecting straight edges; each box is h×h
+                pill.AddArc(x, y, h, h, 180, 90);           // left cap, top
+                pill.AddArc(x + w - h, y, h, h, 270, 90);   // right cap, top
+                pill.AddArc(x + w - h, y, h, h, 0, 90);     // right cap, bottom
+                pill.AddArc(x, y, h, h, 90, 90);            // left cap, bottom
+                pill.CloseFigure();
+                using (SolidBrush brush = new SolidBrush(fill))
+                    g.FillPath(brush, pill);
             }
         }
 
@@ -1979,34 +2112,44 @@ namespace DuoChrome
             return m != null && m.Equals("native");
         }
 
-        /// <summary>存屏采样并烘焙下巴毛玻璃（§8.6 移植）：亮度判据与胶囊
-        /// 同源——原始采样（模糊前、邻带替换后）中心区 BT.709 均值，0.50
-        /// ± 0.04 迟滞；玻璃单位档/药丸/hover 洗色全部跟随同一状态。
-        /// capture 携带 FrostMargin 对称 margin（屏幕边缘被 VirtualScreen 裁剪
-        /// 时钳位），BuildChinFrost 完成坐标映射。</summary>
-        public void SetNativeSample(Bitmap behind)
+        /// <summary>采样落地（两路径共用：沉浸小横条 PrintWindow 裁剪 /
+        /// native frost 回落 CopyFromScreen）：core = 条/热区矩形在
+        /// capture 坐标系的精确映射（贴屏边钳位不对称，不假设对称
+        /// margin），ProbeAndBake 完成探针 + 烘焙。</summary>
+        public void SetNativeSample(Bitmap behind, Rectangle core)
         {
             SetSample(behind);
             if (behind == null || behind.Width < 4 || behind.Height < 4)
             {
-                if (_frost != null) { _frost.Dispose(); _frost = null; }
+                DropFrost();
                 Render();
                 return;
             }
+            ProbeAndBake(behind, core);
+            Render();
+        }
+
+        private void DropFrost()
+        {
+            if (_frost != null) { _frost.Dispose(); _frost = null; }
+        }
+
+        /// <summary>明暗探针 + 烘焙（两路径共用）：亮度判据与胶囊同源——
+        /// 原始采样（模糊前）core 区 BT.709 均值，0.50 ± 0.04 迟滞；玻璃
+        /// 单位档/药丸/高光描边全部跟随同一状态。</summary>
+        private void ProbeAndBake(Bitmap capture, Rectangle core)
+        {
+            core.Intersect(new Rectangle(0, 0, capture.Width, capture.Height));
+            if (core.Width < 4 || core.Height < 4) return;
             try
             {
-                int my = Math.Max(0, (behind.Height - Height) / 2);
-                int bandTop = Math.Min(my, Math.Max(0, behind.Height - 4));
-                int bandH = Math.Max(1, Math.Min(behind.Height - bandTop, Height));
-                int x0 = Math.Max(0, behind.Width / 4);
-                int w = Math.Max(1, behind.Width / 2);
                 using (Bitmap probe = new Bitmap(32, 4))
                 using (Graphics pg = Graphics.FromImage(probe))
                 {
                     pg.InterpolationMode = InterpolationMode.Low;
                     pg.PixelOffsetMode = PixelOffsetMode.Half;
-                    pg.DrawImage(behind, new Rectangle(0, 0, 32, 4),
-                        new Rectangle(x0, bandTop, w, bandH), GraphicsUnit.Pixel);
+                    pg.DrawImage(capture, new Rectangle(0, 0, 32, 4),
+                        core, GraphicsUnit.Pixel);
                     double sum = 0;
                     for (int y = 0; y < 4; y++)
                         for (int x = 0; x < 32; x++)
@@ -2018,29 +2161,23 @@ namespace DuoChrome
                     if (_barDark && lum > 0.54) _barDark = false;
                     else if (!_barDark && lum < 0.46) _barDark = true;
                 }
-                BuildChinFrost(behind);
+                BuildChinFrost(capture, core);
             }
             catch { }
-            Render();
         }
 
-        /// <summary>下巴毛玻璃烘焙（§8.6 移植）：CopyFromScreen 采样（条
-        /// + 3σ margin）→ 3×box blur σ8 → §8.2 增益链（暗/亮单位档随
-        /// _barDark 探针）→ sheen → 不透明板。1440×40 杆件全链 <1ms，
-        /// 无需旧 1:2 预降采样路径。</summary>
-        private void BuildChinFrost(Bitmap capture)
+        /// <summary>下巴毛玻璃烘焙（§8.6 移植）：采样（core + 3σ margin）
+        /// → 3×box blur σ8 → §8.2 增益链（暗/亮单位档随 _barDark 探针）
+        /// → sheen → 不透明板。杆件全链 <1ms，无需旧 1:2 预降采样路径。</summary>
+        private void BuildChinFrost(Bitmap capture, Rectangle core)
         {
             Bitmap old = _frost;
             _frost = null;
             try
             {
-                int mx = Math.Max(0, (capture.Width - Width) / 2);
-                int my = Math.Max(0, (capture.Height - Height) / 2);
-                int cw = Math.Min(Width, capture.Width - mx);
-                int ch = Math.Min(Height, capture.Height - my);
-                if (cw >= 4 && ch >= 4)
-                    _frost = BakeGlassPlate(capture,
-                        new Rectangle(mx, my, cw, ch), _barDark);
+                core.Intersect(new Rectangle(0, 0, capture.Width, capture.Height));
+                if (core.Width >= 4 && core.Height >= 4)
+                    _frost = BakeGlassPlate(capture, core, _barDark);
             }
             catch { }
             if (old != null) old.Dispose();
@@ -2093,64 +2230,27 @@ namespace DuoChrome
                     g.FillRectangle(dry, 0, 0, Width, Height);
         }
 
-        /// <summary>agy v6 native chin pill. The acrylic surface comes from
-        /// DrawAcrylic; this paints the ADAPTIVE pill: centered, bottom
-        /// margin 14px, dark-on-light / white-on-dark. 玻璃态色源 = 采样
-        /// 亮度（_barDark）；普通材质色源 = 面板主题（不透明底无自适应，
-        /// 不透明度略提补偿对比度）。press/hold/flash 状态机同沉浸。</summary>
+        /// <summary>Native bar pill（agy v6 几何）：药丸居中于 32 DIP 系
+        /// 统条；明暗/状态机与沉浸共用（PaintPill）。</summary>
         private void PaintNativePill(Graphics g)
         {
-            foreach (NavButton b in Buttons)
-            {
-                float cx = b.Circle.Left + b.Circle.Width / 2f;
-                float cy = Height - 14f * Dpi - 2f * Dpi;
-                bool darkState = Ctrl.Glass ? _barDark : Ctrl.BarThemeDark;
-                Color rgb = darkState ? PillLight : PillDark;
-                int restA = Ctrl.Glass ? (darkState ? 155 : 102) : (darkState ? 191 : 153);
-                int hoverA = Ctrl.Glass ? (darkState ? 204 : 166)
-                                        : Math.Min(255, restA + 50);
-                float alpha;
-                float widthL;
-                if (_flashing)
-                {
-                    alpha = 250f;
-                    widthL = 48f;
-                }
-                else if (b.Pressed)
-                {
-                    float t = Math.Min(1f, (float)
-                        (DateTime.UtcNow - _pressStart).TotalMilliseconds / HoldMs);
-                    alpha = darkState ? 215f - 30f * t : 170f - 30f * t;
-                    widthL = 28f + 20f * t;           // 28 -> 48 (HOME countdown)
-                }
-                else
-                {
-                    alpha = b.Hover ? hoverA : restA;
-                    widthL = 36f;
-                }
-                float h = 4f * Dpi, w = widthL * Dpi, r = h / 2f;
-                Color fill = _flashing
-                    ? Color.FromArgb(250, 255, 255, 255)
-                    : Color.FromArgb((int)alpha, rgb.R, rgb.G, rgb.B);
-                using (GraphicsPath pill = new GraphicsPath())
-                {
-                    float x = cx - w / 2f, y = cy - h / 2f;
-                    pill.AddArc(x, y, h, h, 180, 90);           // left cap, top
-                    pill.AddArc(x + w - h, y, h, h, 270, 90);   // right cap, top
-                    pill.AddArc(x + w - h, y, h, h, 0, 90);     // right cap, bottom
-                    pill.AddArc(x, y, h, h, 90, 90);            // left cap, bottom
-                    pill.CloseFigure();
-                    using (SolidBrush brush = new SolidBrush(fill))
-                        g.FillPath(brush, pill);
-                }
-            }
+            NavButton b = Buttons[0];
+            float cx = b.Circle.Left + b.Circle.Width / 2f;
+            float cy = Height - 14f * Dpi - 2f * Dpi;
+            bool darkState = Ctrl.Glass ? _barDark : Ctrl.BarThemeDark;
+            PaintPill(g, cx, cy, darkState);
         }
 
-        // ----- DWM island path (Win11 22H2+): system acrylic ------------
-        // 配方与机制见 docs/ui/chin-island-acrylic.md §2：非分层窗 +
-        // DWMSBT_TRANSIENTWINDOW + DwmEnableBlurBehindWindow 打开重定向
-        // 表面的逐像素 alpha；黑底写零 alpha = 透出 backdrop；药丸走
-        // AlphaBlend（预乘 ARGB）保住半透明与 AA。
+        // ----- DWM island path (Win11 22H2+): system backdrop ------------
+        // 配方与机制见 docs/ui/chin-island-acrylic.md §2/§6：非分层窗 +
+        // DWMSBT_MAINWINDOW（Mica）+ DwmExtendFrameIntoClientArea(-1) 全窗
+        // 玻璃扩展——黑色像素透出 Mica（Win32 Mica 标准配方）；药丸走
+        // AlphaBlend（预乘 ARGB）保住半透明与 AA。圆角回归 DWM 原生
+        //（DWMWCP_ROUND，四角 + 系统柔影）：条的顶边连同其 1px 边框/
+        // 阴影被 8 DIP tuck 藏到视频窗【之下】（z 序下沉，RestackOverlays
+        // InsertBelowVideo），视频盖住上缘的一切接缝痕迹，柔影只在
+        // 下/侧缘可见 = Windows 应用的窗口页脚观感（三轮真机反馈：
+        // SetWindowRgn 区域圆角对 DWM backdrop 不生效，弃用）。
 
         protected override CreateParams CreateParams
         {
@@ -2170,38 +2270,31 @@ namespace DuoChrome
             NativeMethods.DwmSetWindowAttribute(Handle, 33, ref round, 4);
             int dark = Ctrl.BarThemeDark ? 1 : 0;
             NativeMethods.DwmSetWindowAttribute(Handle, 20, ref dark, 4);
-            int none = 1;                        // DWMSBT_NONE
-            NativeMethods.DwmSetWindowAttribute(Handle, 38, ref none, 4);
             if (Ctrl.Glass)
             {
-                // 玻璃解析链首选：accent 亚克力（真背景模糊）。24H2 真机
-                // 实证 SWCA 返 0x1（分层窗/非分层窗、创建时/显示后皆然）
-                // → frost 回落；pre-24H2 机器上若可用则零 CPU 原生模糊。
-                NativeMethods.ACCENT_POLICY pol = new NativeMethods.ACCENT_POLICY();
-                pol.State = 4;                   // ACCENT_ENABLE_ACRYLICBLURBEHIND
-                pol.Flags = 0;                   // 旧配方 = blur+GradientColor tint
-                // （flags=2 现代配方忽略 tint——TranslucentFlyouts 注记；
-                // 24H2 上 SWCA 本身返 0x1，走 frost 回落，tint 只在
-                // pre-24H2 生效机器上消费）
-                pol.GradientColor = Ctrl.BarThemeDark
-                    ? unchecked((int)0xE8202022u)
-                    : unchecked((int)0xD8F3F3F3u);
-                NativeMethods.WINDOWCOMPOSITIONATTRIBUTEDATA data =
-                    new NativeMethods.WINDOWCOMPOSITIONATTRIBUTEDATA();
-                data.Attribute = 19;             // WCA_ACCENT_POLICY
-                data.Data = Marshal.AllocHGlobal(
-                    Marshal.SizeOf(typeof(NativeMethods.ACCENT_POLICY)));
-                try
+                // 玻璃 = Mica（DWMSBT_MAINWINDOW）+ 全窗玻璃扩展：
+                // 黑色填充处透出 Mica，DWM 合成器侧材质零采样零 CPU。
+                // 失败回落 frost（CopyFromScreen 采样桌面带）。
+                int mica = 2;                    // DWMSBT_MAINWINDOW
+                if (NativeMethods.DwmSetWindowAttribute(Handle, 38, ref mica, 4) == 0)
                 {
-                    Marshal.StructureToPtr(pol, data.Data, false);
-                    data.DataSize = Marshal.SizeOf(
-                        typeof(NativeMethods.ACCENT_POLICY));
-                    if (NativeMethods.SetWindowCompositionAttribute(
-                        Handle, ref data) == 0) _glassAccent = true;
+                    _sysBackdrop = true;
+                    NativeMethods.MARGINS mg = new NativeMethods.MARGINS();
+                    mg.Left = -1; mg.Right = -1; mg.Top = -1; mg.Bottom = -1;
+                    NativeMethods.DwmExtendFrameIntoClientArea(Handle, ref mg);
+                    Log.Write("chin mica live");
                 }
-                finally { Marshal.FreeHGlobal(data.Data); }
-                if (!_glassAccent)
-                    Log.Write("chin accent acrylic unavailable, frost fallback");
+                else
+                {
+                    int none = 1;                // DWMSBT_NONE
+                    NativeMethods.DwmSetWindowAttribute(Handle, 38, ref none, 4);
+                    Log.Write("chin mica unavailable, frost fallback");
+                }
+            }
+            else
+            {
+                int none = 1;                    // DWMSBT_NONE
+                NativeMethods.DwmSetWindowAttribute(Handle, 38, ref none, 4);
             }
             NativeMethods.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
                 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020 | 0x0200);
@@ -2235,10 +2328,10 @@ namespace DuoChrome
                 PaintNativePill(g);
                 return;
             }
-            if (_glassAccent)
+            if (_sysBackdrop)
             {
-                // accent 亚克力：表面零 alpha = 透出 DWM 背景模糊；药丸
-                // AlphaBlend 写半透明（双重 alpha √A 补偿，见 BlendPill）。
+                // Mica：表面零 alpha = 透出系统底材；药丸 AlphaBlend 写
+                // 半透明（双重 alpha √A 补偿，见 BlendPill）。
                 IntPtr hdc = g.GetHdc();
                 try
                 {
@@ -2248,7 +2341,7 @@ namespace DuoChrome
                 finally { g.ReleaseHdc(hdc); }
                 return;
             }
-            // frost 回退（accent 不可用）：§8.6 烘焙板 + 主题混底 tint
+            // frost 回退（Mica 不可用）：§8.6 烘焙板 + 主题混底 tint
             // （glm 视觉评审 2026-09-19：零 tint 下明暗两档逐像素同图、
             // 饱和增益直出霓虹——混底克制档，不回到历史「奶白」投诉区间）
             // + hairline；干底 = DryGlass 待命；药丸 _barDark 自适应。
@@ -2274,10 +2367,10 @@ namespace DuoChrome
             PaintNativePill(g);
         }
 
-        /// <summary>药丸预渲染为 ARGB 再 AlphaBlend 上屏（玻璃态）：
+        /// <summary>药丸预渲染为 ARGB 再 AlphaBlend 上屏（Mica 路径）：
         /// GDI/GDI+ 直绘 DC 会丢 alpha，半透明内容必须走这条（见
         /// chin-island-acrylic.md §2 机制链）。色源 = BarThemeDark（与
-        /// 亚克力明暗变体同源，无采样自适应）。alpha 开平方补偿：
+        /// Mica 明暗变体同源，无采样自适应）。alpha 开平方补偿：
         /// AlphaBlend 先对透明表面混一次、DWM 又对 backdrop 混一次
         /// （真机像素实证 163=0.75²·255+0.25·84）；取 √A 后药丸色强度
         /// 精确到位，残余仅背底渗透率 (1−√A) 略低于设计 (1−A)，视觉
@@ -2287,7 +2380,7 @@ namespace DuoChrome
             NavButton b = Buttons[0];
             float cx = b.Circle.Left + b.Circle.Width / 2f;
             float cy = Height - 14f * Dpi - 2f * Dpi;
-            bool darkState = _glassAccent ? true : Ctrl.BarThemeDark;
+            bool darkState = Ctrl.BarThemeDark;
             Color rgb = darkState ? PillLight : PillDark;
             int restA = darkState ? 191 : 153;
             int hoverA = darkState ? 230 : 190;
@@ -2350,17 +2443,13 @@ namespace DuoChrome
             }
         }
 
-        private int S6()
-        {
-            return (int)(6 * Dpi);
-        }
-
         public void ResyncWidth(int width)
         {
+            if (!_native) return;               // 沉浸小横条几何归 SyncIsland
             if (width == Width) return;
-            int btn = (int)(LogicalButton * Dpi);
             Size = new Size(width, Height);
-            // keep the single mBack ring centered
+            // keep the single mBack hit zone centered
+            int btn = (int)(LogicalButton * Dpi);
             Rectangle was = Buttons[0].Circle;
             Buttons[0].Circle = new Rectangle(
                 (width - btn) / 2, was.Y, btn, btn);
@@ -3354,6 +3443,7 @@ namespace DuoChrome
         private readonly float _dpi;                  // probe-based scale (S())
         private readonly Timer _tick = new Timer();
         private readonly ChinWindow _chin;
+        private readonly ChinWindow _island;        // native 模式的全屏后备：沉浸小横条
         private readonly TopWindow _top;
         private IntPtr _hwnd = IntPtr.Zero;
         private int _waitedMs;
@@ -3364,6 +3454,9 @@ namespace DuoChrome
         private int _maxGraceUntil;
         private int _lastSample;
         private int _topSampleAt;               // capsule acrylic cadence
+        private int _chinSampleAt;              // immersive chin acrylic cadence
+        private int _sampleAt;                  // PrintWindow memo slice
+        private bool _sampleOk;
         private Bitmap _sample;                // full-window sample (reused)
         private NativeMethods.WinEventDelegate _hookProc;   // keep delegate alive
         private IntPtr _hook = IntPtr.Zero;
@@ -3391,8 +3484,9 @@ namespace DuoChrome
 
         /// <summary>Native (C2) bar modes: top = real system caption
         /// (WS_CAPTION + DWM Mica applied in Repair, one overlay 4th
-        /// button); bottom = the C1 acrylic chin floating INSIDE the
-        /// window's bottom, inset from every edge (chin-island-acrylic.md).
+        /// button); bottom = the chin docked OUTSIDE the window, flush
+        /// under its visible bottom edge, Mica on 22H2+
+        /// (chin-island-acrylic.md §6).
         /// Either mode makes its bar always-visible while engaged. Corner
         /// policy lives in Repair: without a G2 region the video window
         /// keeps DWM's own rounding in EVERY combination - only the G2
@@ -3489,10 +3583,6 @@ namespace DuoChrome
         internal static readonly Color PlainBarLight = Color.FromArgb(243, 243, 243);
         internal static readonly Color PlainBarDark = Color.FromArgb(32, 32, 32);
 
-        // 浮岛几何（DIP，chin-island-acrylic.md §3.1）
-        internal const int ChinMarginSide = 12;
-        internal const int ChinMarginBottom = 12;
-
         // 真实 OS build（RtlGetVersion；Environment.OSVersion 无 manifest
         // 会谎报为 Win8 兼容档）。DWM 系统亚克力需 22621（22H2）。
         internal static readonly int OsBuildNumber = ResolveOsBuild();
@@ -3574,11 +3664,17 @@ namespace DuoChrome
             _videoChangedAt = 0;
             _cornerDip = cornerDip;
             _chin = new ChinWindow(this, home, _displayMode, _bottomMode);
+            // native 模式额外建沉浸岛：全屏/最大化/放不下窗外条时切它
+            //（用户 2026-09-23 拍板），还原后撤回；沉浸/none 模式无此件。
+            _island = BottomNative
+                ? new ChinWindow(this, home, _displayMode, "immersive")
+                : null;
             _top = new TopWindow(this, _displayMode.Equals("flex"), _topMode);
             // Force handle creation now: the WinEvent callback below may fire
             // for any window move long before the bars are first shown, and
             // BeginInvoke requires an existing handle.
             if (!_chin.IsHandleCreated) { IntPtr h = _chin.Handle; }
+            if (_island != null && !_island.IsHandleCreated) { IntPtr h = _island.Handle; }
             if (!_top.IsHandleCreated) { IntPtr h = _top.Handle; }
             // Side move bands: immersive windows drag from the left and
             // right edges too, not just the top band. IMMERSIVE TOP ONLY:
@@ -4585,7 +4681,9 @@ namespace DuoChrome
             // （一旦露出即可见，包含光标即维持）；隐藏巴不再参与
             // engaged/露出判定。
             bool overBars = (_chin.Visible && _chin.Bounds.Contains(cursor))
-                         || (_top.Visible && _top.Bounds.Contains(cursor));
+                         || (_top.Visible && _top.Bounds.Contains(cursor))
+                         || (_island != null && _island.Visible
+                             && _island.Bounds.Contains(cursor));
             bool overStrips = false;
             // 同款 .Visible 门：隐藏热区（HideStrips 后 Bounds 残留）
             // 不再独自保活 engaged——与 overBars 同一幽灵矩形 bug 类。
@@ -4642,17 +4740,14 @@ namespace DuoChrome
             // below while the window itself is being dragged around.
             SyncSideBands(wr, client);
 
-            // Per-bar proximity rules, symmetric like a native window's own
-            // affordances: capsule reveals near the top edge, the mBack dot
-            // near the bottom edge. Neither cares about focus.
-            // Native bars are always-on while engaged (agy v6 常驻可见);
+            // Per-bar rules: capsule reveals near the top edge (proximity
+            // + pin), the immersive chin pill is ALWAYS ON while engaged
+            // (2026-09-23 二轮：固定位置常驻，不再近距触发)， native bars
+            // are always-on while engaged (agy v6 常驻可见).
             bool showTop = TopNative ? true
                 : (TopNone ? false
                 : (_cursorMoved && (_topPinned || ComputeTopVisibility(client, wr, cursor))));
-            bool showChin = BottomNative ? true
-                : (BottomNone ? false
-                : (_cursorMoved && ComputeChinVisibility(client, wr, cursor))
-                || overBars || _resizing || _moving);
+            bool showChin = !BottomNone;
 
             SyncChin(client, showChin);
             if (TopNative) SyncTop(client, showTop);
@@ -4671,7 +4766,13 @@ namespace DuoChrome
                 _top.Hide();
                 Log.Write("top hidden");
             }
-            if (BottomNative) SampleNativeChin();
+            if (BottomNative)
+            {
+                SampleNativeChin();
+                if (_island != null && _island.Visible)
+                    SampleIsland(_island, false);
+            }
+            else if (!BottomNone) SampleIsland(_chin, false);   // 沉浸小横条玻璃，~300ms 档
             if (!TopNative && !TopNone) SampleTop(false);   // capsule acrylic, ~300ms cadence
 
             // Sandwich z-order, re-asserted while engaged: whatever covers
@@ -4692,8 +4793,10 @@ namespace DuoChrome
 
         private void HideBars()
         {
-            if (_chin.Visible || _top.Visible) Log.Write("bars hidden");
+            if (_chin.Visible || _top.Visible
+                || (_island != null && _island.Visible)) Log.Write("bars hidden");
             _chin.Hide();
+            if (_island != null) _island.Hide();
             _top.Hide();
         }
 
@@ -4826,10 +4929,10 @@ namespace DuoChrome
             int capsuleBerth = TopNone ? 0 : S(TopMargin) + _top.Height;
             int top = Math.Max(wr.Top + edge + bandH,       // below 顶带
                 client.Top + capsuleBerth);                 // below capsule
-            // 2026-09-09 组合修复（2026-09-19 浮岛版）：只有下巴 immersive
-            // 贴窗内底缘需要预留；native 浮岛在窗内但侧带只到窗口底缘，
-            // 岛在侧带之上（重叠角点击归岛）、none 永不出现——两者侧带
-            // 直下到 client.Bottom，不再白白短一截可拖边。
+            // 2026-09-09 组合修复（2026-09-23 窗外岛版）：只有下巴 immersive
+            // 贴窗内底缘需要预留；native 下巴在窗外（不占侧带）、none
+            // 永不出现——两者侧带直下到 client.Bottom，不白白短一截
+            // 可拖边。
             int reserve = BottomNone || BottomNative ? 0 : _chin.BarHeight;
             int h = client.Bottom - reserve - top;           // above 下巴
             if (h <= 0) { HideSideBands(); return; }
@@ -4899,13 +5002,34 @@ namespace DuoChrome
         {
             if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd)) return;
             InsertAbove(_top);
-            InsertAbove(_chin);
+            if (BottomNative)
+            {
+                // 窗外条沉到视频窗【正下方】：视频盖住条的上缘/接缝/上侧
+                // 阴影（零缝），DWM 圆角与柔影只在下/侧缘可见；沉浸
+                // 后备岛在视频上方（药丸悬在视频内）。
+                InsertBelowVideo(_chin);
+                InsertAbove(_island);
+            }
+            else InsertAbove(_chin);
             if (_sides != null)
             {
                 foreach (SideBandWindow band in _sides) InsertAbove(band);
             }
             foreach (EdgeStrip strip in _strips) InsertAbove(strip);
             foreach (CornerMask mask in _masks) InsertAbove(mask);
+        }
+
+        /// <summary>InsertAbove 的镜像：把窗插到视频窗【正下方】（插入点
+        /// 取视频窗下面那个窗 GW_HWNDNEXT；视频已在带底时退到 HWND_BOTTOM）。
+        /// 只用于 native 窗外条（见 RestackOverlays）。</summary>
+        private void InsertBelowVideo(Form f)
+        {
+            if (!f.IsHandleCreated || !f.Visible) return;
+            IntPtr below = NativeMethods.GetWindow(_hwnd, 2 /*GW_HWNDNEXT*/);
+            if (below == IntPtr.Zero) below = new IntPtr(1);   // HWND_BOTTOM
+            NativeMethods.SetWindowPos(f.Handle, below, 0, 0, 0, 0,
+                0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/
+                | 0x0010 /*SWP_NOACTIVATE*/);
         }
 
         // 露出/保持带钳进窗口矩形（根因与日志证据见 docs/window-experience.md §10）
@@ -4918,48 +5042,65 @@ namespace DuoChrome
                 && cursor.Y < client.Top + S(RetainTop);
         }
 
-        private bool ComputeChinVisibility(Rectangle client, Rectangle wr, Point cursor)
+        /// <summary>巴窗显/隐归一：show = Show + Render（玻璃已在调用方
+        /// 预烘），hide 记日志；null 容忍（_island 仅 native 模式存在）。</summary>
+        private void SwapBar(OverlayWindow bar, bool show, string name)
         {
-            // Bottom-edge twin of the capsule rule (bands clamped into wr).
-            bool inX = cursor.X >= client.Left && cursor.X < client.Right;
-            // 与上巴判定对称：隐藏下巴的残留矩形不参与保活。
-            if (!inX) return _chin.Visible && _chin.Bounds.Contains(cursor);
-            if (cursor.Y > client.Bottom - S(TriggerTop) && cursor.Y <= wr.Bottom) return true;
-            return _chin.Visible && cursor.Y > client.Bottom - S(RetainTop)
-                && cursor.Y <= wr.Bottom;
+            if (bar == null) return;
+            if (show && !bar.Visible)
+            {
+                bar.Show();
+                bar.Render();
+                Log.Write(name + " shown");
+            }
+            else if (!show && bar.Visible)
+            {
+                bar.Hide();
+                Log.Write(name + " hidden");
+            }
         }
 
         private void SyncChin(Rectangle client, bool show)
         {
             if (BottomNative)
             {
-                // Floating island: inset from every window edge - never
-                // glued to the video bottom, so no seam (and no corner
-                // ears) can exist (chin-island-acrylic.md §3.1).
-                int side = S(ChinMarginSide);
-                _chin.ResyncWidth(Math.Max(0, client.Width - 2 * side));
-                _chin.Left = client.Left + side;
-                _chin.Top = client.Bottom - S(ChinMarginBottom) - _chin.BarHeight;
-                if (client.Height < _chin.BarHeight + S(ChinMarginBottom) + S(8)
-                    || client.Width < _chin.BarHeight * 4)
-                    show = false;   // degenerate window: island would crowd the video
+                // 窗外条（三轮定稿）：顶 tucked 8 DIP 到视频可见底缘之下，
+                // 且 z 序沉到视频窗正下方（InsertBelowVideo）——视频盖住
+                // 条的上缘/接缝/上侧阴影，DWM 原生圆角与柔影只在下/侧
+                // 缘可见。放不下整条/假最大化/真最大化/过窄 → 不停用，
+                // 切【沉浸小横条】（全屏用沉浸下巴，非全屏撤回，
+                // chin-island-acrylic.md §6）。
+                Rectangle vis = VisibleBounds();
+                Rectangle work = WorkAreaAt(new Point(
+                    vis.Left + vis.Width / 2,
+                    vis.Bottom + _chin.BarHeight / 2));
+                int tuck = S(8);
+                _chin.ResyncWidth(Math.Max(0, vis.Width));
+                _chin.Left = vis.Left;
+                _chin.Top = vis.Bottom - tuck;
+                bool dockable = _chin.Top + _chin.Height <= work.Bottom
+                    && !_fakedMax
+                    && !NativeMethods.IsZoomed(_hwnd)
+                    && vis.Width >= _chin.BarHeight * 4;
+                // 岛几何每拍同步（无论最终显隐）——漏同步的话岛会停在
+                // WinForms 默认位置，Show 了也看不见（三轮真机日志实证）
+                _island.SyncIsland(client);
+                bool island = show && !dockable
+                    && client.Width >= _island.IslandWidthPx * 2
+                    && client.Height >= _island.BarHeight + S(8);
+                if (island && !_island.Visible) SampleIsland(_island, true);
+                SwapBar(_island, island, "chin island");
+                SwapBar(_chin, show && dockable, "chin");
             }
             else
             {
-                _chin.ResyncWidth(client.Width);
-                _chin.Left = client.Left;
-                _chin.Top = client.Bottom - _chin.Height;
-            }
-            if (show && !_chin.Visible)
-            {
-                _chin.Show();
-                _chin.Render();
-                Log.Write("chin shown");
-            }
-            else if (!show && _chin.Visible)
-            {
-                _chin.Hide();
-                Log.Write("chin hidden");
+                // 沉浸 = 小横条热区：居中于 client 底部；窗口过窄/过矮
+                //（热区放不下）整岛隐藏。
+                _chin.SyncIsland(client);
+                bool fits = client.Width >= _chin.IslandWidthPx * 2
+                    && client.Height >= _chin.BarHeight + S(8);
+                if (show && fits && !_chin.Visible) SampleIsland(_chin, true);
+                SwapBar(_chin, show && fits, "chin");
             }
             // Hook-driven: keep the capsule glued during moves/resizes too,
             // not just on the 20fps tick.
@@ -5003,19 +5144,21 @@ namespace DuoChrome
             }
         }
 
-        /// <summary>Feed the native chin a live backdrop sample (agy v6):
-        /// CopyFromScreen over the chin rect + 8px outward margin, on the
-        /// SampleMs cadence while the bar is visible. The capture also
-        /// grabs the bar's own layered pixels, so the bar's footprint rows
-        /// are replaced with the desktop band below the bar (or the video
-        /// band above, at the screen edge) before handoff - after the σ8
-        /// blur the composite is indistinguishable from the true backdrop,
-        /// and the self-feedback loop (bar -&gt; capture of bar -&gt; flat
-        /// tint) is broken without any hide/blank flicker.</summary>
+        /// <summary>Feed the native chin a live backdrop sample (frost
+        /// fallback only - Mica needs nothing): CopyFromScreen over the
+        /// chin rect + 3σ outward margin, on the SampleMs cadence while
+        /// the bar is visible. The 窗外岛 sits over the DESKTOP band
+        /// (with the video's bottom edge inside the top margin), so the
+        /// sample is the true backdrop; the bar's own footprint rows are
+        /// replaced with the desktop band below the bar (or the video band
+        /// above, at the screen edge) before handoff - after the σ8 blur
+        /// the composite is indistinguishable from the true backdrop, and
+        /// the self-feedback loop (bar -> capture of bar -> flat tint) is
+        /// broken without any hide/blank flicker.</summary>
         private void SampleNativeChin()
         {
             if (!BottomNative || !_chin.Visible || !Glass) return;
-            if (_chin.DwmBackdrop && _chin.GlassAccent) return;
+            if (_chin.DwmBackdrop && _chin.SysBackdrop) return;
             int now = Environment.TickCount;
             if (now - _lastSample < SampleMs) return;
             _lastSample = now;
@@ -5060,7 +5203,11 @@ namespace DuoChrome
                         capture.Width, bandBottom - bandTop));
                 }
             }
-            _chin.SetNativeSample(capture);
+            // core = 岛矩形在 capture 坐标系的精确映射（贴屏边钳位不对称，
+            // 不假设对称 margin——Gemini 3.8 Flash 评审 P1-2）
+            Rectangle core = Rectangle.Intersect(r, full);
+            core.Offset(-full.X, -full.Y);
+            _chin.SetNativeSample(capture, core);
         }
 
         /// <summary>User-feedback trio #1: feed the immersive top capsule
@@ -5082,6 +5229,57 @@ namespace DuoChrome
             _topSampleAt = now;
             Rectangle wr = WindowRect();
             if (wr.Width <= 0 || wr.Height <= 0) return;
+            if (!CaptureWindowSample()) return;  // keep the last good sample
+            Rectangle want = Rectangle.Inflate(
+                _top.Bounds, _top.FrostMargin, _top.FrostMargin);
+            want.Intersect(wr);
+            Bitmap topSample = Crop(_sample, want, wr);
+            if (topSample != null)
+            {
+                Rectangle core = Rectangle.Intersect(_top.Bounds, want);
+                core.Offset(-want.X, -want.Y);
+                _top.SetSample(topSample, core);
+            }
+        }
+
+        /// <summary>沉浸小横条的玻璃采样（immersive 主窗或 native 模式
+        /// 的全屏后备岛同用）：PrintWindow 全窗采样按热区矩形 + 3σ
+        /// overscan 裁剪（wr 内钳位），SetNativeSample 烘焙 §8.6 板
+        ///（板与热区 1:1，药丸处裁贴）。常驻期间 SampleMs 档；失败/
+        /// 全黑保留旧样（胶囊同规）。</summary>
+        private void SampleIsland(ChinWindow w, bool force)
+        {
+            if (w == null || !Glass) return;
+            if (!w.Visible && !force) return;
+            int now = Environment.TickCount;
+            if (!force && now - _chinSampleAt < SampleMs) return;
+            _chinSampleAt = now;
+            Rectangle wr = WindowRect();
+            if (wr.Width <= 0 || wr.Height <= 0) return;
+            Rectangle zone = w.Bounds;
+            if (zone.Width < 4 || zone.Height < 4) return;
+            if (!CaptureWindowSample()) return;  // keep the last good sample
+            Rectangle want = Rectangle.Inflate(
+                zone, w.FrostMargin, w.FrostMargin);
+            want.Intersect(wr);
+            Bitmap islandSample = Crop(_sample, want, wr);
+            if (islandSample == null) return;
+            Rectangle core = Rectangle.Intersect(zone, want);
+            core.Offset(-want.X, -want.Y);
+            w.SetNativeSample(islandSample, core);
+        }
+
+        /// <summary>PrintWindow 全窗采样（胶囊/沉浸下巴共用，_sample 复用
+        /// 位图）：同一 TickCount 片内 memo——两巴同拍只捕一次；失败/全黑
+        /// （D3D 黑帧，LooksBlack 门）返回 false，消费端保留旧样不闪干底。</summary>
+        private bool CaptureWindowSample()
+        {
+            int now = Environment.TickCount;
+            if (_sampleAt == now) return _sampleOk;
+            _sampleAt = now;
+            _sampleOk = false;
+            Rectangle wr = WindowRect();
+            if (wr.Width <= 0 || wr.Height <= 0) return false;
             if (_sample == null || _sample.Width != wr.Width || _sample.Height != wr.Height)
             {
                 if (_sample != null) _sample.Dispose();
@@ -5095,17 +5293,8 @@ namespace DuoChrome
                 finally { g.ReleaseHdc(hdc); }
             }
             if (ok) ok = !LooksBlack(_sample);
-            if (!ok) return;                     // keep the last good sample
-            Rectangle want = Rectangle.Inflate(
-                _top.Bounds, _top.FrostMargin, _top.FrostMargin);
-            want.Intersect(wr);
-            Bitmap topSample = Crop(_sample, want, wr);
-            if (topSample != null)
-            {
-                Rectangle core = Rectangle.Intersect(_top.Bounds, want);
-                core.Offset(-want.X, -want.Y);
-                _top.SetSample(topSample, core);
-            }
+            _sampleOk = ok;
+            return ok;
         }
 
         private static bool LooksBlack(Bitmap bmp)
@@ -5483,6 +5672,24 @@ namespace DuoChrome
             Rectangle monitor, work;
             VideoMonitor(out monitor, out work);
             return work;
+        }
+
+        /// <summary>Work area of the monitor under an arbitrary point
+        /// (MONITOR_DEFAULTTONEAREST). SyncChin 的窗外条守卫用：窗口跨屏
+        /// 时条自身所在屏的工作区才是「放得下吗」的正确判据，而非窗
+        /// 中心所在屏（Gemini 3.8 Flash 评审 P1-3）。</summary>
+        private Rectangle WorkAreaAt(Point p)
+        {
+            NativeMethods.POINT pt;
+            pt.X = p.X; pt.Y = p.Y;
+            IntPtr mon = NativeMethods.MonitorFromPoint(pt, 2);
+            NativeMethods.MONITORINFO mi = new NativeMethods.MONITORINFO();
+            mi.cbSize = Marshal.SizeOf(typeof(NativeMethods.MONITORINFO));
+            if (mon != IntPtr.Zero && NativeMethods.GetMonitorInfoW(mon, ref mi))
+                return Rectangle.FromLTRB(
+                    mi.rcWork.Left, mi.rcWork.Top,
+                    mi.rcWork.Right, mi.rcWork.Bottom);
+            return SystemInformation.WorkingArea;
         }
 
         /// <summary>Resolve the monitor under the video window's CENTER

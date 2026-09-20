@@ -208,14 +208,18 @@ contrast 0.06 单侧）**
    egui 原生灰底零残留，全由毛玻璃贴图呈现。
 5. 宽度锁：`menu_width` 128 / margin 4 / 内容 120，全控件定宽防发散。
 
-### 8.6 上巴/下巴移植（chrome_overlay.cs，✅ 2026-09-18 完成；2026-09-19 下巴改浮动岛）
+### 8.6 上巴/下巴移植（chrome_overlay.cs，✅ 2026-09-18 完成；2026-09-23 下巴改版）
 
-> **2026-09-19**：下巴 native 几何与窗口形态已改为「窗内浮动岛 +
+> **2026-09-23**：下巴改版定稿——native = 窗外系统条（Mica，frost 仅
+> 回落）；沉浸下巴 = 常驻液态玻璃小横条（本节管线 + 随背景反转调色纱
+> + 高光层）。全链见 `docs/ui/chin-island-acrylic.md` §6。
+>
+> **2026-09-19**（历史）：下巴 native 几何与窗口形态已改为「窗内浮动岛 +
 > 非分层 DWM 窗（accent 机会通道 → 本机 frost 回落）」，耳朵/贴缝
 > 退役；frost 板之上新增**主题混底 tint**（暗 #202020@35% / 亮
 > #F3F3F3@40%，glm 视觉评审定档：零 tint 下饱和增益直出霓虹、明暗
 > 两档逐像素同图）+ 玻璃路径 hairline——均只作用于下巴，共享
-> `BakeGlassPlate` 配方不动。全链见 `docs/ui/chin-island-acrylic.md`。
+> `BakeGlassPlate` 配方不动。
 
 - **管线等价**：CopyFromScreen / PrintWindow 局部快照（含 3σ margin，规则
   同 §2-2）→ 共享 `BakeGlassPlate`：3×box blur（σ8 device px，`GaussianBlur`
