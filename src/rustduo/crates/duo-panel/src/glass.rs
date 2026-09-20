@@ -292,7 +292,7 @@ fn shadow_soft_knee(l: f32, floor: f32, slope: f32, half: f32) -> f32 {
 /// 光学增益与暗色压暗 tint 处理。
 fn apply_gains(buf: &mut [f32], params: &GlassParams) {
     let contrast_k = 1.0 + params.contrast;
-    for px in buf.chunks_exact_mut(3) {
+    for px in buf.as_chunks_mut::<3>().0 {
         for c in px.iter_mut() {
             let delta = *c - params.pivot;
             let expanded = if delta > 0.0 {
@@ -351,7 +351,7 @@ fn apply_gains(buf: &mut [f32], params: &GlassParams) {
 fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
     let contrast_k = 1.0 + params.contrast;
     let (mut lmin, mut lmax) = (f32::INFINITY, f32::NEG_INFINITY);
-    for px in buf.chunks_exact_mut(3) {
+    for px in buf.as_chunks_mut::<3>().0 {
         for c in px.iter_mut() {
             let delta = *c - params.pivot;
             let expanded = if delta > 0.0 {
@@ -373,7 +373,7 @@ fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
         let tr = f32::from(tint.r()) / 255.0;
         let tg = f32::from(tint.g()) / 255.0;
         let tb = f32::from(tint.b()) / 255.0;
-        for px in buf.chunks_exact_mut(3) {
+        for px in buf.as_chunks_mut::<3>().0 {
             px[0] = px[0] * (1.0 - alpha) + tr * alpha;
             px[1] = px[1] * (1.0 - alpha) + tg * alpha;
             px[2] = px[2] * (1.0 - alpha) + tb * alpha;
@@ -382,7 +382,7 @@ fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
     let range = lmax - lmin;
     if range < 1e-3 {
         // 平背板：无段可缩，保持锚点落位（防把整块抬/压离锚）
-        for px in buf.chunks_exact_mut(3) {
+        for px in buf.as_chunks_mut::<3>().0 {
             for c in px.iter_mut() {
                 *c = c.clamp(0.0, 1.0);
             }
@@ -400,7 +400,7 @@ fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
             };
             let k = (top - base) / range;
             if (k - 1.0).abs() > 1e-4 {
-                for px in buf.chunks_exact_mut(3) {
+                for px in buf.as_chunks_mut::<3>().0 {
                     let luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
                     let out = base + (luma - lmin) * k;
                     let scale = (out / luma).clamp(0.0, 16.0);
@@ -413,7 +413,7 @@ fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
         (None, Some(floor)) => {
             let k = ((lmax + 1e-3) - floor) / range;
             if k < 1.0 - 1e-4 {
-                for px in buf.chunks_exact_mut(3) {
+                for px in buf.as_chunks_mut::<3>().0 {
                     let luma = (0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]).max(0.001);
                     let out = floor + (luma - lmin) * k;
                     let scale = (out / luma).clamp(0.0, 16.0);
@@ -425,7 +425,7 @@ fn apply_gains_proportional(buf: &mut [f32], params: &GlassParams) {
         }
         (None, None) => {}
     }
-    for px in buf.chunks_exact_mut(3) {
+    for px in buf.as_chunks_mut::<3>().0 {
         for c in px.iter_mut() {
             *c = c.clamp(0.0, 1.0);
         }
@@ -494,7 +494,7 @@ fn box_pass(buf: &mut [f32], w: usize, h: usize, r: usize, horizontal: bool) {
 }
 
 /// 液态玻璃旋钮（Opus 终裁 2026-09-22：满材质/定向 rim/保守折射/
-/// 聚焦实体化，方案与取舍见 docs/ui/liquid-glass-plan.md）。
+/// 聚焦实体化，方案与取舍见 docs/history/liquid-glass-plan.md）。
 pub(crate) struct LiquidKnobs {
     /// 漫散射 σ（设备 px，box×3）：控件高度 25%。
     pub(crate) sigma: f32,
