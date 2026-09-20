@@ -128,6 +128,7 @@ pub struct EngineArgs {
     pub audio: bool,
     pub audio_codec: String,
     pub audio_buffer_ms: u32,
+    pub audio_output_buffer_ms: u32,
     pub window_title: Option<String>,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
@@ -149,6 +150,7 @@ impl EngineArgs {
             audio: true,
             audio_codec: "flac".into(),
             audio_buffer_ms: 100,
+            audio_output_buffer_ms: 10,
             print_fps: true,
             ..Default::default()
         }
@@ -191,6 +193,10 @@ impl EngineArgs {
         } else {
             argv.push(format!("--audio-codec={}", self.audio_codec));
             argv.push(format!("--audio-buffer={}", self.audio_buffer_ms));
+            argv.push(format!(
+                "--audio-output-buffer={}",
+                self.audio_output_buffer_ms
+            ));
         }
         if let Some(title) = &self.window_title {
             argv.push(format!("--window-title={title}"));
@@ -360,10 +366,12 @@ mod tests {
         let out = argv(&args);
         assert!(has(&out, "--no-audio"));
         assert!(has(&out, "--window-title=不背单词"));
-        let out = argv(&EngineArgs::new("s"));
+        args.audio = true;
+        let out = argv(&args);
         assert!(!has(&out, "--no-audio"));
         assert!(has(&out, "--audio-codec=flac"));
         assert!(has(&out, "--audio-buffer=100"));
+        assert!(has(&out, "--audio-output-buffer=10"));
     }
 
     #[test]

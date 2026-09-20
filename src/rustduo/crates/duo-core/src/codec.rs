@@ -411,8 +411,11 @@ mod tests {
     fn write_script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("fake-probe.sh");
         fs::write(&path, body).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         path
     }
 

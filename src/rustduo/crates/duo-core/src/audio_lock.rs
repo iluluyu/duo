@@ -34,10 +34,51 @@ fn system_pid_alive(pid: i64) -> bool {
     Path::new(format!("/proc/{pid}").as_str()).exists()
 }
 
-/// 非 Linux 宿主：无零依赖 signal-0 原语，保守视为存活——宁可错拒
-/// acquire（音频退回静音），不因误判锁主死亡而双持音频；陈锁恢复走
-/// bin 的 audio-lock release（带存活判定的显式清理）。
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn system_pid_alive(pid: i64) -> bool {
+    if pid <= 0 || pid > u32::MAX as i64 {
+        return false;
+    }
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, BOOL, ERROR_ACCESS_DENIED, WAIT_TIMEOUT,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            BOOL(0),
+            pid as u32,
+        ) else {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        };
+        let status = WaitForSingleObject(handle, 0);
+        if status != WAIT_TIMEOUT {
+            let _ = CloseHandle(handle);
+            return false;
+        }
+        let mut name = [0_u16; 260];
+        let mut len = name.len() as u32;
+        let is_duo = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(name.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok()
+            && {
+                let s = String::from_utf16_lossy(&name[..len as usize]).to_ascii_lowercase();
+                s.contains("duo-core") || s.contains("duo")
+            };
+        let _ = CloseHandle(handle);
+        is_duo
+    }
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 fn system_pid_alive(_pid: i64) -> bool {
     true
 }
@@ -120,6 +161,12 @@ impl AudioLock {
         if read_owner(&self.lock_path) == self.our_pid {
             let _ = std::fs::remove_file(&self.lock_path);
         }
+    }
+}
+
+impl Drop for AudioLock {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

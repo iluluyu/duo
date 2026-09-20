@@ -316,24 +316,17 @@ unsafe fn send_drag_impl() {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     {
         let (vx, vy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        let norm = |x: i32, y: i32| {
-            (
-                (x as i32 * 65535) / vx.max(1),
-                (y as i32 * 65535) / vy.max(1),
-            )
-        };
+        let norm = |x: i32, y: i32| ((x * 65535) / vx.max(1), (y * 65535) / vy.max(1));
         let (cx, cy) = crate::winproc::window_center();
-        // 起点取窗口中心（设置页卡片带上）
-        let (mut x, mut y) = (cx, cy);
-        let (nx, ny) = norm(x, y);
+        let (x, mut y) = (cx, cy);
         let move_abs =
             |px: i32,
              py: i32,
              extra: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS| {
                 let (ax, ay) = norm(px, py);
                 let mi = MOUSEINPUT {
-                    dx: ax as i32,
-                    dy: ay as i32,
+                    dx: ax,
+                    dy: ay,
                     mouseData: 0,
                     dwFlags: MOUSEEVENTF_MOVE
                         | MOUSEEVENTF_ABSOLUTE

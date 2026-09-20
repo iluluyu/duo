@@ -24,7 +24,11 @@ fps 必须与面板**整除**，否则 judder：**60 = 默认**（视频 1:1、�
 scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并行 = 多应用进同一虚拟屏
 （`am start --display N` 直达）。策略三态：`latest`（新会话有声时其他自动静音重启，
 面板侧 proc.terminate→muted 重启）/ `all`（自担混音）/ `off`。
-编码 flac + `--audio-buffer=100`（50ms 实机 crackle）。
+编码 flac + `--audio-buffer=100` + `--audio-output-buffer=10`（防回退 5ms 爆音）。
+仲裁锁 `audio.lock`：
+- Windows 侧利用 `OpenProcess` + `WaitForSingleObject` 判定 PID 真实存活，并校验
+  进程映像名防 PID 回收重用；避免陈锁把后续会话永久判为静音（退回平板物理外放）。
+- `AudioLock` 实现 RAII `Drop`；`duo-panel` 在 terminate/stop 旧音频会话时联动清理锁。
 调研过程与备选方案存档：`docs/history/research-audio.md`。
 
 ## 4. 其他旗标结论

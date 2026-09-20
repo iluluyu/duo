@@ -45,6 +45,6 @@ elif [[ "$MODE" == "--install" ]]; then
     cp "$OUT/duo-core.exe" "$DEST/duo-core.exe"
     cp "$OUT/duo-panel.exe" "$DEST/Duo.exe"
     cp "../../scripts/uninstall-windows.ps1" "$DEST/uninstall.ps1"
-    cp "../../assets/duo.ico" "$DEST/Duo.ico"
+    cp "assets/duo.ico" "$DEST/Duo.ico"
     echo "installed: $DEST/duo-core.exe + $DEST/Duo.exe"
 fi
