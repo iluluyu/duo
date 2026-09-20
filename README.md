@@ -16,6 +16,63 @@ Duo 是一款基于 Rust 开发的 Windows 桌面应用。通过编排 scrcpy �
 
 > 初代 Python 验证栈（pyduo）已退役，完整生平与找回方式见 [docs/history/pyduo.md](docs/history/pyduo.md)。
 
+## 快速上手（Windows）
+
+### 第 1 步：安装 Scoop（命令行包管理器）
+
+Scoop 以用户身份安装到 `~\scoop`，自动配置 PATH，**无需管理员权限**。在
+PowerShell（Windows 10/11 自带）中执行：
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+irm get.scoop.dev | iex
+scoop install git    # scoop 自更新与 bucket 依赖 git，装完推荐执行
+```
+
+### 第 2 步：安装 adb 与 scrcpy
+
+```powershell
+scoop install adb scrcpy
+```
+
+两个包都在 scoop 默认 main bucket，与上游同步发版。Duo 需要
+**scrcpy ≥ 4.1**（依赖 `--new-display` / `--flex-display` 等虚拟屏特性），
+装完可用 `scrcpy --version` 确认。
+
+不想用 Scoop 亦可：手动下载 [platform-tools](https://developer.android.com/tools/releases/platform-tools)
+与 [scrcpy](https://github.com/Genymobile/scrcpy/releases) 解压后加入
+PATH，或在 Duo 设置页「引擎」卡中填写 `adb.exe` / `scrcpy.exe` 绝对路径。
+
+### 第 3 步：保持最新（最快的更新通道）
+
+```powershell
+scoop update              # 先更新 scoop 自身与 bucket 索引
+scoop update adb scrcpy   # 升级到上游最新版
+scoop status              # 查看待升级清单
+```
+
+上游发版后 scoop bucket 通常当天跟进——比 SDK Manager 或手动下 zip
+快得多，一条命令即完成升级与 PATH 维护。
+
+### 第 4 步：准备安卓设备
+
+1. 手机开启「开发者选项」→「USB 调试」；
+2. 数据线连接电脑，首次连接在手机端勾选「一律允许此计算机进行调试」；
+3. `adb devices` 能看到设备即就绪。
+
+### 第 5 步：获取 Duo
+
+从源码构建并安装（当前发布方式）：
+
+```powershell
+git clone https://github.com/iluluyu/duo.git C:\duo
+cd C:\duo
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+
+完整构建路径（WSL 交叉编译 / Windows 原生编译）与故障排查见
+[docs/windows-setup.md](docs/windows-setup.md)。
+
 ## 架构
 
 ```
@@ -26,17 +83,17 @@ Duo 是一款基于 Rust 开发的 Windows 桌面应用。通过编排 scrcpy �
    └── scrcpy 4.1+ 引擎 ──> adb ──> Android（无头应用服务器）
 ```
 
-## 快速开始
-
-在 WSL 或 Linux 开发环境交叉编译（或直接在 Windows 编译）：
+## 开发
 
 ```bash
 cd src/rustduo
-./scripts/build_wsl.sh --deploy   # 编译出 Duo.exe 与 duo-core.exe 并部署
-cargo test                         # 282 passed (duo-core 227 + duo-panel 55)
+cargo test                          # 282+ passed（duo-core + duo-panel）
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
+./scripts/build_wsl.sh --deploy     # WSL 交叉编译双 exe 并部署到 Windows
 ```
 
-Windows 真机部署与安装见 [docs/windows-setup.md](docs/windows-setup.md)。
+出图调试（无设备截图）：`duo-panel --shot out.png --page home|settings --theme light|dark`。
 
 ## 文档指引
 
@@ -44,15 +101,18 @@ Windows 真机部署与安装见 [docs/windows-setup.md](docs/windows-setup.md)�
 |---|---|
 | [TODO.md](TODO.md) | **唯一活任务清单**：Windows 真机验收、挂起项、设计边界、出图对拍回路 |
 | [docs/windows-setup.md](docs/windows-setup.md) | Windows 安装、构建部署与故障排查 |
-| [docs/window-experience.md](docs/window-experience.md) | 窗口体系规范、C# overlay 机制、虚拟屏与 9 轮防旋转风暴实验存档 |
+| [docs/window-experience.md](docs/window-experience.md) | **窗口/会话活规范**：窗口行为合同、窗口栏三态、进程生命周期、玻璃总开关、平行视窗密度 |
 | [docs/mirroring-quality.md](docs/mirroring-quality.md) | 编码器、帧率、音频仲裁、DPI 密度与渲染倍率设计依据 |
 | [docs/ui/DESIGN.md](docs/ui/DESIGN.md) | UI 材质四层、视觉令牌与组件验收硬性标准（铁律） |
-| [docs/history/](docs/history/) | 项目史：pyduo 时代、Python→Rust 迁移计划、历史任务存档（冻结不维护） |
+| [docs/ui/glass-recipe.md](docs/ui/glass-recipe.md) | 毛玻璃/液态玻璃配方唯一论述（菜单/岛/overlay 三端共用） |
+| [docs/ui/chin-island-acrylic.md](docs/ui/chin-island-acrylic.md) | 下巴/沉浸岛机制链与定稿（Mica/acrylic/frost 通道实证） |
+| [docs/ui/RESEARCH-ICONS.md](docs/ui/RESEARCH-ICONS.md) | 图标获取/统一化调研与设备端渲染方案 |
+| [docs/history/](docs/history/) | **冻结存档**：pyduo 时代、迁移计划、窗口/overlay 实验、图标与玻璃调优轮次 |
 | [src/rustduo/README.md](src/rustduo/README.md) | Rust 模块设计、WSL 交叉编译与二进制规格说明 |
 
 ## 开发纪律
 
-- **注释纪律**：代码文件尽可能少写注释（单行、必要、解释 why），设计推导与决策写入 `docs/`；历史材料进 `docs/history/`。
+- **注释纪律**：代码文件尽可能少写注释（单行、必要、解释 why），设计推导与决策写入 `docs/` 对应域文档；轮次日志与被取代方案一律进 `docs/history/`（冻结，不维护）。
 - **质量门禁**：
   - Rust：`cargo test` 全绿 + `cargo clippy --all-targets` 0 警告 + `cargo fmt --check`。
   - C#：overlay（`src/rustduo/crates/duo-core/resources/chrome_overlay.cs`）保持 C# 5 兼容（Windows 自带 `csc.exe` 现场编译）。

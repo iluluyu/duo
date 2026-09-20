@@ -1,7 +1,7 @@
 //! 用户设置：加载、校验、落盘（data_dir 下的 JSON）。对译自
 //! duo/core/settings.py；合同镜像 tests/test_settings.py。
 //!
-//! 合同（docs/window-experience.md §4）：
+//! 合同：
 //! - 存储：data_dir()/settings.json，透明可手编；
 //! - load 永不失败：缺失/损坏/类型错的文件回退默认值，并把问题清单报
 //!   给 UI 一次性呈现；

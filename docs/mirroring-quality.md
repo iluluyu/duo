@@ -25,6 +25,7 @@ scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并
 （`am start --display N` 直达）。策略三态：`latest`（新会话有声时其他自动静音重启，
 面板侧 proc.terminate→muted 重启）/ `all`（自担混音）/ `off`。
 编码 flac + `--audio-buffer=100`（50ms 实机 crackle）。
+调研过程与备选方案存档：`docs/history/research-audio.md`。
 
 ## 4. 其他旗标结论
 
@@ -44,7 +45,7 @@ scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并
 应用会话 = `--new-display=<初始形状>/<dpi>` + `--flex-display` 跟随窗口
 （native 填满，unscaled；拖拽过渡 `--render-fit=stretched`）。流畅度由
 h264 + 60fps 承担；历史实验（固定 2560x1440/480、三档、比例跟随）见
-window-experience.md §3。
+docs/history/window-overlay-experiments.md §3。
 
 **渲染倍率 `render_scale`（2026-09-11 回归，接替 2026-09-06 撤除的
 `flex_resolution` 档位）**：语义从「选档」改为**窗口÷倍率**（用户定稿：
