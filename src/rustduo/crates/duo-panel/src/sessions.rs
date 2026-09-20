@@ -321,7 +321,12 @@ impl Sessions {
                 continue;
             };
             self.audio_keys.retain(|k| k != &key);
+            let pid = entry.child.id();
             winproc::terminate_tree(&mut entry.child);
+            let lock_path = duo_core::audio_lock::audio_lock_path(None);
+            if duo_core::audio_lock::read_owner(&lock_path) == i64::from(pid) {
+                let _ = std::fs::remove_file(&lock_path);
+            }
             let keep_vd =
                 key != MIRROR_KEY && load_behavior_prefs().get(&key).copied().unwrap_or(false);
             let argv = if key == MIRROR_KEY {
@@ -383,8 +388,13 @@ impl Sessions {
     /// 关一枚会话（整树）。
     pub fn stop(&mut self, key: &str) -> bool {
         if let Some(mut entry) = self.entries.remove(key) {
+            let pid = entry.child.id();
             winproc::terminate_tree(&mut entry.child);
             self.audio_keys.retain(|k| k != key);
+            let lock_path = duo_core::audio_lock::audio_lock_path(None);
+            if duo_core::audio_lock::read_owner(&lock_path) == i64::from(pid) {
+                let _ = std::fs::remove_file(&lock_path);
+            }
             true
         } else {
             false
