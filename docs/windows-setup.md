@@ -53,7 +53,33 @@ cd C:\duo\src\rustduo
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1 -Deploy
 ```
 
-### 方案 C：安装到系统应用目录
+### 方案 C：setup.exe 安装包（发布/分发给最终用户）
+
+在 WSL 侧一键交叉编译并打包出标准 Windows 安装器
+（Inno Setup 6，需 Windows 侧 `scoop install inno-setup` 一次性前置）：
+
+```sh
+scripts/installer/build_setup.sh          # 或 --no-build 用现有产物
+# 产物：dist/Duo-<version>-setup.exe（约 6 MB）
+```
+
+安装包行为规范（源头：`scripts/installer/duo.iss`）：
+
+- **每用户安装**：免管理员、免 UAC，卸载项写 HKCU；默认装到
+  `%LOCALAPPDATA%\Duo`，安装向导可改任意盘任意目录（C 盘紧张可选
+  D 盘）。
+- **文件纪律**：程序文件只落在安装目录；快捷方式只建开始菜单
+  （桌面为可选项）；注册表只写自己的卸载项；无服务、无驱动、不改
+  PATH。安装时还会收编旧 PowerShell 脚本安装遗留的卸载项与临时文件。
+- **卸载安全**：卸载器只删安装时写入的文件；用户数据
+  `%USERPROFILE%\.local\share\duo` 默认保留，卸载过程中可选择
+  「是」一并删除（默认按钮为保留）；静默卸载（`/VERYSILENT`）恒
+  保留数据。中途取消卸载则一切保持原样。
+- **运行中安装/卸载**：Duo 在运行时安装器会提示先关闭（AppMutex
+  `Local\DuoPanelSingleInstance`），优雅退出后子进程由 Job Object 带走。
+- **双语言**：简体中文 + English 向导。
+
+### 方案 D：开发机直装（PowerShell 脚本，保留供开发流）
 
 将编译产物安装为标准桌面应用（创建桌面/开始菜单快捷方式与控制面板卸载项，自动搜索编译产物）：
 
