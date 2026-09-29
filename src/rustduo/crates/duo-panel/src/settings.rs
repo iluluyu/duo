@@ -23,6 +23,22 @@ fn caption(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
     text_at(painter, pos, text, 12.0, t.ink2);
 }
 
+fn group_label(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
+    let galley = painter.ctx().fonts(|f| {
+        f.layout_job(egui::text::LayoutJob::simple(
+            text.to_owned(),
+            paint::font_id(13.0, false),
+            t.ink,
+            f32::INFINITY,
+        ))
+    });
+    painter.galley(
+        Pos2::new(pos.x, pos.y - galley.size().y / 2.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+}
+
 /// 卡标题（13px DemiBold，QML letterSpacing 1 不做——字体度量差 1px 级）。
 /// pos = 标题盒（h19）垂直中心。
 fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
@@ -456,7 +472,6 @@ mod geom {
     pub const CARD_SP: f32 = 12.0; // 卡间距
     pub const PATH_ROW_H: f32 = 64.0; // 标题 26 + 6 + 输入 32
     pub const CELL_H: f32 = 58.0; // 标签 20 + 6 + 数字框 32
-    pub const CAPTION_H: f32 = 18.0; // CaptionText（12px 字盒高）
     pub const LABEL_H: f32 = 20.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
     pub const SLIDER_H: f32 = 24.0;
@@ -493,20 +508,16 @@ pub struct SettingsLayout {
     pub audio_label: Pos2,
     pub audio_row: [Rect; 3],
     pub tso_row: Rect,
-    pub tso_caption: Pos2,
     pub dpi_switch: Rect,
     pub dpi_cell: Rect,
-    pub dpi_caption: Pos2,
     pub rs_label: Pos2,
     pub rs_value: Pos2,
     pub rs_slider: Rect,
-    pub rs_caption: Pos2,
     pub windowbar: Card,
     pub top_label: Pos2,
     pub top_row: [Rect; 2],
     pub bottom_label: Pos2,
     pub bottom_row: [Rect; 3],
-    pub wb_caption: Pos2,
     pub appearance: Card,
     pub theme_label: Pos2,
     pub theme_row: [Rect; 3],
@@ -569,7 +580,7 @@ impl SettingsLayout {
             Rect::from_min_size(Pos2::new(x + half + 12.0, cy), Vec2::new(half, CELL_H));
         y += engine_h + CARD_SP;
 
-        // 投屏质量卡
+        // 投屏质量卡（解释性小字已取消，分组标签 13px 正文字号）
         let q_items = TITLE_H
             + SP
             + ROW_H
@@ -578,18 +589,15 @@ impl SettingsLayout {
             + SP
             + ROW_H
             + SP
-            + (ROW_H + CAPTION_H + 6.0)
+            + ROW_H
+            + SP
             + ROW_H
             + SP
             + CELL_H
             + SP
-            + CAPTION_H
-            + SP
             + LABEL_H
             + SP
-            + SLIDER_H
-            + SP
-            + CAPTION_H;
+            + SLIDER_H;
         let quality_h = CARD_EXTRA + q_items;
         let quality = card_frame(Pos2::new(left, y), cw, quality_h);
         let mut cy = quality.title.y + TITLE_H + SP;
@@ -600,25 +608,19 @@ impl SettingsLayout {
         let audio_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let tso_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
-        let tso_caption = Pos2::new(x, cy + 36.0);
-        cy += ROW_H + CAPTION_H + 6.0;
+        cy += ROW_H + SP;
         let dpi_switch = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
         cy += ROW_H + SP;
         let dpi_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, CELL_H));
         cy += CELL_H + SP;
-        let dpi_caption = Pos2::new(x, cy + 9.0);
-        cy += CAPTION_H + SP;
         let rs_label = Pos2::new(x, cy + 10.0);
         let rs_value = Pos2::new(x + inner_w - 20.0, cy + 10.0);
         cy += LABEL_H + SP;
         let rs_slider = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, SLIDER_H));
-        cy += SLIDER_H + SP;
-        let rs_caption = Pos2::new(x, cy + 9.0);
         y += quality_h + CARD_SP;
 
         // 窗口栏（默认）卡
-        let wb_items =
-            TITLE_H + SP + LABEL_H + SP + ROW_H + SP + LABEL_H + SP + ROW_H + SP + CAPTION_H;
+        let wb_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + LABEL_H + SP + ROW_H;
         let wb_h = CARD_EXTRA + wb_items;
         let windowbar = card_frame(Pos2::new(left, y), cw, wb_h);
         let mut cy = windowbar.title.y + TITLE_H + SP;
@@ -629,8 +631,6 @@ impl SettingsLayout {
         let bottom_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
         let bottom_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
-        cy += ROW_H + SP;
-        let wb_caption = Pos2::new(x, cy + 9.0);
         y += wb_h + CARD_SP;
 
         // 外观卡
@@ -660,20 +660,16 @@ impl SettingsLayout {
             audio_label,
             audio_row,
             tso_row,
-            tso_caption,
             dpi_switch,
             dpi_cell,
-            dpi_caption,
             rs_label,
             rs_value,
             rs_slider,
-            rs_caption,
             windowbar,
             top_label,
             top_row,
             bottom_label,
             bottom_row,
-            wb_caption,
             appearance,
             theme_label,
             theme_row,
@@ -949,7 +945,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             app.settings.set_video_codec(value);
         }
     }
-    caption(&painter, &t, py(layout.audio_label), "音频");
+    group_label(&painter, &t, py(layout.audio_label), "音频");
     const AUDIOS: [(&str, &str); 3] = [
         ("latest", "仅最新会话"),
         ("all", "全部会话"),
@@ -973,18 +969,12 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         &t,
         egui::Id::new("tso"),
         sy(layout.tso_row),
-        "镜像时关闭设备屏幕",
+        "整机镜像时关闭设备屏幕",
         app.settings.draft.turn_screen_off,
     ) {
         app.settings
             .set_turn_screen_off(!app.settings.draft.turn_screen_off);
     }
-    caption(
-        &painter,
-        &t,
-        py(layout.tso_caption),
-        "黑屏防误触；仅整机镜像有效",
-    );
 
     let dpi_auto = app.settings.draft.dpi.is_none();
     if switch_row(
@@ -1004,21 +994,14 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         &t,
         egui::Id::new("dpi"),
         sy(layout.dpi_cell),
-        "DPI",
+        "自定义 DPI",
         dpi_val,
         (120, 640),
         !dpi_auto,
     ) {
         app.settings.set_dpi(Some(v));
     }
-    caption(
-        &painter,
-        &t,
-        py(layout.dpi_caption),
-        "默认 160（同屏内容最多）；跟随则与设备一致",
-    );
-
-    caption(&painter, &t, py(layout.rs_label), "渲染倍率");
+    group_label(&painter, &t, py(layout.rs_label), "渲染倍率（1× 原生）");
     let scale_now = app.settings.draft.render_scale;
     paint::text_centered(
         &painter,
@@ -1037,15 +1020,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     ) {
         app.settings.set_render_scale(v);
     }
-    caption(
-        &painter,
-        &t,
-        py(layout.rs_caption),
-        "窗口 ÷ 倍率 = 实际渲染分辨率；1× = 原生",
-    );
 
     // 窗口栏（默认）卡内容
-    caption(&painter, &t, py(layout.top_label), "上巴");
+    group_label(&painter, &t, py(layout.top_label), "顶部栏");
     const TOPS: [(&str, &str); 2] = [("immersive", "沉浸"), ("native", "系统")];
     for (i, (value, label)) in TOPS.iter().enumerate() {
         let r = sy(layout.top_row[i]);
@@ -1060,7 +1037,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             app.settings.set_bar_mode(true, value);
         }
     }
-    caption(&painter, &t, py(layout.bottom_label), "下巴");
+    group_label(&painter, &t, py(layout.bottom_label), "底部栏");
     const BOTTOMS: [(&str, &str); 3] = [
         ("immersive", "沉浸"),
         ("native", "系统"),
@@ -1079,10 +1056,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             app.settings.set_bar_mode(false, value);
         }
     }
-    caption(&painter, &t, py(layout.wb_caption), "应用未单独设置时生效");
 
     // 外观卡内容
-    caption(&painter, &t, py(layout.theme_label), "主题");
+    group_label(&painter, &t, py(layout.theme_label), "主题");
     const THEMES: [(&str, &str); 3] = [("light", "亮色"), ("dark", "暗色"), ("system", "跟随系统")];
     for (i, (value, label)) in THEMES.iter().enumerate() {
         let r = sy(layout.theme_row[i]);
@@ -1190,7 +1166,7 @@ fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
     } else if std::ptr::eq(c, &layout.quality) {
         "投屏质量"
     } else if std::ptr::eq(c, &layout.windowbar) {
-        "窗口栏（默认）"
+        "默认窗口栏"
     } else {
         "外观"
     }
@@ -1199,6 +1175,8 @@ fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geom::ROW_H;
+    use geom::SP;
 
     #[test]
     fn settings_layout_y_chain_and_grouping() {
@@ -1209,11 +1187,9 @@ mod tests {
         // 保存钮已移除：无 footer，视口直达页底
         assert!((layout.vp.bottom() - 660.0).abs() < 0.01);
 
-        let title_to_caption = layout.tso_caption.y - layout.tso_row.center().y;
-        let caption_to_next = layout.dpi_switch.center().y - layout.tso_caption.y;
-        assert!(title_to_caption > 0.0);
-        assert!(caption_to_next > title_to_caption);
-        assert!((title_to_caption - 20.0).abs() < 0.01);
+        // 解释性小字取消后：黑屏开关行与 DPI 开关行标准间距相接
+        let gap = layout.dpi_switch.center().y - layout.tso_row.center().y;
+        assert!((gap - (ROW_H + SP)).abs() < 0.01);
     }
 }
 
