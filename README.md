@@ -62,10 +62,24 @@ scoop status              # 查看待升级清单
 
 ### 第 5 步：获取 Duo
 
-从源码构建并安装（当前发布方式）：
+推荐：下载/构建标准安装包 `Duo-<version>-setup.exe`（约 6 MB）后双击安装：
+
+- 每用户安装，免管理员；默认装 `%LOCALAPPDATA%\Duo`，**C 盘紧张可在向导中改
+  安装到任意盘**；
+- 卸载走控制面板「应用」或开始菜单 Duo 目录，用户数据默认保留、
+  卸载时可选一并清除。
+
+从源码构建安装包（WSL）：
+
+```sh
+git clone https://github.com/iluluyu/duo.git
+cd duo
+scripts/installer/build_setup.sh   # 产物 dist/Duo-<version>-setup.exe
+```
+
+或开发机直装（不产生 setup.exe）：
 
 ```powershell
-git clone https://github.com/iluluyu/duo.git C:\duo
 cd C:\duo
 powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
