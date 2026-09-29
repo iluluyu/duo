@@ -67,6 +67,10 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     let chips = app.running_chips();
     let chips_h = running_card_height(ui.max_rect().width(), &chips, ui);
     let entries: Vec<AppEntry> = app.grid_entries();
+    // 过渡状态按全量应用列表清理（不能用搜索结果：搜索隐藏/恢复会重播入场）。
+    app.icon_fades
+        .borrow_mut()
+        .retain(|pkg, _| app.apps.apps.iter().any(|e| &e.package == pkg));
     let layout = HomeLayout::compute_with_chips_height(
         ui.max_rect().width(),
         ui.max_rect().height(),
@@ -573,7 +577,7 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
     };
     paint::rounded_fill(&painter, icon, 14.0, wash);
     let alpha = if entry.installed { 1.0 } else { 0.4 };
-    paint_glyph(app, ui, &painter, entry, icon, 60.0, alpha);
+    let arrival = paint_glyph(app, ui, &painter, entry, icon, 60.0, alpha);
     // 标签槽宽 = QML Text width: tile.width - 8（现有几何，不另设常量）；
     // 运行时逐字量宽（字体栈内 CJK 兜底，中西混排按各自字形宽计），
     // 塞不下才截断并补 "…"（elide_to_width 内含 "…" 预算）。
@@ -588,7 +592,7 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
         &label,
         12.0,
         false,
-        t.ink,
+        mul_alpha(t.ink, arrival),
     );
     if entry.installed {
         if resp.clicked() {
@@ -600,6 +604,9 @@ fn tile(app: &mut PanelApp, ui: &mut egui::Ui, entry: &AppEntry, cell: Rect, vie
 
 /// 图标：真图标（sweep 缓存/预设）优先，空则 G2 squircle + 首字白字
 /// （Main.qml AppGlyph；fallback 色 = 包名 charCode 和 % 12）。
+/// 切换动画（2026-09-29 gpt-6-sol 方案）：按包名键控 0.18s ease-out-cubic；
+/// 新包入场淡入，fallback→真图标交叉淡化 + 0.92→1 缩放；动画开关关=瞬切。
+/// 返回入场进度供标签同步淡化。
 fn paint_glyph(
     app: &PanelApp,
     ui: &mut egui::Ui,
@@ -608,87 +615,174 @@ fn paint_glyph(
     rect: Rect,
     _size: f32,
     alpha: f32,
-) {
-    // 目录预设（品牌渐变 squircle + 叠字）矢量直绘：不再走 SVG 240px
-    // 光栅 → LINEAR 缩到显示尺寸的采样路径（四周锯齿的根因，2026-09-19）。
-    // 仅当 entry.icon 就是预设 SVG（真图标 PNG 未描到时）才适用。
-    let preset_svg = matches!(&entry.icon, Some(p) if p.to_string_lossy().contains("presets"));
-    if preset_svg {
+) -> f32 {
+    let visual = resolve_glyph(app, ui, entry, rect.width());
+    let ready = visual.as_ref().and_then(|_| entry.icon.clone());
+    let (arrival, reveal) = glyph_fade(app, entry, ready.as_deref());
+    if arrival < 1.0 || reveal < 1.0 {
+        ui.ctx().request_repaint();
+    }
+    match visual {
+        None => draw_fallback_glyph(painter, entry, rect, alpha * arrival),
+        Some(GlyphVisual::Preset(preset)) => {
+            if reveal < 1.0 {
+                draw_fallback_glyph(painter, entry, rect, alpha * arrival * (1.0 - reveal));
+            }
+            let r = scale_about_center(rect, 0.92 + 0.08 * reveal);
+            draw_preset_glyph(painter, preset, r, alpha * arrival * reveal);
+        }
+        Some(GlyphVisual::Texture(id)) => {
+            if reveal < 1.0 {
+                draw_fallback_glyph(painter, entry, rect, alpha * arrival * (1.0 - reveal));
+            }
+            let r = scale_about_center(rect, 0.92 + 0.08 * reveal);
+            // painter.image 而非 Image widget：网格区必须裁剪溢出
+            // （QML clip:true）——widget 不吃 painter 的 clip rect
+            painter.image(
+                id,
+                r,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                white_alpha(alpha * arrival * reveal),
+            );
+        }
+    }
+    arrival
+}
+
+enum GlyphVisual {
+    Preset(&'static duo_core::catalog::AppPreset),
+    Texture(egui::TextureId),
+}
+
+/// 当前帧可用视觉：preset 直绘 / 已就绪贴图 / None=fallback。
+fn resolve_glyph(
+    app: &PanelApp,
+    ui: &mut egui::Ui,
+    entry: &AppEntry,
+    width: f32,
+) -> Option<GlyphVisual> {
+    if matches!(&entry.icon, Some(p) if p.to_string_lossy().contains("presets")) {
         if let Some(preset) = duo_core::catalog::catalog_by_package(&entry.package) {
-            let bottom = mul_alpha(crate::theme::hex(preset.color), alpha);
-            let top = mul_alpha(
-                crate::theme::hex(&duo_core::icons::lighten(preset.color, 0.08)),
-                alpha,
-            );
-            let feather = (painter.ctx().pixels_per_point() * 0.8).clamp(0.5, 2.0);
-            painter.add(paint::g2_gradient_feathered(
-                rect,
-                rect.width() / 2.0,
-                bottom,
-                top,
-                feather,
-            ));
-            let ink = if preset.glyph_ink {
-                egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
-            } else {
-                egui::Color32::WHITE
-            };
-            let ch: String = preset
-                .glyph
-                .chars()
-                .next()
-                .map(String::from)
-                .unwrap_or_default();
-            paint::text_centered(
-                painter,
-                rect.center(),
-                &ch,
-                rect.width() * 0.467,
-                true,
-                mul_alpha(ink, alpha),
-            );
-            return;
+            return Some(GlyphVisual::Preset(preset));
         }
     }
     if let Some(path) = &entry.icon {
-        // 光栅缓存统一走 icongen 规格（显示尺寸 LANCZOS + G2 蒙版）：
-        // 裸/平角遗留缓存在此补蒙版，避免 288→60 LINEAR 缩出毛角。
         if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("png"))
         {
-            if let Some(texture) = load_icon_texture(app, ui.ctx(), path, rect.width()) {
-                painter.image(
-                    texture.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                return;
+            if let Some(texture) = load_icon_texture(app, ui.ctx(), path, width) {
+                return Some(GlyphVisual::Texture(texture.id()));
             }
         } else if path.exists() {
-            // Windows 反斜杠不是合法 URL；需正斜杠 + file:/// 前缀，
-            // 否则 egui 加载器报错并画"坏图三角"。Ready 才上屏，失败走
-            // squircle 兜底（异步加载首帧也先兜底，就绪后自然替换）。
+            // Windows 反斜杠不是合法 URL；需正斜杠 + file:/// 前缀。
+            // Pending 时轮询重绘，Ready 才上屏。
             let uri = format!("file:///{}", path.display().to_string().replace('\\', "/"));
             let poll = ui.ctx().try_load_texture(
                 &uri,
                 egui::TextureOptions::LINEAR,
                 egui::load::SizeHint::Size(240, 240),
             );
-            if let Ok(egui::load::TexturePoll::Ready { texture }) = poll {
-                // painter.image 而非 Image widget：网格区必须裁剪溢出
-                // （QML clip:true），widget 不吃 painter 的 clip rect
-                painter.image(
-                    texture.id,
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                return;
+            match poll {
+                Ok(egui::load::TexturePoll::Ready { texture }) => {
+                    return Some(GlyphVisual::Texture(texture.id));
+                }
+                Ok(egui::load::TexturePoll::Pending { .. }) => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(50));
+                }
+                Err(_) => {}
             }
         }
     }
+    None
+}
+
+/// 按包名键控的过渡状态，由 PanelApp::icon_fades 持有；sweep 重写
+/// 同路径图标时外部重置为 replaced() 以触发交叉淡化。
+pub(crate) struct IconFade {
+    ready_path: Option<std::path::PathBuf>,
+    since: std::time::Instant,
+    entering: bool,
+}
+
+impl IconFade {
+    pub(crate) fn replaced() -> Self {
+        Self {
+            ready_path: None,
+            since: std::time::Instant::now(),
+            entering: false,
+        }
+    }
+}
+
+fn glyph_fade(app: &PanelApp, entry: &AppEntry, ready: Option<&std::path::Path>) -> (f32, f32) {
+    let now = std::time::Instant::now();
+    let enabled = app.settings.draft.animations_enabled;
+    let mut fades = app.icon_fades.borrow_mut();
+    let fade = fades.entry(entry.package.clone()).or_insert(IconFade {
+        ready_path: None,
+        since: now,
+        entering: true,
+    });
+    if fade.ready_path.as_deref() != ready {
+        fade.ready_path = ready.map(ToOwned::to_owned);
+        fade.since = now;
+    }
+    let reveal = if enabled {
+        crate::app::ease_out_cubic(fade.since.elapsed().as_secs_f32() / 0.18)
+    } else {
+        1.0
+    };
+    let arrival = if fade.entering { reveal } else { 1.0 };
+    if reveal >= 1.0 {
+        fade.entering = false;
+    }
+    (arrival, reveal)
+}
+
+/// 目录预设（品牌渐变 squircle + 叠字）矢量直绘：不走 SVG 光栅缩采样。
+fn draw_preset_glyph(
+    painter: &egui::Painter,
+    preset: &duo_core::catalog::AppPreset,
+    rect: Rect,
+    alpha: f32,
+) {
+    let bottom = mul_alpha(crate::theme::hex(preset.color), alpha);
+    let top = mul_alpha(
+        crate::theme::hex(&duo_core::icons::lighten(preset.color, 0.08)),
+        alpha,
+    );
+    let feather = (painter.ctx().pixels_per_point() * 0.8).clamp(0.5, 2.0);
+    painter.add(paint::g2_gradient_feathered(
+        rect,
+        rect.width() / 2.0,
+        bottom,
+        top,
+        feather,
+    ));
+    let ink = if preset.glyph_ink {
+        egui::Color32::from_rgb(0x1D, 0x1D, 0x1F)
+    } else {
+        egui::Color32::WHITE
+    };
+    let ch: String = preset
+        .glyph
+        .chars()
+        .next()
+        .map(String::from)
+        .unwrap_or_default();
+    paint::text_centered(
+        painter,
+        rect.center(),
+        &ch,
+        rect.width() * 0.467,
+        true,
+        mul_alpha(ink, alpha),
+    );
+}
+
+/// G2 squircle + 首字白字兜底（fallback 色 = 包名 charCode 和 % 12）。
+fn draw_fallback_glyph(painter: &egui::Painter, entry: &AppEntry, rect: Rect, alpha: f32) {
     let color = mul_alpha(crate::theme::fallback_color(&entry.package), alpha);
     painter.add(paint::g2_squircle(rect, color));
     let ch: String = entry
@@ -699,6 +793,15 @@ fn paint_glyph(
         .unwrap_or_default();
     let ink = mul_alpha(egui::Color32::WHITE, alpha);
     paint::text_centered(painter, rect.center(), &ch, rect.width() * 0.32, true, ink);
+}
+
+fn scale_about_center(rect: Rect, k: f32) -> Rect {
+    Rect::from_center_size(rect.center(), rect.size() * k)
+}
+
+fn white_alpha(a: f32) -> egui::Color32 {
+    let b = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(255, 255, 255, b)
 }
 
 /// 光栅图标贴图（panel 侧缓存；圆角一致性由 icongen::panel_icon_rgba
