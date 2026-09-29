@@ -236,6 +236,8 @@ pub struct PanelApp {
     pub(crate) last_screen_size: Option<egui::Vec2>,
     /// 图标贴图缓存：(路径, 显示尺寸)。None = 加载失败不重试。
     pub(crate) icon_tex: RefCell<BTreeMap<(PathBuf, u32), Option<TextureHandle>>>,
+    /// 图标切换过渡状态（键=包名；见 home.rs IconFade）。
+    pub(crate) icon_fades: RefCell<BTreeMap<String, crate::home::IconFade>>,
     /// 玻璃岛贴图缓存（0=胶囊岛 1=搜索岛）：键=（页,滚动量化,暗色,
     /// 岛矩形）。
     pub(crate) island_tex: RefCell<[Option<(IslandKey, TextureHandle)>; 2]>,
@@ -315,6 +317,7 @@ impl PanelApp {
             menu_snapshot_ppp: 1.0,
             last_screen_size: None,
             icon_tex: RefCell::new(BTreeMap::new()),
+            icon_fades: RefCell::new(BTreeMap::new()),
             island_tex: RefCell::new([None, None]),
             island_drawn: [false, false],
             island_bands: Vec::new(),
@@ -2480,8 +2483,14 @@ impl PanelApp {
                     Ok(sweep) => {
                         if sweep.rendered {
                             let patched = self.apps.apply_sweep(&sweep.labels);
-                            // r20 重写后旧贴图滞留：清缓存让下帧重读
+                            // r20 重写后旧贴图滞留：清缓存让下帧重读；
+                            // 同路径重写靠重置过渡状态触发交叉淡化。
                             self.icon_tex.borrow_mut().clear();
+                            for pkg in &patched {
+                                self.icon_fades
+                                    .borrow_mut()
+                                    .insert(pkg.clone(), crate::home::IconFade::replaced());
+                            }
                             self.menu_snapshot = None;
                             if !patched.is_empty() {
                                 self.toast_now("应用图标已更新");
@@ -2660,8 +2669,8 @@ impl Drop for PanelApp {
     }
 }
 
-/// ease-out cubic（p∈[0,1]，尾端减速；标签拇指动画用）。
-fn ease_out_cubic(p: f32) -> f32 {
+/// ease-out cubic（p∈[0,1]，尾端减速；标签拇指/图标过渡动画用）。
+pub(crate) fn ease_out_cubic(p: f32) -> f32 {
     let p = p.clamp(0.0, 1.0);
     1.0 - (1.0 - p).powi(3)
 }
