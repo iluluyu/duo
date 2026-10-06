@@ -15,6 +15,18 @@
       落地）；⑤Android 11+ 首次无线需配对或 USB tcpip（插 USB →
       `adb tcpip 5555` → connect 免配对，测试机无线全程验证）；
       ⑥隐私：真实 IP 已从仓内全部清除（用 192.168.1.x 文档段）。
+- [x] **2026-10-06 设备浮层实况闪烁根治（结案，Grok 4.7 顾问 +
+      4 帧序列零差 + GLM 确认毛玻璃）**：实况反馈卡/闪烁/无玻璃/
+      圆角错位，出图验证却全绿。根因（Grok 压力测试确认）：玻璃泵
+      pump_menu_glass 的 menu_effectively_open 只认右键菜单，不认识
+      设备浮层 popup——浮层开 2 帧后 menu_glass 被销毁，毛玻璃闪现
+      即退化、每次开都闪；frost 与兜底底矩形公式不同 → 边缘/圆角
+      错位感；截图模式连续渲染 + 出图钩子路径不走这条泵，掩盖了
+      一切。修复：泵认 popup（is_popup_open）、tick 开门当帧补
+      ensure（is_popup_open 读上帧）、兜底底与 frost 同
+      snap_rect_device_px(MENU_MARGIN) 公式；新增 DUO_SHOT_PICKER_SEQ
+      无头闪烁验证（独立递增 tag 存 4 帧序列）。教训：出图验证与
+      实况必须同路径，生命周期类 bug 出图验证会假绿。
 - [x] **2026-10-06 设备浮层玻璃化 + 双模视觉交叉验证闭环（结案，
       三轮 GLM 复检 PASS）**：用户反馈浮层不可用/显示问题/视觉差。
       流程：glm-5.3-flash + gemini-3.8-flash 双模独立看图 QA（P0 互证：

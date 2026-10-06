@@ -228,6 +228,7 @@ pub struct PanelApp {
     /// 出图泵自己的截图请求已发出（毛玻璃也发截图命令，须区分归属）。
     pub(crate) shot_capture: bool,
     pub(crate) shot_capture_frame: u32,
+    pub(crate) shot_seq_saved: u32,
     /// DWM blur 是否已挂上（sync_glass 跳变时才调 DWM，见 blur.rs 注释）。
     pub(crate) glass_applied: bool,
     /// DUO_SELFCHECK 自检状态机（全屏滚动判决，临时诊断工具）。
@@ -332,6 +333,7 @@ impl PanelApp {
             probe_pill: None,
             shot_capture: false,
             shot_capture_frame: 0,
+            shot_seq_saved: 0,
             glass_applied: false,
             selfcheck_hold_until: std::time::Instant::now(),
             tab_anim: None,
@@ -912,7 +914,9 @@ impl PanelApp {
 
     /// 菜单可视状态：真右键链路 + Wayland 出图 harness 托管菜单。
     pub(crate) fn menu_effectively_open(&self, ctx: &egui::Context) -> bool {
-        ctx.is_context_menu_open() || self.harness_menu_open()
+        ctx.is_context_menu_open()
+            || self.harness_menu_open()
+            || ctx.memory(|m| m.is_popup_open(egui::Id::new("duo-device-picker")))
     }
 
     fn harness_menu_open(&self) -> bool {
@@ -1919,10 +1923,10 @@ impl PanelApp {
             ui.ctx().memory_mut(|m| m.close_popup());
         }
         if let Some(idx) = bg_idx {
-            let rect = ui
-                .min_rect()
-                .expand2(egui::vec2(8.0, 6.0))
-                .intersect(ui.max_rect());
+            let rect = crate::glass::snap_rect_device_px(
+                ui.min_rect().expand2(egui::vec2(MENU_MARGIN, MENU_MARGIN)),
+                ui.ctx().pixels_per_point(),
+            );
             ui.painter().set(
                 idx,
                 egui::Shape::rect_filled(
@@ -2766,32 +2770,65 @@ impl PanelApp {
             (40, 2900)
         };
         let ready = *frames >= need_frames && started.elapsed() >= Duration::from_millis(need_ms);
+        // DUO_SHOT_PICKER_SEQ=1：浮层稳态序列采样（闪烁无头验证）——
+        // 就绪后每 15 帧截一张（独立递增 tag），存满 4 张才关窗。
+        let seq = std::env::var("DUO_SHOT_PICKER_SEQ").is_ok();
+        let shot_tag = if seq && self.shot_seq_saved < 4 {
+            format!("{SHOT_TAG}-seq{}", self.shot_seq_saved)
+        } else {
+            SHOT_TAG.to_string()
+        };
         if ready && !self.shot_capture {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                SHOT_TAG.to_string(),
+                shot_tag.clone(),
             )));
             self.shot_capture = true;
             self.shot_capture_frame = *frames;
         }
         if ready && self.shot_capture && *frames - self.shot_capture_frame > 30 {
-            // 回包丢失重发（无交互环境偶发）
+            // 回包丢失重发（无交互环境偶发）；SEQ 模式由间隔采样推进
+            if seq {
+                if self.shot_seq_saved >= 4 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                        SHOT_TAG.to_string(),
+                    )));
+                }
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                    SHOT_TAG.to_string(),
+                )));
+            }
+            self.shot_capture_frame = *frames;
+        }
+        if ready && seq && self.shot_seq_saved < 4 && *frames - self.shot_capture_frame == 15 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                SHOT_TAG.to_string(),
+                shot_tag.clone(),
             )));
             self.shot_capture_frame = *frames;
         }
         if !self.shot_capture {
             return;
         }
+        let want_tag = shot_tag.clone();
         let shot = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
                 egui::Event::Screenshot {
                     image, user_data, ..
-                } if user_data_eq(user_data, SHOT_TAG) => Some(image.clone()),
+                } if user_data_eq(user_data, want_tag.as_str()) => Some(image.clone()),
                 _ => None,
             })
         });
         if let Some(image) = shot {
+            let out_path = if seq && self.shot_seq_saved < 4 {
+                let p = std::path::Path::new(path.as_str());
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("shot");
+                let parent = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+                let name = format!("{stem}-{}.png", self.shot_seq_saved);
+                self.shot_seq_saved += 1;
+                parent.join(name).to_string_lossy().to_string()
+            } else {
+                path.clone()
+            };
             let size = [image.width() as u32, image.height() as u32];
             let pixels: Vec<u8> = image
                 .pixels
@@ -2799,18 +2836,23 @@ impl PanelApp {
                 .flat_map(|c| [c.r(), c.g(), c.b()])
                 .collect();
             match image::save_buffer(
-                path.as_str(),
+                out_path.as_str(),
                 &pixels,
                 size[0],
                 size[1],
                 image::ColorType::Rgb8,
             ) {
-                Ok(()) => eprintln!("shot saved: {} ({}x{})", path, size[0], size[1]),
+                Ok(()) => eprintln!("shot saved: {} ({}x{})", out_path, size[0], size[1]),
                 Err(err) => eprintln!("shot save FAILED: {path}: {err}"),
             }
-            self.shot = None;
-            self.shot_capture = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if seq && self.shot_seq_saved < 4 {
+                // 采样继续：下一帧按新 tag 再拍
+                self.shot_capture = false;
+            } else {
+                self.shot = None;
+                self.shot_capture = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 

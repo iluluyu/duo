@@ -523,6 +523,7 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             ui.memory_mut(|m| m.toggle_popup(picker_id));
         }
         if app.picker_open_tick() {
+            app.ensure_menu_glass(ui.ctx());
             ui.memory_mut(|m| m.open_popup(picker_id));
         }
         egui::popup_below_widget(
