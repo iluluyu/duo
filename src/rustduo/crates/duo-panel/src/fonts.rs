@@ -8,11 +8,11 @@
 pub fn cjk_font_candidates() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
         vec![
-            r"C:\Windows\Fonts\Deng.ttf", // 等线（2026-10-06 定稿：
-            // 全家等线——A/B 裁定层级更分明/气质协调；粗体 Dengb 在
-            // duo-bold 栈。11px 次级灰字偏细的保留项：必要时加深 ink2）
-            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyh.ttc", // 微软雅黑（2026-10-06 复议
+            // 定稿：等线正文用户看着费力，正文回雅黑；粗体仍等线 Bold
+            // （duo-bold 栈，避开雅黑 Bold 塑料感））
             r"C:\Windows\Fonts\msyhbd.ttc",
+            r"C:\Windows\Fonts\Deng.ttf",
         ]
     } else if cfg!(target_os = "macos") {
         vec![
