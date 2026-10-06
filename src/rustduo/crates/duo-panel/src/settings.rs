@@ -1375,6 +1375,14 @@ mod scroll_tests {
         pump_at(app, ctx, egui::vec2(420.0, 660.0), events);
     }
 
+    /// 帧计数单调时间源：RawInput.time 不给则 egui 取真实墙钟，
+    /// 拖拽命中在动画边界上偶发翻转（2026-10-06 CI flaky 根因）。
+    fn frame_time() -> f64 {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        (N.fetch_add(1, Ordering::SeqCst) as f64) * 0.016
+    }
+
     fn pump_at(
         app: &mut PanelApp,
         ctx: &egui::Context,
@@ -1384,6 +1392,7 @@ mod scroll_tests {
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), screen)),
             events,
+            time: Some(frame_time()),
             ..Default::default()
         };
         let _ = ctx.run(raw, |ctx| {
