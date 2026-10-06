@@ -27,8 +27,8 @@ fn group_label(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
     let galley = painter.ctx().fonts(|f| {
         f.layout_job(egui::text::LayoutJob::simple(
             text.to_owned(),
-            paint::font_id(13.0, false),
-            t.ink,
+            paint::font_id(12.0, false),
+            t.ink2,
             f32::INFINITY,
         ))
     });
@@ -45,7 +45,7 @@ fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
     let galley = painter.ctx().fonts(|f| {
         f.layout_job(egui::text::LayoutJob::simple(
             text.to_owned(),
-            paint::font_id(15.0, true),
+            paint::font_id(16.0, true),
             t.ink,
             f32::INFINITY,
         ))
@@ -59,7 +59,7 @@ fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
 
 /// 正文行文字（13px ink）。pos = 行盒垂直中心。
 fn row_label(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
-    text_at(painter, pos, text, 13.0, t.ink);
+    text_at(painter, pos, text, 14.0, t.ink);
 }
 
 /// ModeButton（分段单选）：h32 r10；选中 = accent 14% 底 + accent 45%
@@ -81,10 +81,10 @@ fn mode_button(
     } else {
         t.card
     };
-    paint::rounded_fill(ui.painter(), rect, 10.0, fill);
+    paint::rounded_fill(ui.painter(), rect, 8.0, fill);
     if selected {
         let border = over(t.bg, t.accent, 0.45);
-        paint::rounded_stroke(ui.painter(), rect, 10.0, border);
+        paint::rounded_stroke(ui.painter(), rect, 8.0, border);
     }
     // 选中态不再换字重（雅黑↔等线整个字面跳变很刺眼）；颜色+底+边
     // 三重区分已足。2026-10-06 用户拍板。
@@ -92,7 +92,7 @@ fn mode_button(
         ui.painter(),
         rect.center(),
         text,
-        13.0,
+        14.0,
         false,
         if selected { t.accent } else { t.ink2 },
     );
@@ -148,7 +148,7 @@ fn switch_row(
         ui,
         t,
         id,
-        Pos2::new(area.right() - 20.0, area.center().y),
+        Pos2::new(area.right() - 16.0, area.center().y),
         checked,
     )
 }
@@ -174,7 +174,7 @@ fn number_box(
     let uresp = ui.interact(up, id.with("u"), Sense::click());
     let focused = ui.ctx().memory(|m| m.has_focus(id.with("edit")));
 
-    paint::rounded_fill(ui.painter(), rect, 10.0, t.control_fill);
+    paint::rounded_fill(ui.painter(), rect, 8.0, t.control_fill);
     let border = if focused {
         t.accent
     } else {
@@ -182,14 +182,14 @@ fn number_box(
     };
     paint::rounded_stroke(ui.painter(), rect, 10.0, border);
     let glyph_color = t.ink2;
-    paint::text_centered(ui.painter(), down.center(), "−", 13.0, false, glyph_color);
-    paint::text_centered(ui.painter(), up.center(), "+", 13.0, false, glyph_color);
+    paint::text_centered(ui.painter(), down.center(), "−", 14.0, false, glyph_color);
+    paint::text_centered(ui.painter(), up.center(), "+", 14.0, false, glyph_color);
 
     // 中央可键入：失焦提交，回车提交
     let mut buf = value.to_string();
     let edit = egui::TextEdit::singleline(&mut buf)
         .id(id.with("edit"))
-        .font(egui::FontId::proportional(13.0))
+        .font(egui::FontId::proportional(14.0))
         .text_color(t.ink)
         .frame(false)
         .desired_width(rect.width() - 56.0)
@@ -242,11 +242,11 @@ fn number_cell(
     caption(
         ui.painter(),
         t,
-        Pos2::new(rect.left(), rect.top() + 10.0),
+        Pos2::new(rect.left(), rect.top() + 2.0),
         title,
     );
     let box_rect = Rect::from_min_size(
-        Pos2::new(rect.left(), rect.top() + 26.0),
+        Pos2::new(rect.left(), rect.top() + 20.0),
         Vec2::new(rect.width(), 32.0),
     );
     if !enabled {
@@ -288,7 +288,7 @@ fn path_row(
     caption(
         ui.painter(),
         t,
-        Pos2::new(rect.left(), rect.top() + 13.0),
+        Pos2::new(rect.left(), rect.top() + 2.0),
         &format!("{tool} 路径"),
     );
     // 检测结果胶囊（右侧，2.5s 淡出语义：这里只在时限内显示）
@@ -309,7 +309,7 @@ fn path_row(
         }
     }
     let row = Rect::from_min_size(
-        Pos2::new(rect.left(), rect.top() + 32.0),
+        Pos2::new(rect.left(), rect.top() + 20.0),
         Vec2::new(rect.width(), 32.0),
     );
     let sec_w = 64.0;
@@ -327,16 +327,16 @@ fn path_row(
     // TextField：controlFill + hairline/accent(focus)；占位「留空自动探测」
     let fid = egui::Id::new(("settings-path", tool));
     let focused = ui.ctx().memory(|m| m.has_focus(fid));
-    paint::rounded_fill(ui.painter(), field, 10.0, t.control_fill);
+    paint::rounded_fill(ui.painter(), field, 8.0, t.control_fill);
     let border = if focused {
         t.accent
     } else {
         t.hairline_on_card
     };
-    paint::rounded_stroke(ui.painter(), field, 10.0, border);
+    paint::rounded_stroke(ui.painter(), field, 8.0, border);
     let mut edit = egui::TextEdit::singleline(text)
         .id(fid)
-        .font(egui::FontId::proportional(13.0))
+        .font(egui::FontId::proportional(14.0))
         .text_color(if locked { t.ink2 } else { t.ink })
         .frame(false)
         .desired_width(field_w - 20.0)
@@ -417,19 +417,20 @@ fn path_row(
 /// 保存钮已移除（返回首页自动保存）：scroller 直达页底。
 mod geom {
     /// 卡内容横 padding = shadowHost 8 + innerCol 12（对齐 QML 卡内区域）。
-    pub const PAD: f32 = 20.0;
-    pub const SP: f32 = 9.0; // 卡内 Column spacing
+    pub const PAD: f32 = 16.0;
+    pub const SP: f32 = 8.0; // 同组控件间距
+    /// 分组间（控件底→下一分组标签）的节奏档
+    pub const SPG: f32 = 12.0;
     pub const CARD_SP: f32 = 12.0; // 卡间距
-    pub const PATH_ROW_H: f32 = 56.0; // 标题 18 + 6 + 输入 32
-    pub const CELL_H: f32 = 56.0; // 标签 18 + 6 + 数字框 32
-    pub const LABEL_H: f32 = 18.0;
+    pub const PATH_ROW_H: f32 = 52.0; // 标题 16 + 4 + 输入 32
+    pub const CELL_H: f32 = 52.0; // 标签 16 + 4 + 数字框 32
+    pub const LABEL_H: f32 = 16.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
-    pub const TITLE_H: f32 = 22.0; // 卡标题 15px 字盒高
-    /// 标题字形顶到卡顶：压过圆角弧带（r14）才不显贴上沿——2026-10-06
-    /// 用户裁定 14 太高，18 为视觉中心落点。
-    pub const TITLE_TOP: f32 = 18.0;
+    pub const TITLE_H: f32 = 20.0; // 卡标题 16px 字盒高
+    /// 标题字形顶到卡顶（4px 网格：16 让开 r16 弧带起段）
+    pub const TITLE_TOP: f32 = 16.0;
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
-    pub const MARGIN: f32 = 16.0; // 滚动区左右边距
+    pub const MARGIN: f32 = 20.0; // 页边距（4px 网格定稿）
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
     pub const CARD_EXTRA: f32 = 3.0 + 12.0 * 2.0 + 10.0;
     pub const TOP: f32 = 64.0; // 胶囊下让位
@@ -509,8 +510,8 @@ impl SettingsLayout {
         // 避免路径行/模式钮/滑条拉伸成横幅（2026-09-19）。
         // 六修 full_bleed：玻璃开时视口顶到 0（内容从胶囊玻璃岛下滚
         // 过），内容起始 y 不变；关玻璃回 64 硬让位。
-        let cw = (w - (MARGIN + 8.0) * 2.0).min(560.0);
-        let left = ((w - cw) / 2.0).max(MARGIN + 8.0);
+        let cw = (w - MARGIN * 2.0).min(560.0);
+        let left = ((w - cw) / 2.0).max(MARGIN);
         let vp_top = if full_bleed { 0.0 } else { TOP };
         let vp = Rect::from_min_max(Pos2::new(left, vp_top), Pos2::new(left + cw, h));
         let inner_w = cw - PAD * 2.0;
@@ -530,25 +531,25 @@ impl SettingsLayout {
         let mut dev_rows = Vec::new();
         let mut wifi_label = None;
         let mut wifi_rows = Vec::new();
-        let mut dev_items = TITLE_H + SP;
+        let mut dev_items = TITLE_H + SPG;
         dev_items += dev_count as f32 * (ROW_H + SP);
         if wifi_count > 0 {
-            dev_items += LABEL_H + SP + wifi_count as f32 * (ROW_H + SP);
+            dev_items += LABEL_H + 4.0 + wifi_count as f32 * (ROW_H + SP);
         }
         let devices = (dev_count > 0 || wifi_count > 0)
             .then(|| card_frame(Pos2::new(left, y), cw, CARD_EXTRA + dev_items));
         if let Some(dev) = &devices {
-            let mut cy = dev.title.y + TITLE_H + SP;
+            let mut cy = dev.title.y + TITLE_H + SPG;
             for _ in 0..dev_count {
                 dev_rows.push(Rect::from_min_size(
                     Pos2::new(x, cy),
                     Vec2::new(inner_w, ROW_H),
                 ));
-                cy += ROW_H + SP;
+                cy += ROW_H + SPG;
             }
             if wifi_count > 0 {
-                wifi_label = Some(Pos2::new(x, cy + 10.0));
-                cy += LABEL_H + SP;
+                wifi_label = Some(Pos2::new(x, cy + 2.0));
+                cy += LABEL_H + 4.0;
                 for _ in 0..wifi_count {
                     wifi_rows.push(Rect::from_min_size(
                         Pos2::new(x, cy),
@@ -563,9 +564,9 @@ impl SettingsLayout {
         // 引擎卡
         let lock = if engine_locked { LOCK_H + SP } else { 0.0 };
         let engine_h =
-            CARD_EXTRA + TITLE_H + SP + PATH_ROW_H + SP + PATH_ROW_H + SP + lock + CELL_H;
+            CARD_EXTRA + TITLE_H + SPG + PATH_ROW_H + SP + PATH_ROW_H + SP + lock + CELL_H;
         let engine = card_frame(Pos2::new(left, y), cw, engine_h);
-        let mut cy = engine.title.y + TITLE_H + SP;
+        let mut cy = engine.title.y + TITLE_H + SPG;
         let scrcpy_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, PATH_ROW_H));
         cy += PATH_ROW_H + SP;
         let adb_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, PATH_ROW_H));
@@ -583,15 +584,15 @@ impl SettingsLayout {
 
         // 投屏质量卡（解释性小字已取消，分组标签 13px 正文字号）
         let q_items = TITLE_H
-            + SP
+            + SPG
             + ROW_H
-            + SP
+            + SPG
             + LABEL_H
-            + SP
+            + 4.0
             + ROW_H
-            + SP
+            + SPG
             + LABEL_H
-            + SP
+            + 4.0
             + ROW_H
             + SP
             + ROW_H
@@ -599,21 +600,21 @@ impl SettingsLayout {
             + ROW_H
             + SP
             + CELL_H
-            + SP
+            + SPG
             + LABEL_H
-            + SP
+            + 4.0
             + geom::ROW_H;
         let quality_h = CARD_EXTRA + q_items;
         let quality = card_frame(Pos2::new(left, y), cw, quality_h);
-        let mut cy = quality.title.y + TITLE_H + SP;
+        let mut cy = quality.title.y + TITLE_H + SPG;
         let codec_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
-        cy += ROW_H + SP;
-        let hwdec_label = Pos2::new(x, cy + 10.0);
-        cy += LABEL_H + SP;
+        cy += ROW_H + SPG;
+        let hwdec_label = Pos2::new(x, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let hwdec_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
-        cy += ROW_H + SP;
-        let audio_label = Pos2::new(x, cy + 10.0);
-        cy += LABEL_H + SP;
+        cy += ROW_H + SPG;
+        let audio_label = Pos2::new(x, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let audio_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let tso_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
@@ -621,34 +622,34 @@ impl SettingsLayout {
         let dpi_switch = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
         cy += ROW_H + SP;
         let dpi_cell = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, CELL_H));
-        cy += CELL_H + SP;
-        let rs_label = Pos2::new(x, cy + 10.0);
-        let rs_value = Pos2::new(x + inner_w - 20.0, cy + 10.0);
-        cy += LABEL_H + SP;
+        cy += CELL_H + SPG;
+        let rs_label = Pos2::new(x, cy + 2.0);
+        let rs_value = Pos2::new(x + inner_w - 16.0, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let rs_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
         y += quality_h + CARD_SP;
 
         // 窗口栏（默认）卡
-        let wb_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + LABEL_H + SP + ROW_H;
+        let wb_items = TITLE_H + SPG + LABEL_H + 4.0 + ROW_H + SPG + LABEL_H + 4.0 + ROW_H;
         let wb_h = CARD_EXTRA + wb_items;
         let windowbar = card_frame(Pos2::new(left, y), cw, wb_h);
-        let mut cy = windowbar.title.y + TITLE_H + SP;
-        let top_label = Pos2::new(x, cy + 10.0);
-        cy += LABEL_H + SP;
+        let mut cy = windowbar.title.y + TITLE_H + SPG;
+        let top_label = Pos2::new(x, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let top_row: [Rect; 2] = seg_row(x, cy, inner_w, 2).try_into().unwrap();
-        cy += ROW_H + SP;
-        let bottom_label = Pos2::new(x, cy + 10.0);
-        cy += LABEL_H + SP;
+        cy += ROW_H + SPG;
+        let bottom_label = Pos2::new(x, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let bottom_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         y += wb_h + CARD_SP;
 
         // 外观卡
-        let ap_items = TITLE_H + SP + LABEL_H + SP + ROW_H + SP + ROW_H + SP + ROW_H;
+        let ap_items = TITLE_H + SPG + LABEL_H + 4.0 + ROW_H + SP + ROW_H + SP + ROW_H;
         let ap_h = CARD_EXTRA + ap_items;
         let appearance = card_frame(Pos2::new(left, y), cw, ap_h);
-        let mut cy = appearance.title.y + TITLE_H + SP;
-        let theme_label = Pos2::new(x, cy + 10.0);
-        cy += LABEL_H + SP;
+        let mut cy = appearance.title.y + TITLE_H + SPG;
+        let theme_label = Pos2::new(x, cy + 2.0);
+        cy += LABEL_H + 4.0;
         let theme_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let glass_row = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, ROW_H));
@@ -848,8 +849,8 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         &layout.appearance,
     ]) {
         let shifted = Rect::from_min_size(Pos2::new(c.bg.min.x, c.bg.min.y - off), c.bg.size());
-        paint::rounded_fill(&painter, shifted, 14.0, t.card);
-        paint::rounded_stroke(&painter, shifted, 14.0, t.card_border);
+        paint::rounded_fill(&painter, shifted, 16.0, t.card);
+        paint::rounded_stroke(&painter, shifted, 16.0, t.card_border);
         card_title(
             &painter,
             &t,
