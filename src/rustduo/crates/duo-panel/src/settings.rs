@@ -45,7 +45,7 @@ fn card_title(painter: &egui::Painter, t: &Tokens, pos: Pos2, text: &str) {
     let galley = painter.ctx().fonts(|f| {
         f.layout_job(egui::text::LayoutJob::simple(
             text.to_owned(),
-            paint::font_id(13.0, true),
+            paint::font_id(15.0, true),
             t.ink,
             f32::INFINITY,
         ))
@@ -180,8 +180,8 @@ fn number_box(
     };
     paint::rounded_stroke(ui.painter(), rect, 10.0, border);
     let glyph_color = t.ink2;
-    paint::text_centered(ui.painter(), down.center(), "−", 14.0, false, glyph_color);
-    paint::text_centered(ui.painter(), up.center(), "+", 14.0, false, glyph_color);
+    paint::text_centered(ui.painter(), down.center(), "−", 13.0, false, glyph_color);
+    paint::text_centered(ui.painter(), up.center(), "+", 13.0, false, glyph_color);
 
     // 中央可键入：失焦提交，回车提交
     let mut buf = value.to_string();
@@ -338,6 +338,7 @@ fn path_row(
         .text_color(if locked { t.ink2 } else { t.ink })
         .frame(false)
         .desired_width(field_w - 20.0)
+        .vertical_align(egui::Align::Center)
         .hint_text("留空自动探测");
     if locked {
         edit = edit.interactive(false);
@@ -417,11 +418,11 @@ mod geom {
     pub const PAD: f32 = 20.0;
     pub const SP: f32 = 9.0; // 卡内 Column spacing
     pub const CARD_SP: f32 = 12.0; // 卡间距
-    pub const PATH_ROW_H: f32 = 64.0; // 标题 26 + 6 + 输入 32
-    pub const CELL_H: f32 = 58.0; // 标签 20 + 6 + 数字框 32
-    pub const LABEL_H: f32 = 20.0;
+    pub const PATH_ROW_H: f32 = 56.0; // 标题 18 + 6 + 输入 32
+    pub const CELL_H: f32 = 56.0; // 标签 18 + 6 + 数字框 32
+    pub const LABEL_H: f32 = 18.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
-    pub const TITLE_H: f32 = 19.0; // 卡标题 13px 字盒高
+    pub const TITLE_H: f32 = 22.0; // 卡标题 15px 字盒高
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
     pub const MARGIN: f32 = 16.0; // 滚动区左右边距
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
@@ -847,7 +848,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         card_title(
             &painter,
             &t,
-            Pos2::new(shifted.left() + geom::PAD, shifted.top() + 15.0 + 9.5),
+            Pos2::new(shifted.left() + geom::PAD, shifted.top() + 14.0),
             card_name(c, &layout),
         );
     }
@@ -1015,7 +1016,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     // 投屏质量卡内容
     const CODECS: [(&str, &str); 4] = [
-        ("auto", "自动(推荐)"),
+        ("auto", "自动（推荐）"),
         ("h264", "H.264"),
         ("h265", "H.265"),
         ("av1", "AV1"),
@@ -1035,9 +1036,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
     group_label(&painter, &t, py(layout.hwdec_label), "硬件解码");
     const HWDECS: [(&str, &str); 3] = [
-        ("auto", "自动(推荐)"),
+        ("auto", "自动（推荐）"),
         ("disabled", "软件解码"),
-        ("d3d11va", "D3D11 硬解"),
+        ("d3d11va", "硬解"),
     ];
     for (i, (value, label)) in HWDECS.iter().enumerate() {
         let r = sy(layout.hwdec_row[i]);
@@ -1229,6 +1230,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             layout.anim_row,
         ];
         widgets.extend(layout.codec_row);
+        widgets.extend(layout.hwdec_row);
         widgets.extend(layout.audio_row);
         widgets.extend(layout.top_row);
         widgets.extend(layout.bottom_row);

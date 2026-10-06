@@ -15,6 +15,22 @@
       落地）；⑤Android 11+ 首次无线需配对或 USB tcpip（插 USB →
       `adb tcpip 5555` → connect 免配对，测试机无线全程验证）；
       ⑥隐私：真实 IP 已从仓内全部清除（用 192.168.1.x 文档段）。
+- [x] **2026-10-06 设置对齐批次 + 硬解死点修复 + 混合 DPI 全屏根修
+      + 粗体换面（结案，Grok 审计/sol 裁决/GLM 验收）**：①硬解三胶囊
+      点不动=拖拽间隙层排除清单漏 hwdec_row（codec/audio 在列、
+      hwdec 漏网被 pan 层盖死）；「D3D11 硬解」改「硬解」。②Grok
+      对齐清单落地：卡标题 13→15px 且上移、PATH/CELL 56/LABEL 18
+      行距节奏、± 与数字同字号、全角括号、路径框垂直居中、浮层
+      双行文本 top 锚补偿。③粗体塑料感根因=微软雅黑 Bold——换
+      等线 Bold（Dengb.ttf，回落雅黑），GLM A/B 判更清爽零豆腐块。
+      ④2K 副屏全屏错位（sol 裁决）：overlay 宿主 system-DPI-aware，
+      副屏 GetMonitorInfo/GetWindowRect/SetWindowPos 虚拟化而
+      DwmGetWindowAttribute 恒物理，FrameInsets 混系即 fill 全屏
+      推出屏（fit 居中抵消故正常）——Main 顶切 Per-Monitor-V2
+      （SetProcessDpiAwarenessContext(-4) 回退链），四 API 全物理
+      同系；Controller._dpi 去 readonly，tick 每 20 拍
+      GetDpiForWindow 跟随视频窗所在屏。csc 直编验证 rc=0。
+      **待用户双屏（4K+2K）实机复验全屏。**
 - [x] **2026-10-06 音量条/渲染倍率重做（结案，Grok+Opus 双顾问、
       GLM 三轮终检 PASS）**：①首页音量条（Opus 规格）：12px 拇指
       （拖动 14px）、accent 浅底轨+填充、右端数值；未知态=50% 中性

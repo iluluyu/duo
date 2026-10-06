@@ -152,6 +152,10 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll", EntryPoint = "SetProcessDpiAwarenessContext")]
+        public static extern bool SetProcessDpiAwarenessCtx(IntPtr value);
+        [DllImport("user32.dll")] public static extern int SetProcessDpiAwareness(int value);
+        [DllImport("user32.dll")] public static extern ushort GetDpiForWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
         [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
@@ -269,8 +273,30 @@ namespace DuoChrome
     internal static class Program
     {
         [STAThread]
+        // 混合 DPI 双屏（2026-10-06 sol 裁决）：宿主此前 system-DPI-aware，
+        // 副屏上 GetMonitorInfo/GetWindowRect/SetWindowPos 虚拟化而
+        // DwmGetWindowAttribute(9) 恒物理——FrameInsets 混系即全屏错位出
+        // 屏。进程级切 Per-Monitor-V2 后四者同系（全物理），假最大化/
+        // 工作区钳制原数学直接成立。缺导出（<Win10 1703）逐级回退。
+        private static void EnablePerMonitorDpi()
+        {
+            try
+            {
+                if (NativeMethods.SetProcessDpiAwarenessCtx(new IntPtr(-4))) return;
+            }
+            catch (EntryPointNotFoundException) { }
+            try
+            {
+                if (NativeMethods.SetProcessDpiAwareness(2) == 0) return;
+            }
+            catch (EntryPointNotFoundException) { }
+            try { NativeMethods.SetProcessDPIAware(); }
+            catch (EntryPointNotFoundException) { }
+        }
+
         private static int Main(string[] argv)
         {
+            EnablePerMonitorDpi();
             string title = null, serial = null, adb = null;
             string mode = "flex", sessionLog = null;
             string topMode = "immersive", bottomMode = "immersive";
@@ -3440,7 +3466,7 @@ namespace DuoChrome
         private readonly string _displayMode;         // mirror | flex | fixed
         private readonly string _topMode;             // immersive | native | none
         private readonly string _bottomMode;          // immersive | native | none
-        private readonly float _dpi;                  // probe-based scale (S())
+        private float _dpi;                    // S() 基准；tick 跟随视频窗所在屏
         private readonly Timer _tick = new Timer();
         private readonly ChinWindow _chin;
         private readonly ChinWindow _island;        // native 模式的全屏后备：沉浸小横条
@@ -4603,6 +4629,14 @@ namespace DuoChrome
             catch (Exception ex)
             {
                 Log.Write("tick error (kept alive): " + ex.Message);
+            }
+            // 混合 DPI 跨屏（PMv2 后）：视频窗挪屏则 S() 基准跟随
+            // （100 tick 一次的廉价探测，等 WM_DPICHANGED 不可得——
+            // 跨进程子类化被 Windows 禁）。
+            if (_hwnd != IntPtr.Zero && _ticks % 20 == 0)
+            {
+                ushort dpi = NativeMethods.GetDpiForWindow(_hwnd);
+                if (dpi >= 96 && Math.Abs(dpi / 96f - _dpi) > 0.01f) _dpi = dpi / 96f;
             }
             if (++_ticks % 100 == 0)
             {
