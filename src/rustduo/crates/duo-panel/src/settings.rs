@@ -1016,7 +1016,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     // 投屏质量卡内容
     const CODECS: [(&str, &str); 4] = [
-        ("auto", "自动（推荐）"),
+        ("auto", "自动"),
         ("h264", "H.264"),
         ("h265", "H.265"),
         ("av1", "AV1"),
@@ -1036,7 +1036,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     }
     group_label(&painter, &t, py(layout.hwdec_label), "硬件解码");
     const HWDECS: [(&str, &str); 3] = [
-        ("auto", "自动（推荐）"),
+        ("auto", "自动"),
         ("disabled", "软件解码"),
         ("d3d11va", "硬解"),
     ];
@@ -1232,6 +1232,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         widgets.extend(layout.codec_row);
         widgets.extend(layout.hwdec_row);
         widgets.extend(layout.audio_row);
+        widgets.extend(layout.dev_rows);
         widgets.extend(layout.top_row);
         widgets.extend(layout.bottom_row);
         widgets.extend(layout.theme_row);
