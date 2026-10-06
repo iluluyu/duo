@@ -2,6 +2,9 @@
 //! portrait/display/bars/density/scale/keep-vd/glass）、`duo-core mirror`
 //! spawn、树杀、音频三态仲裁（latest = 新会话夺音频，其余静音重启）、
 //! 运行卡模型。设置/prefs 每次启动现读（保存即达下一个窗口）。
+//! 多设备（2026-10-06）：键 = `serial::包名`——同一应用可各开一台；
+//! 静音重启用各会话自己的 serial（旧版用新会话 serial 重启旧会话，
+//! 跨设备串台）；日志一设备一包一文件。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,17 +21,23 @@ use crate::prefs::{
 };
 use crate::winproc;
 
+/// 整机镜像的「包名」占位（每台设备一枚镜像会话）。
 pub const MIRROR_KEY: &str = "__device_mirror__";
 
-/// 运行卡/状态行的会话显示名。
-pub fn session_label(key: &str) -> String {
-    if key == MIRROR_KEY {
+/// 会话复合键：serial::package（serial 含 `:`/`.`/`-`，不含 `::`）。
+pub fn session_key(serial: &str, package: &str) -> String {
+    format!("{serial}::{package}")
+}
+
+/// 运行卡/状态行的会话显示名（按包名）。
+pub fn session_label(package: &str) -> String {
+    if package == MIRROR_KEY {
         return "设备镜像".into();
     }
-    if let Some(preset) = APP_CATALOG.iter().find(|p| p.package == key) {
+    if let Some(preset) = APP_CATALOG.iter().find(|p| p.package == package) {
         return preset.label.to_string();
     }
-    package_to_label(key)
+    package_to_label(package)
 }
 
 /// 未收录包的人话回退（最后一段大写开头）。
@@ -41,9 +50,10 @@ pub fn package_to_label(package: &str) -> String {
     }
 }
 
-/// 会话日志（一包一文件，display-id 从这里回读）。
-pub fn panel_log_path(package: &str) -> PathBuf {
-    logs_dir(None).join(format!("panel-{package}.log"))
+/// 会话日志（一设备一包一文件，display-id 从这里回读；serial 里的
+/// `:` 换 `-`——Windows 路径非法字符）。
+pub fn panel_log_path(serial: &str, package: &str) -> PathBuf {
+    logs_dir(None).join(format!("panel-{}-{package}.log", serial.replace(':', "-")))
 }
 
 fn pin_fixed_display(argv: &mut Vec<String>, width: i64, height: i64) {
@@ -149,7 +159,9 @@ pub fn launch_argv(params: &LaunchParams<'_>) -> Vec<String> {
         params.serial.into(),
         "--chrome".into(),
         "--session-log".into(),
-        panel_log_path(params.package).display().to_string(),
+        panel_log_path(params.serial, params.package)
+            .display()
+            .to_string(),
     ];
     let mut fixed = false;
     if let Some((w, h)) = params.size {
@@ -198,10 +210,13 @@ pub fn device_mirror_argv(serial: &str, muted: bool) -> Vec<String> {
 
 // --------------------------------------------------------------- registry
 
-/// 一条运行会话。
+/// 一条运行会话（key = serial::package；package/serial 冗余存一份，
+/// 静音重启用各自的，不随新会话设备串台）。
 #[derive(Debug)]
 pub struct SessionEntry {
     pub key: String,
+    pub package: String,
+    pub serial: String,
     pub label: String,
     pub child: Child,
     /// 固定几何（音频静音重启要重新钉住）。
@@ -233,9 +248,10 @@ impl Sessions {
             .collect()
     }
 
-    pub fn is_running(&mut self, key: &str) -> bool {
+    pub fn is_running(&mut self, serial: &str, package: &str) -> bool {
+        let key = session_key(serial, package);
         self.entries
-            .get_mut(key)
+            .get_mut(&key)
             .map(|e| matches!(e.child.try_wait(), Ok(None)))
             .unwrap_or(false)
     }
@@ -252,7 +268,8 @@ impl Sessions {
         &mut self,
         binary: &str,
         argv: Vec<String>,
-        key: &str,
+        serial: &str,
+        package: &str,
         label: &str,
         size: Option<(i64, i64)>,
     ) -> Result<(), String> {
@@ -260,16 +277,19 @@ impl Sessions {
             .spawn()
             .map_err(|e| e.to_string())?;
         self.job.add(&child);
+        let key = session_key(serial, package);
         let has_audio = !argv.iter().any(|a| a == "--no-audio");
         if has_audio {
-            self.audio_keys.push(key.to_string());
+            self.audio_keys.push(key.clone());
         } else {
-            self.audio_keys.retain(|k| k != key);
+            self.audio_keys.retain(|k| k != &key);
         }
         self.entries.insert(
-            key.to_string(),
+            key,
             SessionEntry {
-                key: key.to_string(),
+                key: session_key(serial, package),
+                package: package.to_string(),
+                serial: serial.to_string(),
                 label: label.to_string(),
                 child,
                 size,
@@ -305,7 +325,16 @@ impl Sessions {
 
     /// latest 交棒：其余带音频的活会话 terminate → 静音重启（同几何同
     /// keep-vd 重新钉住）。镜像走镜像 argv。
-    fn restart_others_muted(&mut self, binary: &str, new_key: &str, serial: &str) -> Vec<String> {
+    /// latest 交棒：其余带音频的活会话 terminate → 静音重启（同几何同
+    /// keep-vd 重新钉住，**用各会话自己的 serial**——多设备下用新会话
+    /// 的 serial 会把别的设备的会话按错设备重启）。镜像走镜像 argv。
+    fn restart_others_muted(
+        &mut self,
+        binary: &str,
+        new_serial: &str,
+        new_package: &str,
+    ) -> Vec<String> {
+        let new_key = session_key(new_serial, new_package);
         let mut restarted = Vec::new();
         let mut keys = Vec::new();
         for (key, entry) in self.entries.iter_mut() {
@@ -327,24 +356,33 @@ impl Sessions {
             if duo_core::audio_lock::read_owner(&lock_path) == i64::from(pid) {
                 let _ = std::fs::remove_file(&lock_path);
             }
-            let keep_vd =
-                key != MIRROR_KEY && load_behavior_prefs().get(&key).copied().unwrap_or(false);
-            let argv = if key == MIRROR_KEY {
-                device_mirror_argv(serial, true)
+            let package = entry.package.clone();
+            let serial = entry.serial.clone();
+            let keep_vd = package != MIRROR_KEY
+                && load_behavior_prefs()
+                    .get(&package)
+                    .copied()
+                    .unwrap_or(false);
+            let argv = if package == MIRROR_KEY {
+                device_mirror_argv(&serial, true)
             } else {
                 launch_argv(&LaunchParams {
-                    package: &key,
-                    serial,
-                    portrait: self.portrait_prefs.get(&key).copied().unwrap_or(false),
+                    package: &package,
+                    serial: &serial,
+                    portrait: self.portrait_prefs.get(&package).copied().unwrap_or(false),
                     muted: true,
                     size: entry.size,
                     display: None,
                     keep_vd,
                 })
             };
-            let _ = std::fs::remove_file(panel_log_path(&key));
-            let label = session_label(&key);
-            if self.spawn(binary, argv, &key, &label, entry.size).is_ok() {
+            let _ = std::fs::remove_file(panel_log_path(&serial, &package));
+            let label = session_label(&package);
+            let size = entry.size;
+            if self
+                .spawn(binary, argv, &serial, &package, &label, size)
+                .is_ok()
+            {
                 restarted.push(label);
             }
         }
@@ -369,10 +407,10 @@ impl Sessions {
             ..params.clone()
         });
         let restarted =
-            self.apply_audio_policy(binary, package, params.serial, &mut argv, exclusive);
-        let _ = std::fs::remove_file(panel_log_path(package));
+            self.apply_audio_policy(binary, params.serial, package, &mut argv, exclusive);
+        let _ = std::fs::remove_file(panel_log_path(params.serial, package));
         let label = session_label(package);
-        self.spawn(binary, argv, package, &label, size)?;
+        self.spawn(binary, argv, params.serial, package, &label, size)?;
         Ok(restarted)
     }
 
@@ -380,8 +418,8 @@ impl Sessions {
     pub fn start_mirror(&mut self, binary: &str, serial: &str) -> Result<Vec<String>, String> {
         self.reap();
         let mut argv = device_mirror_argv(serial, false);
-        let restarted = self.apply_audio_policy(binary, MIRROR_KEY, serial, &mut argv, false);
-        self.spawn(binary, argv, MIRROR_KEY, "设备镜像", None)?;
+        let restarted = self.apply_audio_policy(binary, serial, MIRROR_KEY, &mut argv, false);
+        self.spawn(binary, argv, serial, MIRROR_KEY, "设备镜像", None)?;
         Ok(restarted)
     }
 
@@ -431,6 +469,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_key_and_log_path_scope_per_serial() {
+        assert_eq!(session_key("4444bd6b", "com.a"), "4444bd6b::com.a");
+        let usb = panel_log_path("4444bd6b", "com.tencent.mm");
+        let wifi = panel_log_path("192.168.1.100:5555", "com.tencent.mm");
+        assert_ne!(usb, wifi, "同一应用在不同设备各一枚日志");
+        let name = wifi.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name, "panel-192.168.1.100-5555-com.tencent.mm.log");
+    }
+
+    #[test]
     fn session_label_catalog_mirror_fallback() {
         assert_eq!(session_label(MIRROR_KEY), "设备镜像");
         assert_eq!(session_label("com.tencent.mm"), "微信");
@@ -458,7 +506,7 @@ mod tests {
         assert!(argv.contains(&"--chrome".to_string()));
         assert!(argv
             .windows(2)
-            .any(|w| w[0] == "--session-log" && w[1].contains("panel-com.tencent.mm.log")));
+            .any(|w| w[0] == "--session-log" && w[1].contains("panel-ABC-com.tencent.mm.log")));
         assert!(!argv.contains(&"--portrait".to_string()));
         assert!(argv.windows(2).any(|w| w[0] == "--chrome-top"));
         assert!(argv.windows(2).any(|w| w[0] == "--glass"));

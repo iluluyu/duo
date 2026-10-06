@@ -497,6 +497,11 @@ pub struct SettingsLayout {
     /// 滚动视口（内容 clip 区）。
     pub vp: Rect,
     pub problem: Option<(Rect, String)>,
+    /// 设备卡（在线设备行 + 无线地址历史；无内容时 None）。
+    pub devices: Option<Card>,
+    pub dev_rows: Vec<Rect>,
+    pub wifi_label: Option<Pos2>,
+    pub wifi_rows: Vec<Rect>,
     pub engine: Card,
     pub scrcpy_row: Rect,
     pub adb_row: Rect,
@@ -537,7 +542,15 @@ pub struct Card {
 }
 
 impl SettingsLayout {
-    pub fn compute(w: f32, h: f32, problems: &str, engine_locked: bool, full_bleed: bool) -> Self {
+    pub fn compute(
+        w: f32,
+        h: f32,
+        problems: &str,
+        engine_locked: bool,
+        full_bleed: bool,
+        dev_count: usize,
+        wifi_count: usize,
+    ) -> Self {
         use geom::*;
         // QML 卡本体在 shadowHost 内左右各缩 8（阴影宿主），卡缘 = 16+8。
         // 宽屏限宽居中（KISS）：列宽封顶 560，窗口更宽时两侧留白，
@@ -559,6 +572,40 @@ impl SettingsLayout {
         });
         if let Some((bar, _)) = &problem {
             y += bar.height() + CARD_SP;
+        }
+
+        // 设备卡（首卡：在线设备一行一枚 + 无线地址历史；空则整卡隐藏）
+        let mut dev_rows = Vec::new();
+        let mut wifi_label = None;
+        let mut wifi_rows = Vec::new();
+        let mut dev_items = TITLE_H + SP;
+        dev_items += dev_count as f32 * (ROW_H + SP);
+        if wifi_count > 0 {
+            dev_items += LABEL_H + SP + wifi_count as f32 * (ROW_H + SP);
+        }
+        let devices = (dev_count > 0 || wifi_count > 0)
+            .then(|| card_frame(Pos2::new(left, y), cw, CARD_EXTRA + dev_items));
+        if let Some(dev) = &devices {
+            let mut cy = dev.title.y + TITLE_H + SP;
+            for _ in 0..dev_count {
+                dev_rows.push(Rect::from_min_size(
+                    Pos2::new(x, cy),
+                    Vec2::new(inner_w, ROW_H),
+                ));
+                cy += ROW_H + SP;
+            }
+            if wifi_count > 0 {
+                wifi_label = Some(Pos2::new(x, cy + 10.0));
+                cy += LABEL_H + SP;
+                for _ in 0..wifi_count {
+                    wifi_rows.push(Rect::from_min_size(
+                        Pos2::new(x, cy),
+                        Vec2::new(inner_w, ROW_H),
+                    ));
+                    cy += ROW_H + SP;
+                }
+            }
+            y += CARD_EXTRA + dev_items + CARD_SP;
         }
 
         // 引擎卡
@@ -659,6 +706,10 @@ impl SettingsLayout {
         Self {
             vp,
             problem,
+            devices,
+            dev_rows,
+            wifi_label,
+            wifi_rows,
             engine,
             scrcpy_row,
             adb_row,
@@ -750,12 +801,21 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let problems = app.settings_problems();
     let engine_locked = app.engine_locked();
     let full_bleed = app.settings.draft.glass_enabled && cfg!(target_os = "windows");
+    let device_rows = app.device_rows();
+    let recent: Vec<String> = app
+        .wireless_recent
+        .iter()
+        .filter(|a| !a.is_empty())
+        .cloned()
+        .collect();
     let layout = SettingsLayout::compute(
         full.width(),
         full.height(),
         &problems,
         engine_locked,
         full_bleed,
+        device_rows.len(),
+        recent.len(),
     );
 
     // 整页滚动（2026-09-20 修「设置滚不动」）：滚轮不再局限内容列 vp——
@@ -800,12 +860,12 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         app.island_bands
             .push((bar.top() + pad, bar.bottom() + pad, t.warn));
     }
-    for card in [
+    for card in layout.devices.iter().chain([
         &layout.engine,
         &layout.quality,
         &layout.windowbar,
         &layout.appearance,
-    ] {
+    ]) {
         app.island_bands
             .push((card.bg.top() + pad, card.bg.bottom() + pad, t.card));
     }
@@ -816,13 +876,13 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     ui.set_clip_rect(layout.vp);
     let painter = ui.painter().with_clip_rect(layout.vp);
 
-    // 卡底四张（先画，内容后画盖其上）
-    for c in [
+    // 卡底（先画，内容后画盖其上）
+    for c in layout.devices.iter().chain([
         &layout.engine,
         &layout.quality,
         &layout.windowbar,
         &layout.appearance,
-    ] {
+    ]) {
         let shifted = Rect::from_min_size(Pos2::new(c.bg.min.x, c.bg.min.y - off), c.bg.size());
         paint::rounded_fill(&painter, shifted, 14.0, t.card);
         paint::rounded_stroke(&painter, shifted, 14.0, t.card_border);
@@ -852,6 +912,109 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     // 引擎卡内容
     let sy = |r: Rect| Rect::from_min_size(Pos2::new(r.min.x, r.min.y - off), r.size());
     let py = |p: Pos2| Pos2::new(p.x, p.y - off);
+
+    // 设备卡内容（在线设备行点击切换；历史地址行内连/忘）
+    if layout.devices.is_some() {
+        for (row, (is_wifi, serial, selected)) in layout.dev_rows.iter().zip(device_rows.iter()) {
+            let row = sy(*row);
+            let resp = ui.allocate_rect(row, Sense::click());
+            let wash = if resp.hovered() {
+                t.hover_on_canvas
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            paint::rounded_fill(&painter, row, 10.0, wash);
+            let tag = Rect::from_min_size(
+                Pos2::new(row.left() + 8.0, row.center().y - 10.0),
+                Vec2::new(40.0, 20.0),
+            );
+            let tag_bg = if *is_wifi {
+                over(t.bg, t.accent, 0.16)
+            } else {
+                over(t.bg, t.running, 0.16)
+            };
+            paint::rounded_fill(&painter, tag, 10.0, tag_bg);
+            paint::text_centered(
+                &painter,
+                tag.center(),
+                if *is_wifi { "无线" } else { "USB" },
+                11.0,
+                false,
+                t.ink2,
+            );
+            let text_x = tag.right() + 10.0;
+            let max_w = row.right() - 40.0 - text_x;
+            let label = paint::elide_to_width(serial, max_w.max(24.0), &|c| {
+                if c.is_ascii() {
+                    13.0 * 0.55
+                } else {
+                    13.0
+                }
+            });
+            paint::text_left(
+                &painter,
+                Pos2::new(text_x, row.center().y),
+                &label,
+                13.0,
+                t.ink,
+            );
+            if *selected {
+                let dot = egui::pos2(row.right() - 18.0, row.center().y);
+                ui.painter().circle_filled(dot, 3.0, t.accent);
+            }
+            if resp.clicked() {
+                app.select_device(serial);
+            }
+        }
+        if let Some(label) = layout.wifi_label {
+            paint::text_left(&painter, py(label), "无线地址历史", 12.0, t.ink2);
+        }
+        for (row, addr) in layout.wifi_rows.iter().zip(recent.iter()) {
+            let row = sy(*row);
+            let del = Rect::from_min_size(
+                Pos2::new(row.right() - 8.0 - 28.0, row.center().y - 12.0),
+                Vec2::new(28.0, 24.0),
+            );
+            let conn = Rect::from_min_size(
+                Pos2::new(del.left() - 8.0 - 48.0, row.center().y - 12.0),
+                Vec2::new(48.0, 24.0),
+            );
+            let resp = ui.allocate_rect(row, Sense::click());
+            let wash = if resp.hovered() {
+                t.hover_on_canvas
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            paint::rounded_fill(&painter, row, 10.0, wash);
+            let max_w = conn.left() - 16.0 - row.left();
+            let label = paint::elide_to_width(addr, max_w.max(24.0), &|c| {
+                if c.is_ascii() {
+                    13.0 * 0.55
+                } else {
+                    13.0
+                }
+            });
+            paint::text_left(
+                &painter,
+                Pos2::new(row.left() + 8.0, row.center().y),
+                &label,
+                13.0,
+                t.ink,
+            );
+            let conn_resp = ui.allocate_rect(conn, Sense::click());
+            paint::rounded_stroke(&painter, conn, 12.0, t.card_border);
+            paint::text_centered(&painter, conn.center(), "连接", 11.0, false, t.ink);
+            let del_resp = ui.allocate_rect(del, Sense::click());
+            paint::rounded_stroke(&painter, del, 12.0, t.card_border);
+            paint::text_centered(&painter, del.center(), "✕", 11.0, false, t.ink2);
+            if conn_resp.clicked() {
+                app.connect_wireless_addr(addr);
+            }
+            if del_resp.clicked() {
+                app.forget_wireless(addr);
+            }
+        }
+    }
 
     let mut scrcpy = app.settings.draft.scrcpy_path.clone();
     let pill_scrcpy = app.probe_pill_for("scrcpy");
@@ -1192,7 +1355,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
 /// 画卡标题时从引用反查名字（绘制循环需要；四次调用对应四卡）。
 fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
-    if std::ptr::eq(c, &layout.engine) {
+    if layout.devices.as_ref().is_some_and(|d| std::ptr::eq(c, d)) {
+        "设备"
+    } else if std::ptr::eq(c, &layout.engine) {
         "引擎"
     } else if std::ptr::eq(c, &layout.quality) {
         "投屏质量"
@@ -1210,8 +1375,24 @@ mod tests {
     use geom::SP;
 
     #[test]
+    fn settings_layout_devices_card_geometry() {
+        // 双设备 + 一条历史：首卡出现，行数/标签对齐，引擎卡下移；
+        // 全空时整卡隐藏。
+        let layout = SettingsLayout::compute(420.0, 760.0, "", false, false, 2, 1);
+        let dev = layout.devices.expect("设备卡应存在");
+        assert_eq!(layout.dev_rows.len(), 2);
+        assert_eq!(layout.wifi_rows.len(), 1);
+        assert!(layout.wifi_label.is_some());
+        assert!(dev.bg.top() < layout.engine.bg.top());
+        assert_eq!(layout.dev_rows[0].height(), ROW_H, "设备行高与按钮行一致");
+        let empty = SettingsLayout::compute(420.0, 760.0, "", false, false, 0, 0);
+        assert!(empty.devices.is_none());
+        assert!(empty.dev_rows.is_empty());
+    }
+
+    #[test]
     fn settings_layout_y_chain_and_grouping() {
-        let layout = SettingsLayout::compute(420.0, 660.0, "", false, false);
+        let layout = SettingsLayout::compute(420.0, 660.0, "", false, false, 0, 0);
         assert!(layout.engine.bg.top() < layout.quality.bg.top());
         assert!(layout.quality.bg.top() < layout.windowbar.bg.top());
         assert!(layout.windowbar.bg.top() < layout.appearance.bg.top());
