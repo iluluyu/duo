@@ -73,7 +73,7 @@ fn bar_entry_after(
 }
 
 /// 已装探测后台任务结果（已装包名全集 + duo-core apps 行）。
-type InstalledResult = Result<(Vec<String>, Vec<backend::AppRow>), String>;
+type InstalledResult = Result<(String, Vec<String>, Vec<backend::AppRow>), String>;
 
 /// 菜单毛玻璃截图请求的归属标签（与 --shot 出图泵的回包区分，防互吞）。
 const GLASS_SHOT_TAG: &str = "duo-menu-glass-shot";
@@ -164,12 +164,15 @@ pub struct PanelApp {
     watch: Option<DeviceWatch>,
     watch_adb: String,
     installed_bg: Option<Background<InstalledResult>>,
+    /// 每台设备的已装应用原始结果（切回免重拉；内存态）。
+    installed_stash: BTreeMap<String, (Vec<String>, Vec<backend::AppRow>)>,
     sweep_bg: Option<Background<Result<backend::SweepResult, String>>>,
     move_bg: Option<Background<MoveResult>>,
     volume_bg: Option<Background<()>>,
     /// 无线连接后台任务：Ok(state_name) / Err(原因) → Toast。
     pub(crate) wireless_bg: Option<Background<Result<String, String>>>,
-    known_online: Option<Vec<String>>,
+    /// 上一帧的活动设备（变化 = 切换/插拔/离线回退）。
+    effective_serial: Option<String>,
 
     // 模型
     pub apps: AppsModel,
@@ -181,8 +184,8 @@ pub struct PanelApp {
     behavior_prefs: BTreeMap<String, bool>,
     density_prefs: BTreeMap<String, i64>,
     scale_prefs: BTreeMap<String, f64>,
-    body_preset: Option<AspectPreset>,
-    body_probed_at: Option<Instant>,
+    /// 机身几何探测缓存（每设备，600s；None = 探测失败也缓存，免反复拉）。
+    body_probe: BTreeMap<String, (Option<AspectPreset>, Instant)>,
 
     // UI 态
     pub search: String,
@@ -192,11 +195,14 @@ pub struct PanelApp {
     pub(crate) wireless_input: String,
     /// 上次成功/使用的无线目标（持久化 gui_prefs.json wireless 节）。
     pub(crate) wireless_target: String,
+    /// 历史无线地址（最近优先；设置页设备卡/对话框共用）。
+    pub(crate) wireless_recent: Vec<String>,
     /// 显式选中的活动设备（内存态；None = 默认 USB 优先）。双在线
     /// （USB+无线）时设备卡右键可切换。
     pub(crate) active_serial: Option<String>,
     pub(crate) toast: Option<(String, Instant)>,
-    pub(crate) media_volume: i64,
+    /// 每台设备的音量拖动值（未动过 = 未知 -1 语义由 volume_known 表达）。
+    pub(crate) media_volume: BTreeMap<String, i64>,
     /// 网格滚动偏移（像素；QML interactive 网格的 egui 对应物）。
     pub(crate) grid_scroll: f32,
     /// 设置页滚动偏移（像素）。
@@ -276,11 +282,12 @@ impl PanelApp {
             watch: None,
             watch_adb: adb,
             installed_bg: None,
+            installed_stash: BTreeMap::new(),
             sweep_bg: None,
             move_bg: None,
             volume_bg: None,
             wireless_bg: None,
-            known_online: None,
+            effective_serial: None,
             apps: AppsModel::default(),
             sessions: Sessions::new(),
             pinned: load_pinned_prefs().into_iter().map(|p| (p, true)).collect(),
@@ -290,8 +297,7 @@ impl PanelApp {
             behavior_prefs: load_behavior_prefs(),
             density_prefs: load_density_prefs(),
             scale_prefs: load_scale_prefs(),
-            body_preset: None,
-            body_probed_at: None,
+            body_probe: BTreeMap::new(),
             volume_pending: None,
             shot: None,
             search: String::new(),
@@ -299,9 +305,10 @@ impl PanelApp {
             wireless_open: std::env::var("DUO_SHOT_WIRELESS").is_ok(),
             wireless_input: String::new(),
             wireless_target: crate::prefs::load_wireless_target(),
+            wireless_recent: crate::prefs::load_wireless_recent(),
             active_serial: None,
             toast: None,
-            media_volume: -1,
+            media_volume: BTreeMap::new(),
             grid_scroll: 0.0,
             settings_scroll: 0.0,
             probe_bg: None,
@@ -494,7 +501,8 @@ impl PanelApp {
             .running()
             .into_iter()
             .map(|(key, label)| {
-                let clickable = key != sessions::MIRROR_KEY;
+                let package = key.split_once("::").map(|(_, p)| p).unwrap_or(key.as_str());
+                let clickable = package != sessions::MIRROR_KEY;
                 (key, label, clickable)
             })
             .collect()
@@ -504,9 +512,29 @@ impl PanelApp {
         self.sessions.stop(key);
     }
 
+    /// 运行卡点击（复合键）：按各自 serial 拉回虚拟屏。
+    pub(crate) fn focus_session(&mut self, key: &str) {
+        if let Some((serial, package)) = key.split_once("::") {
+            self.move_app_to_display(serial, package);
+        }
+    }
+
     pub(crate) fn volume_dragged(&mut self, index: i64) {
-        self.media_volume = index;
+        if let Some(serial) = self.serial() {
+            self.media_volume.insert(serial, index);
+        }
         self.volume_pending = Some((index, Instant::now()));
+    }
+
+    pub(crate) fn volume_known(&self) -> bool {
+        self.serial()
+            .is_some_and(|s| self.media_volume.contains_key(&s))
+    }
+
+    pub(crate) fn volume_value(&self) -> i64 {
+        self.serial()
+            .and_then(|s| self.media_volume.get(&s).copied())
+            .unwrap_or(0)
     }
 
     /// 镜像卡右键菜单（Main.qml mirrorMenu：打开投屏 / 关屏 / 默认窗口栏）。
@@ -1198,11 +1226,23 @@ impl PanelApp {
         };
         let adb = self.adb.clone();
         self.installed_bg = Some(Background::spawn(move || {
+            let serial_out = serial.clone();
             backend::query_apps(&binary.display().to_string(), &adb, &serial).map(|rows| {
                 let installed = rows.iter().map(|r| r.package.clone()).collect();
-                (installed, rows)
+                (serial_out, installed, rows)
             })
         }));
+    }
+
+    /// 应用列表重建（stash 命中与后台收编共用）。
+    fn rebuild_apps(&mut self, installed: &[String], rows: &[backend::AppRow]) {
+        self.apps.rebuild(installed, &self.pinned);
+        let extras: Vec<String> = rows
+            .iter()
+            .filter(|r| !r.catalog)
+            .map(|r| r.package.clone())
+            .collect();
+        self.apps.merge_third_party(&extras, &self.pinned);
     }
 
     fn start_sweep(&mut self) {
@@ -1218,17 +1258,16 @@ impl PanelApp {
         }));
     }
 
-    fn adopt_installed(&mut self, result: Result<(Vec<String>, Vec<backend::AppRow>), String>) {
+    fn adopt_installed(&mut self, result: InstalledResult) {
         match result {
-            Ok((installed, rows)) => {
-                self.apps.rebuild(&installed, &self.pinned);
-                let extras: Vec<String> = rows
-                    .iter()
-                    .filter(|r| !r.catalog)
-                    .map(|r| r.package.clone())
-                    .collect();
-                self.apps.merge_third_party(&extras, &self.pinned);
-                self.start_sweep();
+            Ok((serial, installed, rows)) => {
+                self.installed_stash
+                    .insert(serial.clone(), (installed.clone(), rows.clone()));
+                // 结果带着发起时的 serial；已切到别的设备就只入仓不洗列表。
+                if self.serial().as_deref() == Some(serial.as_str()) {
+                    self.rebuild_apps(&installed, &rows);
+                    self.start_sweep();
+                }
             }
             Err(err) => {
                 self.toast_now(format!("已装应用探测失败：{err}"));
@@ -1276,8 +1315,8 @@ impl PanelApp {
             ]);
             let _ = cmd.output();
         });
-        if self.sessions.is_running(package) {
-            self.move_app_to_display(package);
+        if self.sessions.is_running(&serial, package) {
+            self.move_app_to_display(&serial, package);
             return;
         }
         let portrait = self.sessions.portrait_of(package);
@@ -1337,31 +1376,28 @@ impl PanelApp {
     }
 
     fn body_preset(&mut self) -> Option<AspectPreset> {
-        if let Some(at) = self.body_probed_at {
+        let serial = self.serial()?;
+        if let Some((preset, at)) = self.body_probe.get(&serial) {
             if at.elapsed() < Duration::from_secs(600) {
-                return self.body_preset.clone();
+                return preset.clone();
             }
         }
-        let serial = self.serial()?;
         let output = winproc::quiet_command(&self.adb)
             .args(["-s", &serial, "shell", "wm", "size"])
             .output()
             .ok()?;
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
         let preset = body_aspect_from_wm_size(&text);
-        self.body_probed_at = Some(Instant::now());
-        self.body_preset = preset.clone();
+        self.body_probe
+            .insert(serial, (preset.clone(), Instant::now()));
         preset
     }
 
-    pub(crate) fn move_app_to_display(&mut self, package: &str) {
-        let Some(serial) = self.serial() else {
-            self.toast_now("设备未连接");
-            return;
-        };
+    pub(crate) fn move_app_to_display(&mut self, serial: &str, package: &str) {
         let adb = self.adb.clone();
         let package = package.to_string();
-        let log = panel_log_path(&package);
+        let serial = serial.to_string();
+        let log = panel_log_path(&serial, &package);
         self.move_bg = Some(Background::spawn(move || {
             let display_id = duo_core::session::display_id_from_log(&log);
             let Some(display_id) = display_id else {
@@ -1438,7 +1474,7 @@ impl PanelApp {
             return;
         };
         self.sessions.reap();
-        if self.sessions.is_running(MIRROR_KEY) {
+        if self.sessions.is_running(&serial, MIRROR_KEY) {
             self.toast_now("设备镜像已在运行");
             return;
         }
@@ -1519,6 +1555,40 @@ impl PanelApp {
             backend::disconnect_wireless(&bin, &adb, Some(&serial_for_bg))
                 .map(|_| "disconnected".to_string())
         }));
+    }
+
+    /// 在线设备行（设置页设备卡/设备卡切换器）：(无线?, serial, 选中?)。
+    pub(crate) fn device_rows(&self) -> Vec<(bool, String, bool)> {
+        let online = self.watch.as_ref().map(|w| w.online()).unwrap_or_default();
+        let selected = self.serial();
+        online
+            .into_iter()
+            .map(|serial| {
+                let is_selected = selected.as_deref() == Some(serial.as_str());
+                (serial.contains(':'), serial, is_selected)
+            })
+            .collect()
+    }
+
+    /// 显式选活动设备（设备卡切换器/设置页同一入口）。
+    pub(crate) fn select_device(&mut self, serial: &str) {
+        if self.serial().as_deref() != Some(serial) {
+            self.active_serial = Some(serial.to_string());
+        }
+    }
+
+    /// 遗忘一个历史无线地址（设置页设备卡）。
+    pub(crate) fn forget_wireless(&mut self, addr: &str) {
+        crate::prefs::forget_wireless_target(addr);
+        self.wireless_recent = crate::prefs::load_wireless_recent();
+        self.wireless_target = crate::prefs::load_wireless_target();
+        self.toast_now(format!("已忘记 {addr}"));
+    }
+
+    /// 直连一个历史地址（设置页设备卡）。
+    pub(crate) fn connect_wireless_addr(&mut self, addr: &str) {
+        self.wireless_input = addr.to_string();
+        self.start_wireless_connect();
     }
 
     fn toggle_pin(&mut self, package: &str) {
@@ -2165,7 +2235,7 @@ impl PanelApp {
     /// 高边 14；机身项用探测真值，无缓存时退 20:9 示意）。
     pub(crate) fn fixed_aspect_submenu(&mut self, ui: &mut egui::Ui, package: &str) {
         let current = self.display_prefs.get(package).cloned();
-        let body = self.body_preset.clone();
+        let body = self.body_preset();
         let dims = |p: &AspectPreset| {
             if p.landscape {
                 (16.0_f32, 16.0 * p.height as f32 / p.width as f32)
@@ -2656,12 +2726,14 @@ impl PanelApp {
                         let target = state.trim_start_matches("already-connected:");
                         self.wireless_target = target.to_string();
                         crate::prefs::save_wireless_target(target);
+                        self.wireless_recent = crate::prefs::load_wireless_recent();
                         self.toast_now(format!("{target} 已在连接中"));
                         self.wireless_open = false;
                     } else {
                         let target = state.trim_start_matches("connected:");
                         self.wireless_target = target.to_string();
                         crate::prefs::save_wireless_target(target);
+                        self.wireless_recent = crate::prefs::load_wireless_recent();
                         self.toast_now(format!(
                             "已连接 {target}（若长时间未上线，请检查设备授权）"
                         ));
@@ -2672,20 +2744,29 @@ impl PanelApp {
                 None => self.wireless_bg = Some(bg),
             }
         }
-        // 设备晚插 → 重跑已装探测（仅新增触发，掉线不动）。
-        if let Some(watch) = &self.watch {
-            let online: Vec<String> = watch
-                .states()
-                .into_iter()
-                .filter(|(_, state)| state == "device")
-                .map(|(serial, _)| serial)
-                .collect();
-            if let Some(known) = &self.known_online {
-                if online.len() > known.len() && self.installed_bg.is_none() && !self.skip_sweep {
+        // 活动设备变化（切换/插拔/离线回退）：换应用列表（stash 命中即换，
+        // 否则现拉）；离线触发的回退给 toast（手动切换不吭声）。
+        let effective = self.serial();
+        if self.effective_serial != effective {
+            let prev = self.effective_serial.clone();
+            self.effective_serial = effective.clone();
+            if let Some(serial) = &effective {
+                if let Some((installed, rows)) = self.installed_stash.get(serial).cloned() {
+                    self.rebuild_apps(&installed, &rows);
+                    self.start_sweep();
+                } else if self.installed_bg.is_none() && !self.skip_sweep {
                     self.refresh_installed();
                 }
             }
-            self.known_online = Some(online);
+            if let Some(p) = prev {
+                let prev_online = self.watch.as_ref().map(|w| w.online()).unwrap_or_default();
+                if !prev_online.contains(&p) {
+                    match &effective {
+                        Some(n) => self.toast_now(format!("设备 {p} 离线，已切换到 {n}")),
+                        None => self.toast_now(format!("设备 {p} 已离线")),
+                    }
+                }
+            }
         }
     }
 }

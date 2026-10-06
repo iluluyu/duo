@@ -153,7 +153,15 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         return;
     }
     let w = 320.0;
-    let h = 176.0;
+    // 历史地址行（最近 3 个，点击填入）存在时卡高 +30。
+    let recent: Vec<String> = app
+        .wireless_recent
+        .iter()
+        .filter(|a| !a.is_empty())
+        .take(3)
+        .cloned()
+        .collect();
+    let h = if recent.is_empty() { 176.0 } else { 206.0 };
     let card = Rect::from_min_size(
         Pos2::new(full.center().x - w / 2.0, full.center().y - h / 2.0),
         Vec2::new(w, h),
@@ -257,6 +265,42 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         app.start_wireless_connect();
     }
     let cancel_resp = ui.allocate_rect(cancel, Sense::click());
+    if !recent.is_empty() {
+        let mut chip_x = card.left() + 16.0;
+        let chip_y = field_rect.bottom() + 8.0;
+        paint::text_left(
+            ui.painter(),
+            Pos2::new(chip_x, chip_y + 11.0),
+            "最近：",
+            12.0,
+            t.ink2,
+        );
+        chip_x += 40.0;
+        for addr in &recent {
+            let text_w = addr
+                .chars()
+                .map(|c| if c.is_ascii() { 12.0 * 0.55 } else { 12.0 })
+                .sum::<f32>();
+            let chip =
+                Rect::from_min_size(Pos2::new(chip_x, chip_y), Vec2::new(text_w + 20.0, 22.0));
+            if chip.right() > card.right() - 16.0 {
+                break;
+            }
+            let chip_resp = ui.allocate_rect(chip, Sense::click());
+            let wash = if chip_resp.hovered() {
+                t.hover_on_canvas
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            paint::rounded_fill(ui.painter(), chip, 11.0, wash);
+            paint::rounded_stroke(ui.painter(), chip, 11.0, t.card_border);
+            paint::text_centered(ui.painter(), chip.center(), addr, 12.0, false, t.ink2);
+            if chip_resp.clicked() {
+                app.wireless_input = addr.clone();
+            }
+            chip_x = chip.right() + 8.0;
+        }
+    }
     let cancel_wash = if cancel_resp.hovered() {
         t.hover_on_canvas
     } else {
@@ -313,7 +357,15 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         Pos2::new(rect.right() - 12.0 - 52.0, rect.center().y - 14.0),
         Vec2::new(52.0, 28.0),
     );
-    let max_text_w = (wbtn.left() - 8.0 - sub_x.x).max(24.0);
+    // ≥2 台在线：无线钮左侧加切换钮（▾ 台数），点开与右键同源的设备
+    // 菜单；单台零额外 UI。
+    let switch = (online_count > 1).then(|| {
+        Rect::from_min_size(
+            Pos2::new(wbtn.left() - 8.0 - 44.0, rect.center().y - 14.0),
+            Vec2::new(44.0, 28.0),
+        )
+    });
+    let max_text_w = (switch.map_or(wbtn.left(), |s: Rect| s.left()) - 8.0 - sub_x.x).max(24.0);
     let sub = paint::elide_to_width(&sub, max_text_w, &|c| {
         if c.is_ascii() {
             12.0 * 0.55
@@ -322,6 +374,39 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     paint::text_left(ui.painter(), sub_x, &sub, 12.0, t.ink2);
+    if let Some(sw) = switch {
+        let sw_resp = ui.allocate_rect(sw, Sense::click());
+        let wash = if sw_resp.hovered() {
+            t.hover_on_canvas
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        paint::rounded_fill(ui.painter(), sw, 14.0, wash);
+        paint::rounded_stroke(ui.painter(), sw, 14.0, t.card_border);
+        paint::text_centered(
+            ui.painter(),
+            sw.center(),
+            &format!("▾ {online_count}"),
+            12.0,
+            false,
+            t.ink,
+        );
+        let sw_id = egui::Id::new("duo-device-switch");
+        if sw_resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(sw_id));
+        }
+        egui::popup_below_widget(
+            ui,
+            sw_id,
+            &sw_resp,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_width(crate::app::MENU_INNER_WIDTH);
+                app.glass_underlay(ui, false);
+                app.device_menu(ui);
+            },
+        );
+    }
     let card_resp = ui.allocate_rect(rect, Sense::click());
     let wireless_resp = ui.allocate_rect(wbtn, Sense::click());
     let wash = if wireless_resp.hovered() {
@@ -450,9 +535,9 @@ fn volume_slider(app: &mut PanelApp, ui: &mut egui::Ui, zone: Rect) {
         Vec2::new(zone.width(), 4.0),
     );
     paint::rounded_fill(ui.painter(), track, 2.0, t.hairline_on_card);
-    let known = app.media_volume >= 0;
+    let known = app.volume_known();
     let resp = ui.allocate_rect(track.expand(6.0), Sense::click_and_drag());
-    let mut visual = app.media_volume as f32;
+    let mut visual = app.volume_value() as f32;
     if resp.is_pointer_button_down_on() && resp.dragged() {
         if let Some(pos) = resp.interact_pointer_pos() {
             let frac = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
@@ -460,7 +545,7 @@ fn volume_slider(app: &mut PanelApp, ui: &mut egui::Ui, zone: Rect) {
             app.volume_dragged(visual as i64);
         }
     } else if known {
-        visual = app.media_volume as f32;
+        visual = app.volume_value() as f32;
     }
     let filled = known || app.volume_pending.is_some();
     if filled {
@@ -1137,7 +1222,7 @@ fn chip_ui(
     }
     if clickable && resp.clicked() && !resp.hovered() {
         // 绿点+标签整体可点 = 拉回该会话虚拟屏（镜像会话禁点）
-        app.move_app_to_display(key);
+        app.focus_session(key);
     }
 }
 

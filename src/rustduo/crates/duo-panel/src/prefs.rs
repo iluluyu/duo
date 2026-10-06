@@ -89,13 +89,58 @@ pub fn load_wireless_target() -> String {
         .to_string()
 }
 
+/// 历史无线地址（最近优先，最多 5 个；设置页设备卡/对话框共用）。
+pub fn load_wireless_recent() -> Vec<String> {
+    read_doc()
+        .get("wireless")
+        .and_then(|v| v.get("recent"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 记住一次成功连接：recent 头插去重裁 5，target 同步刷新。
 pub fn save_wireless_target(target: &str) {
     let mut doc = read_doc();
     let mut section = doc
         .get("wireless")
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+    let mut recent = load_wireless_recent();
+    recent.retain(|t| t != target);
+    recent.insert(0, target.to_string());
+    recent.truncate(5);
     section.insert("target".into(), serde_json::Value::String(target.into()));
+    section.insert(
+        "recent".into(),
+        serde_json::Value::Array(recent.into_iter().map(serde_json::Value::String).collect()),
+    );
+    doc.insert("wireless".into(), serde_json::Value::Object(section));
+    write_doc(&doc);
+}
+
+/// 遗忘一个历史地址；被删的恰为 target 时回退到新的队首（或空）。
+pub fn forget_wireless_target(target: &str) {
+    let mut doc = read_doc();
+    let mut section = doc
+        .get("wireless")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let mut recent = load_wireless_recent();
+    let was_target = load_wireless_target() == target;
+    recent.retain(|t| t != target);
+    if was_target {
+        let head = recent.first().cloned().unwrap_or_default();
+        section.insert("target".into(), serde_json::Value::String(head));
+    }
+    section.insert(
+        "recent".into(),
+        serde_json::Value::Array(recent.into_iter().map(serde_json::Value::String).collect()),
+    );
     doc.insert("wireless".into(), serde_json::Value::Object(section));
     write_doc(&doc);
 }
@@ -461,6 +506,36 @@ mod tests {
             assert_eq!(load_wireless_target(), "192.168.1.100:5555");
             save_wireless_target("192.168.1.100:40135");
             assert_eq!(load_pinned_prefs(), vec!["a.b".to_string()]);
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wireless_recent_dedupes_caps_and_forgets() {
+        let _guard = lock_home();
+        let home = scratch("wireless-recent");
+        with_home(&home, || {
+            assert!(load_wireless_recent().is_empty());
+            save_wireless_target("192.168.1.100:5555");
+            save_wireless_target("192.168.1.101:5555");
+            save_wireless_target("192.168.1.102:5555");
+            // 重复连接前置，不占两格
+            save_wireless_target("192.168.1.100:5555");
+            let recent = load_wireless_recent();
+            assert_eq!(recent[0], "192.168.1.100:5555");
+            assert_eq!(recent.len(), 3);
+            // 遗忘中间项；target 不受影响
+            forget_wireless_target("192.168.1.101:5555");
+            assert_eq!(load_wireless_recent().len(), 2);
+            assert_eq!(load_wireless_target(), "192.168.1.100:5555");
+            // 遗忘 target 本尊 → 回退到新队首
+            forget_wireless_target("192.168.1.100:5555");
+            assert_eq!(load_wireless_target(), "192.168.1.102:5555");
+            // 超 5 个裁剪
+            for i in 0..8 {
+                save_wireless_target(&format!("10.0.0.{i}:5555"));
+            }
+            assert_eq!(load_wireless_recent().len(), 5);
         });
         let _ = std::fs::remove_dir_all(&home);
     }
