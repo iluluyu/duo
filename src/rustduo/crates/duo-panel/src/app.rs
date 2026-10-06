@@ -167,6 +167,8 @@ pub struct PanelApp {
     sweep_bg: Option<Background<Result<backend::SweepResult, String>>>,
     move_bg: Option<Background<MoveResult>>,
     volume_bg: Option<Background<()>>,
+    /// 无线连接后台任务：Ok(state_name) / Err(原因) → Toast。
+    pub(crate) wireless_bg: Option<Background<Result<String, String>>>,
     known_online: Option<Vec<String>>,
 
     // 模型
@@ -184,6 +186,12 @@ pub struct PanelApp {
 
     // UI 态
     pub search: String,
+    /// 无线连接对话框：开 = 设备卡上方浮层输入 IP[:端口]。
+    pub(crate) wireless_open: bool,
+    /// 对话框输入框内容（打开时预填上次目标）。
+    pub(crate) wireless_input: String,
+    /// 上次成功/使用的无线目标（持久化 gui_prefs.json wireless 节）。
+    pub(crate) wireless_target: String,
     pub(crate) toast: Option<(String, Instant)>,
     pub(crate) media_volume: i64,
     /// 网格滚动偏移（像素；QML interactive 网格的 egui 对应物）。
@@ -268,6 +276,7 @@ impl PanelApp {
             sweep_bg: None,
             move_bg: None,
             volume_bg: None,
+            wireless_bg: None,
             known_online: None,
             apps: AppsModel::default(),
             sessions: Sessions::new(),
@@ -283,6 +292,10 @@ impl PanelApp {
             volume_pending: None,
             shot: None,
             search: String::new(),
+            // DUO_SHOT_WIRELESS=1：--shot 出图预开无线对话框（同 DUO_SHOT_MENU 语法）。
+            wireless_open: std::env::var("DUO_SHOT_WIRELESS").is_ok(),
+            wireless_input: String::new(),
+            wireless_target: crate::prefs::load_wireless_target(),
             toast: None,
             media_volume: -1,
             grid_scroll: 0.0,
@@ -588,6 +601,23 @@ impl PanelApp {
             },
         );
         ui.style_mut().spacing.button_padding = prev_pad;
+    }
+
+    /// 设备卡右键：无线连接入口 + 无线设备（serial 含 `:`）断开。
+    pub(crate) fn device_menu(&mut self, ui: &mut egui::Ui) {
+        if self.menu_item(ui, "无线连接…", None) {
+            self.open_wireless();
+            ui.close_menu();
+        }
+        if let Some(serial) = self.serial() {
+            if serial.contains(':') {
+                menu_hairline(ui, &self.tokens);
+                if self.menu_item(ui, "断开无线连接", None) {
+                    self.disconnect_wireless_now();
+                    ui.close_menu();
+                }
+            }
+        }
     }
 
     pub(crate) fn mirror_menu(&mut self, ui: &mut egui::Ui) {
@@ -1400,7 +1430,71 @@ impl PanelApp {
         }
     }
 
-    // --------------------------------------------------------------- prefs
+    // ------------------------------------------------------------ wireless
+
+    /// 打开无线连接对话框（预填上次目标；焦点在输入框）。
+    pub(crate) fn open_wireless(&mut self) {
+        self.wireless_input = self.wireless_target.clone();
+        self.wireless_open = true;
+    }
+
+    /// 后台发起 `duo-core connect`：目标归一在 duo-core 侧（裸 IP 补
+    /// :5555）；成功记忆目标 + 关对话框，2s 监视循环自动抬升设备。
+    pub(crate) fn start_wireless_connect(&mut self) {
+        if self.wireless_bg.is_some() {
+            return; // 上一次连接还在途，不叠加
+        }
+        let raw = self.wireless_input.trim().to_string();
+        if raw.is_empty() {
+            self.toast_now("请输入设备 IP（如 192.168.1.100）");
+            return;
+        }
+        let Some(binary) = self.duo_core.clone() else {
+            self.toast_now("找不到 duo-core 二进制");
+            return;
+        };
+        let adb = self.adb.clone();
+        self.toast_now(format!("正在连接 {raw} …"));
+        self.wireless_bg = Some(Background::spawn(move || {
+            let bin = binary.display().to_string();
+            backend::connect_wireless(&bin, &adb, &raw).map(|value| {
+                let state = value
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("connected")
+                    .to_string();
+                let target = value
+                    .get("target")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if target.is_empty() {
+                    state
+                } else {
+                    format!("{state}:{target}")
+                }
+            })
+        }));
+    }
+
+    /// 断开当前无线设备（serial 含 `:` 才在菜单出现）。
+    pub(crate) fn disconnect_wireless_now(&mut self) {
+        let Some(serial) = self.serial() else {
+            return;
+        };
+        let Some(binary) = self.duo_core.clone() else {
+            self.toast_now("找不到 duo-core 二进制");
+            return;
+        };
+        let adb = self.adb.clone();
+        self.toast_now(format!("正在断开 {serial} …"));
+        let serial_for_bg = serial.clone();
+        self.wireless_bg = Some(Background::spawn(move || {
+            let bin = binary.display().to_string();
+            backend::disconnect_wireless(&bin, &adb, Some(&serial_for_bg))
+                .map(|_| "disconnected".to_string())
+        }));
+    }
 
     fn toggle_pin(&mut self, package: &str) {
         let now = !self.pinned.get(package).copied().unwrap_or(false);
@@ -1766,6 +1860,13 @@ impl PanelApp {
         let w = (cover.width() * ppp).round() as usize;
         let h = (cover.height() * ppp).round() as usize;
         if w < 8 || h < 8 {
+            return None;
+        }
+        // 首帧巨窗（resize 前 max_rect 可达 ~8000 逻辑点）× 150% 缩放会
+        // 造出超适配器上限的贴图直接炸 wgpu 验证（2026-10-06 真机定位，
+        // 九修引入）；超限帧回落纯色岛，真实窗口尺寸永远远小于上限。
+        let max_side = ctx.input(|i| i.max_texture_side);
+        if w > max_side || h > max_side {
             return None;
         }
         let bg = self.tokens.bg;
@@ -2521,6 +2622,31 @@ impl PanelApp {
                 self.volume_bg = Some(bg);
             }
         }
+        if let Some(bg) = self.wireless_bg.take() {
+            match bg.take() {
+                Some(Ok(state)) => {
+                    if state.starts_with("disconnected") {
+                        self.toast_now("已断开无线设备");
+                    } else if state.starts_with("already-connected:") {
+                        let target = state.trim_start_matches("already-connected:");
+                        self.wireless_target = target.to_string();
+                        crate::prefs::save_wireless_target(target);
+                        self.toast_now(format!("{target} 已在连接中"));
+                        self.wireless_open = false;
+                    } else {
+                        let target = state.trim_start_matches("connected:");
+                        self.wireless_target = target.to_string();
+                        crate::prefs::save_wireless_target(target);
+                        self.toast_now(format!(
+                            "已连接 {target}（若长时间未上线，请检查设备授权）"
+                        ));
+                        self.wireless_open = false;
+                    }
+                }
+                Some(Err(err)) => self.toast_now(format!("无线连接失败：{err}")),
+                None => self.wireless_bg = Some(bg),
+            }
+        }
         // 设备晚插 → 重跑已装探测（仅新增触发，掉线不动）。
         if let Some(watch) = &self.watch {
             let online: Vec<String> = watch
@@ -2553,6 +2679,15 @@ fn window_xid(frame: &eframe::Frame) -> Option<u64> {
 }
 
 impl eframe::App for PanelApp {
+    /// eframe wgpu 路径不回传设备纹理上限（glow 路径有），低限适配器
+    /// （本机 8192）上 CJK 图集行宽可顶爆 16384 默认 → wgpu 验证崩溃。
+    /// 兜底 8192：图集行改向下增长，全平台安全（2026-10 真机定位）。
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if raw_input.max_texture_side.is_none() {
+            raw_input.max_texture_side = Some(8192);
+        }
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.tokens.bg;
         let a = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
@@ -2597,6 +2732,10 @@ impl eframe::App for PanelApp {
         }
         if self.page == Page::Settings && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.save_settings_and_leave();
+        }
+        // 离开首页即收起无线对话框（模态不跨页驻留）。
+        if self.page != prev_page {
+            self.wireless_open = false;
         }
         self.sync_visuals(ctx);
         self.sessions.reap();

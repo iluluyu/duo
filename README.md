@@ -36,8 +36,10 @@ scoop install adb scrcpy
 ```
 
 两个包都在 scoop 默认 main bucket，与上游同步发版。Duo 需要
-**scrcpy ≥ 4.1**（依赖 `--new-display` / `--flex-display` 等虚拟屏特性），
-装完可用 `scrcpy --version` 确认。
+**scrcpy ≥ 4.1**（依赖 `--new-display` / `--flex-display` 等虚拟屏特性）；
+**推荐 scrcpy ≥ 5.0**（2026-10 发版，电脑侧硬件解码默认开启，CPU 占用
+约降 10×，设置页「投屏质量 → 硬件解码」可回退软解），装完可用
+`scrcpy --version` 确认。
 
 不想用 Scoop 亦可：手动下载 [platform-tools](https://developer.android.com/tools/releases/platform-tools)
 与 [scrcpy](https://github.com/Genymobile/scrcpy/releases) 解压后加入
@@ -59,6 +61,12 @@ scoop status              # 查看待升级清单
 1. 手机开启「开发者选项」→「USB 调试」；
 2. 数据线连接电脑，首次连接在手机端勾选「一律允许此计算机进行调试」；
 3. `adb devices` 能看到设备即就绪。
+
+也可无线使用（无需数据线）：手机与电脑同一局域网，开启「开发者选项 →
+无线调试」（成对/授权一次），在 Duo 首页设备卡点「无线」，输入设备
+IP（如 `192.168.1.100`，缺省端口自动补 `5555`；随机端口则填
+`IP:端口`）即可连接。USB 在线时同样可用——右键设备卡还能一键
+「断开无线连接」。
 
 ### 第 5 步：获取 Duo
 
@@ -94,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
    │ (命令行 / JSON-lines)
 [核心引擎] duo-core.exe (Rust / CLI, src/rustduo/crates/duo-core)
    ├── C# 悬停控件 (DuoChromeOverlay.exe, csc.exe 现场编译) ──> 无边框窗口与胶囊交互
-   └── scrcpy 4.1+ 引擎 ──> adb ──> Android（无头应用服务器）
+   └── scrcpy 4.1+ 引擎（5.0+ 硬解）──> adb（USB / 无线）──> Android（无头应用服务器）
 ```
 
 ## 开发

@@ -20,6 +20,10 @@ pub const VALID_AUDIO_POLICIES: [&str; 3] = ["latest", "all", "off"];
 pub const VALID_VIDEO_CODECS: [&str; 4] = ["auto", "h264", "h265", "av1"];
 pub const VALID_BAR_MODES: [&str; 3] = ["immersive", "native", "none"];
 pub const VALID_THEMES: [&str; 3] = ["light", "dark", "system"];
+/// scrcpy ≥ 5.0 ``--hwdec``（电脑侧硬件解码）。auto = 5.0 默认（能硬解
+/// 则硬解，失败自动回退软解）且不发射旗标，保持 4.1 兼容；disabled /
+/// d3d11va 显式发射（4.1 会报 unknown option，属用户自担）。
+pub const VALID_HWDEC: [&str; 3] = ["auto", "disabled", "d3d11va"];
 
 // 输入范围，不是硬件承诺（docs §4.1）。
 pub const FPS_RANGE: (i64, i64) = (1, 240);
@@ -64,6 +68,10 @@ pub struct Settings {
     pub audio_policy: String,
     /// auto = 探测设备硬件编码器并择优；显式指定则用之。
     pub video_codec: String,
+    /// 电脑侧解码（scrcpy ≥ 5.0）：auto = 硬解优先（5.0 默认，不发
+    /// 旗标）；disabled = 强制软解（排障用）；d3d11va = 钉死 Windows
+    /// 硬解后端。
+    pub hwdec: String,
     /// 窗口栏模式（docs/window-experience.md §10）；默认：上巴沉浸、
     /// 下巴不显示（scrcpy 右键已是返回）。
     pub top_bar_mode: String,
@@ -89,6 +97,7 @@ impl Default for Settings {
             theme: "light".into(),
             audio_policy: "latest".into(),
             video_codec: "auto".into(),
+            hwdec: "auto".into(),
             top_bar_mode: "immersive".into(),
             bottom_bar_mode: "none".into(),
             turn_screen_off: false,
@@ -348,6 +357,7 @@ pub fn sanitize(raw: &serde_json::Map<String, Value>, problems: &mut Vec<String>
         &defaults.video_codec,
         problems,
     );
+    let hwdec = enum_field(raw, "hwdec", &VALID_HWDEC, &defaults.hwdec, problems);
     let top_bar_mode = enum_field(
         raw,
         "top_bar_mode",
@@ -379,6 +389,7 @@ pub fn sanitize(raw: &serde_json::Map<String, Value>, problems: &mut Vec<String>
         theme,
         audio_policy,
         video_codec,
+        hwdec,
         top_bar_mode,
         bottom_bar_mode,
         turn_screen_off,

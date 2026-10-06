@@ -24,6 +24,7 @@ pub mod quiet;
 pub mod session;
 pub mod settings;
 pub mod sweep;
+pub mod wireless;
 
 /// 与 Python `round()` 同语义的四舍五入（银行家舍入：.5 取偶）。
 /// 尺寸计算必须与 Python 实现逐位一致——这些值直接进 scrcpy argv。

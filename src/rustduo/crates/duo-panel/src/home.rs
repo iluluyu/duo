@@ -130,7 +130,144 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
 
     search_island(app, ui, layout.search, glass_on);
     running_card(app, ui, ui.max_rect(), chips_h);
+    wireless_dialog(app, ui);
     ui.allocate_rect(ui.max_rect(), Sense::hover());
+}
+
+/// 无线连接对话框（2026-10）：速罩 + 居中卡。KISS 视觉——未入玻璃管线
+/// （菜单/岛玻璃配方不覆盖模态；后续验收后再议）。
+fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
+    if !app.wireless_open {
+        return;
+    }
+    let t = app.tokens;
+    let full = ui.max_rect();
+    let scrim = ui.allocate_rect(full, Sense::click());
+    ui.painter().rect_filled(
+        full,
+        egui::CornerRadius::ZERO,
+        crate::theme::srgba(0, 0, 0, 110),
+    );
+    if scrim.clicked() {
+        app.wireless_open = false;
+        return;
+    }
+    let w = 320.0;
+    let h = 176.0;
+    let card = Rect::from_min_size(
+        Pos2::new(full.center().x - w / 2.0, full.center().y - h / 2.0),
+        Vec2::new(w, h),
+    );
+    ui.allocate_rect(card, Sense::hover());
+    paint::card(ui.painter(), card, &t);
+    paint::text_left_weight(
+        ui.painter(),
+        Pos2::new(card.left() + 16.0, card.top() + 18.0),
+        "无线连接",
+        15.0,
+        t.ink,
+        true,
+    );
+    paint::text_left(
+        ui.painter(),
+        Pos2::new(card.left() + 16.0, card.top() + 42.0),
+        "设备 IP 或 IP:端口（默认 5555，需已开无线调试）",
+        12.0,
+        t.ink2,
+    );
+    // 输入岛（搜索胶囊同构：36 高胶囊 + 无框 TextEdit）
+    let field_rect = Rect::from_min_size(
+        Pos2::new(card.left() + 16.0, card.top() + 64.0),
+        Vec2::new(w - 32.0, 36.0),
+    );
+    paint::rounded_fill(ui.painter(), field_rect, 18.0, t.search);
+    let edit_area = Rect::from_min_max(
+        Pos2::new(field_rect.left() + 14.0, field_rect.top() + 4.0),
+        Pos2::new(field_rect.right() - 14.0, field_rect.bottom() - 4.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(edit_area)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let edit_id = egui::Id::new("duo-wireless-input");
+    let edit = egui::TextEdit::singleline(&mut app.wireless_input)
+        .id(edit_id)
+        .font(egui::FontId::proportional(13.0))
+        .frame(false)
+        .desired_width(edit_area.width())
+        .hint_text("");
+    let resp = child.add(edit);
+    if app.wireless_input.is_empty() {
+        child.painter().text(
+            Pos2::new(edit_area.left() + 2.0, edit_area.center().y),
+            egui::Align2::LEFT_CENTER,
+            "192.168.1.100 或 192.168.1.100:40135",
+            egui::FontId::proportional(13.0),
+            crate::theme::srgba(108, 108, 116, 210),
+        );
+    }
+    let anyone = ui.ctx().memory(|m| m.focused());
+    if anyone.is_none() {
+        resp.request_focus();
+    }
+    let mut connect_clicked = false;
+    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        connect_clicked = true;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.wireless_open = false;
+        return;
+    }
+    // 按钮行：连接（主）+ 取消（次）
+    let busy = app.wireless_bg.is_some();
+    let connect = Rect::from_min_size(
+        Pos2::new(card.right() - 16.0 - 68.0, card.bottom() - 16.0 - 32.0),
+        Vec2::new(68.0, 32.0),
+    );
+    let cancel = Rect::from_min_size(
+        Pos2::new(connect.left() - 12.0 - 68.0, connect.top()),
+        Vec2::new(68.0, 32.0),
+    );
+    let connect_resp = ui.allocate_rect(connect, Sense::click());
+    let alpha = if connect_resp.hovered() && !busy {
+        0.9
+    } else {
+        1.0
+    };
+    paint::rounded_fill(
+        ui.painter(),
+        connect,
+        16.0,
+        if busy {
+            mul_alpha(t.accent, 0.4)
+        } else {
+            mul_alpha(t.accent, alpha)
+        },
+    );
+    paint::text_centered(
+        ui.painter(),
+        connect.center(),
+        if busy { "连接中" } else { "连接" },
+        13.0,
+        true,
+        mul_alpha(egui::Color32::WHITE, if busy { 0.6 } else { 1.0 }),
+    );
+    if connect_resp.clicked() || connect_clicked {
+        app.start_wireless_connect();
+    }
+    let cancel_resp = ui.allocate_rect(cancel, Sense::click());
+    let cancel_wash = if cancel_resp.hovered() {
+        t.hover_on_canvas
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    paint::rounded_fill(ui.painter(), cancel, 16.0, cancel_wash);
+    paint::rounded_stroke(ui.painter(), cancel, 16.0, t.card_border);
+    paint::text_centered(ui.painter(), cancel.center(), "取消", 13.0, false, t.ink);
+    if cancel_resp.clicked() {
+        app.wireless_open = false;
+    }
 }
 
 /// (cols, content_h, max_scroll)：show 的输入路由与 grid 的裁剪共用。
@@ -142,7 +279,8 @@ fn grid_metrics(rect: Rect, entries: &[AppEntry]) -> (usize, f32, f32) {
 
 fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     // Main.qml deviceCard：Dot 8+1 白环；在线绿/有设备琥珀/无设备灰；
-    // 15px DemiBold 状态 + 12px ink2 serial
+    // 15px DemiBold 状态 + 12px ink2 serial；右侧「无线」胶囊（2026-10
+    // 无线 adb：打开 IP 直连对话框，USB 在线也不藏——边插边切无线）。
     let t = app.tokens;
     paint::card(ui.painter(), rect, &t);
     let (state, serial, online_count, any_device) = app.device_summary();
@@ -169,14 +307,35 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     } else {
         "连接设备后可启动应用与投屏".into()
     };
-    paint::text_left(
-        ui.painter(),
-        Pos2::new(text_x, rect.center().y + 5.0),
-        &sub,
-        12.0,
-        t.ink2,
+    let sub_x = Pos2::new(text_x, rect.center().y + 5.0);
+    // 文本右沿 vs 无线钮左沿最小间隙 8（serial 长（IP:40135）时截断）
+    let wbtn = Rect::from_min_size(
+        Pos2::new(rect.right() - 12.0 - 52.0, rect.center().y - 14.0),
+        Vec2::new(52.0, 28.0),
     );
-    ui.allocate_rect(rect, Sense::hover());
+    let max_text_w = (wbtn.left() - 8.0 - sub_x.x).max(24.0);
+    let sub = paint::elide_to_width(&sub, max_text_w, &|c| {
+        if c.is_ascii() {
+            12.0 * 0.55
+        } else {
+            12.0
+        }
+    });
+    paint::text_left(ui.painter(), sub_x, &sub, 12.0, t.ink2);
+    let card_resp = ui.allocate_rect(rect, Sense::click());
+    let wireless_resp = ui.allocate_rect(wbtn, Sense::click());
+    let wash = if wireless_resp.hovered() {
+        t.hover_on_canvas
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    paint::rounded_fill(ui.painter(), wbtn, 14.0, wash);
+    paint::rounded_stroke(ui.painter(), wbtn, 14.0, t.card_border);
+    paint::text_centered(ui.painter(), wbtn.center(), "无线", 12.0, false, t.ink);
+    if wireless_resp.clicked() {
+        app.open_wireless();
+    }
+    app.context_menu(&card_resp, |app, ui| app.device_menu(ui));
 }
 
 fn pinned_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {

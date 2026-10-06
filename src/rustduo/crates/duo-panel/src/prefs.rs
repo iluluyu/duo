@@ -77,6 +77,29 @@ pub fn save_pinned_prefs(pinned: &[String]) {
     update_doc("pinned", serde_json::to_value(sorted).unwrap_or_default());
 }
 
+// -------------------------------------------------------------- wireless
+
+/// 上次无线连接目标（设备卡对话框预填；坏形状丢弃回空串）。
+pub fn load_wireless_target() -> String {
+    read_doc()
+        .get("wireless")
+        .and_then(|v| v.get("target"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub fn save_wireless_target(target: &str) {
+    let mut doc = read_doc();
+    let mut section = doc
+        .get("wireless")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    section.insert("target".into(), serde_json::Value::String(target.into()));
+    doc.insert("wireless".into(), serde_json::Value::Object(section));
+    write_doc(&doc);
+}
+
 // ---------------------------------------------------------------- display
 
 /// 按应用显示模式：`{"mode": "flex"}` 或 `{"mode": "fixed", "aspect": id}`。
@@ -421,6 +444,23 @@ mod tests {
             save_scale_prefs(&scale);
             assert_eq!(load_scale_prefs().get("a.b"), Some(&2.0));
             assert_eq!(load_audio_prefs().get("a.b"), Some(&true), "audio 节仍在");
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wireless_target_roundtrips_and_defaults_empty() {
+        let _guard = lock_home();
+        let home = scratch("wireless");
+        with_home(&home, || {
+            assert_eq!(load_wireless_target(), "");
+            save_wireless_target("192.168.1.100:5555");
+            assert_eq!(load_wireless_target(), "192.168.1.100:5555");
+            // 与其他节共存不覆盖
+            save_pinned_prefs(&["a.b".to_string()]);
+            assert_eq!(load_wireless_target(), "192.168.1.100:5555");
+            save_wireless_target("192.168.1.100:40135");
+            assert_eq!(load_pinned_prefs(), vec!["a.b".to_string()]);
         });
         let _ = std::fs::remove_dir_all(&home);
     }

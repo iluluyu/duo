@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use duo_core::settings::{
-    load_settings, save_settings, Settings, VALID_AUDIO_POLICIES, VALID_BAR_MODES, VALID_THEMES,
-    VALID_VIDEO_CODECS,
+    load_settings, save_settings, Settings, VALID_AUDIO_POLICIES, VALID_BAR_MODES, VALID_HWDEC,
+    VALID_THEMES, VALID_VIDEO_CODECS,
 };
 
 /// 三态控件（上下巴）与枚举下拉共用的选项值。
@@ -16,6 +16,7 @@ pub const AUDIO_CHOICES: [&str; 3] = VALID_AUDIO_POLICIES;
 pub const BAR_CHOICES: [&str; 3] = VALID_BAR_MODES;
 pub const THEME_CHOICES: [&str; 3] = VALID_THEMES;
 pub const CODEC_CHOICES: [&str; 4] = VALID_VIDEO_CODECS;
+pub const HWDEC_CHOICES: [&str; 3] = VALID_HWDEC;
 pub const CORNER_CHOICES: [&str; 3] = duo_core::settings::VALID_CORNER_MODES;
 
 #[derive(Debug)]
@@ -97,6 +98,13 @@ impl SettingsPageModel {
     pub fn set_video_codec(&mut self, codec: &str) {
         if CODEC_CHOICES.contains(&codec) {
             self.draft.video_codec = codec.into();
+            self.touch();
+        }
+    }
+
+    pub fn set_hwdec(&mut self, value: &str) {
+        if HWDEC_CHOICES.contains(&value) {
+            self.draft.hwdec = value.into();
             self.touch();
         }
     }

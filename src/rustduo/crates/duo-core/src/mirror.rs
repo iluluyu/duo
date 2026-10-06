@@ -102,6 +102,13 @@ fn parallel_view_dpi_cap(short_side_px: i64) -> i64 {
         .clamp(80.0, DEFAULT_VD_DPI as f64) as i64
 }
 
+/// flex 默认密度的显示器自适应：dpi = 160 × 工作区短边px ÷ 1080，
+/// 短边 <1080 的屏维持 160（1080p 机器行为零变化）。
+pub fn display_adaptive_dpi(area: &WorkArea) -> i64 {
+    let short_side = area.width.min(area.height).max(1080);
+    (DEFAULT_VD_DPI as f64 * short_side as f64 / 1080.0).round() as i64
+}
+
 /// 窗口标题：--title > 目录预设名 > 包名（M2 的设备标签 sweep 到位后
 /// 再补第三档；元数据恒可选，失败不拦启动——对译 _resolve_app_title 语义）。
 pub fn title_for(args: &MirrorArgs) -> String {
@@ -308,8 +315,9 @@ pub struct DisplayPlan {
     pub diag: String,
 }
 
-/// 密度注入：args.dpi > 设置 dpi > 设备探测（仅 flex 且未钉时）> 160。
-/// density_probe 由驱动层注入（None = 探测失败/跳过），保持纯函数可测。
+/// 密度注入：args.dpi > 自定义设置（≠160）> 跟随设备（null+探测）>
+/// flex 显示器自适应默认（2026-10-06）> 160。density_probe 由驱动层
+/// 注入（None = 探测失败/跳过），保持纯函数可测。
 ///
 /// 固定横屏的平行视窗保障：竖屏锁定应用（酷安等）在固定横屏上被系统
 /// 信箱化为「短边×9:16」居中竖条，应用侧双栏/平行视窗阈值 sw>900dp
@@ -318,6 +326,11 @@ pub struct DisplayPlan {
 /// 在无显式 --dpi 且设置密度为默认或「跟随设备」时，自动降到使字框
 /// ≥~920dp 的密度（1440 短边 → 140）。用户自定义全局密度（非默认非
 /// null）与按应用 --dpi 钉扎一律不动。
+///
+/// flex 显示器自适应默认（2026-10-06，4K 真机「像素太多」反馈）：出厂
+/// 160 按 1080p 短边标定（~1080dp 画布）；高分屏 flex 像素跟随窗口 →
+/// dp 同倍膨胀、内容相对窗口过小（4K 最大化实测 2096dp）。仅当无
+/// --dpi 且设置为出厂默认时，按工作区短边把画布钉回 ~1080dp。
 pub fn plan_display(
     args: &MirrorArgs,
     settings: &Settings,
@@ -344,6 +357,13 @@ pub fn plan_display(
             .map(|d| d as i64);
     }
     let custom_density = settings.dpi.is_some_and(|d| d != DEFAULT_VD_DPI);
+    // flex 显示器自适应默认：仅「无 --dpi 且设置为出厂默认」介入；
+    // null+探测成功 = 跟随设备胜出，探测失败也走自适应（旧兜底 160）。
+    let follows_device = settings.dpi.is_none() && density_probe.is_some();
+    if args.display == DisplayMode::Flex && args.dpi.is_none() && !custom_density && !follows_device
+    {
+        dpi = Some(display_adaptive_dpi(&area));
+    }
     if args.display == DisplayMode::Fixed && args.dpi.is_none() && !custom_density {
         if let (Some(w), Some(h)) = (args.width, args.height) {
             if w >= h {
@@ -548,6 +568,7 @@ pub fn build_engine_args(
         ));
     engine.display = plan.display.clone();
     engine.video = video;
+    engine.hwdec = settings.hwdec.clone();
     engine.app_package = args.app.clone();
     engine.screen_off = resolve_screen_off(args.no_screen_off, settings.turn_screen_off);
     engine.vd_keep_content = args.no_vd_destroy_content;
@@ -1026,18 +1047,63 @@ mod tests {
     }
 
     #[test]
-    fn plan_display_settings_dpi_beats_probe() {
-        // 设置页存了密度（默认 160）时不探测：设置 > 设备。
+    fn display_adaptive_dpi_scales_with_workarea_short_side() {
+        // 1080p 基准不变；高分屏按短边比例抬升；小屏维持出厂 160。
+        assert_eq!(
+            display_adaptive_dpi(&WorkArea {
+                width: 1920,
+                height: 1040
+            }),
+            160
+        );
+        assert_eq!(
+            display_adaptive_dpi(&WorkArea {
+                width: 2560,
+                height: 1360
+            }),
+            201
+        );
+        assert_eq!(display_adaptive_dpi(&AREA), 304, "4K 工作区→304");
+        assert_eq!(
+            display_adaptive_dpi(&WorkArea {
+                width: 1366,
+                height: 720
+            }),
+            160
+        );
+    }
+
+    #[test]
+    fn plan_display_flex_default_dpi_is_display_adaptive() {
+        // 出厂默认设置 + flex：密度按显示器自适应（4K AREA→304），
+        // 探测不介入；1080p 屏仍 160（老机器零变化）。
         let plan = plan_display(&args(), &settings(), AREA, Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(304));
+        assert!(plan.diag.contains("display: flex dpi=304"));
+        let area_1080p = WorkArea {
+            width: 1920,
+            height: 1040,
+        };
+        let plan = plan_display(&args(), &settings(), area_1080p, Some(356)).unwrap();
         assert_eq!(plan.display.dpi, Some(160));
     }
 
     #[test]
-    fn plan_display_probe_failure_falls_back_160() {
+    fn plan_display_flex_custom_dpi_not_adaptive() {
+        // 用户自定义全局密度（≠160）不被自适应改写。
+        let mut s = settings();
+        s.dpi = Some(320);
+        let plan = plan_display(&args(), &s, AREA, None).unwrap();
+        assert_eq!(plan.display.dpi, Some(320));
+    }
+
+    #[test]
+    fn plan_display_probe_failure_falls_back_adaptive() {
+        // 跟随设备但探测失败：旧兜底 160 → 现在走显示器自适应。
         let mut s = settings();
         s.dpi = None;
         let plan = plan_display(&args(), &s, AREA, None).unwrap();
-        assert_eq!(plan.display.dpi, Some(160));
+        assert_eq!(plan.display.dpi, Some(304));
     }
 
     #[test]

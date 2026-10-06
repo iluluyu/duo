@@ -124,6 +124,9 @@ pub struct EngineArgs {
     pub stay_awake: bool,
     /// 会话结束后保留虚拟屏内容（仅自建显示有效；镜像恒不发射）。
     pub vd_keep_content: bool,
+    /// 电脑侧解码（scrcpy ≥ 5.0 ``--hwdec``）：""/"auto" 不发射（5.0
+    /// 默认硬解、4.1 兼容），其余值显式发射。
+    pub hwdec: String,
     pub keyboard: String,
     pub audio: bool,
     pub audio_codec: String,
@@ -152,6 +155,7 @@ impl EngineArgs {
             audio_buffer_ms: 100,
             audio_output_buffer_ms: 10,
             print_fps: true,
+            hwdec: "auto".into(),
             ..Default::default()
         }
     }
@@ -185,6 +189,11 @@ impl EngineArgs {
         }
         argv.push(format!("--keyboard={}", self.keyboard));
         argv.extend(self.video.to_flags());
+        // hwdec=""/"auto" 不发射：auto 即 scrcpy 5.0 默认（硬解优先），
+        // 且 4.1 不认识 --hwdec（unknown option 直接拒启）。
+        if !matches!(self.hwdec.as_str(), "" | "auto") {
+            argv.push(format!("--hwdec={}", self.hwdec));
+        }
         if self.print_fps {
             argv.push("--print-fps".into());
         }
@@ -236,6 +245,21 @@ mod tests {
         args.adb_binary = Some("C:\\tools\\adb.exe".into());
         assert!(!has_prefix(&argv(&args), "--adb"));
         assert!(!has_prefix(&argv(&EngineArgs::new("s")), "--adb"));
+    }
+
+    #[test]
+    fn hwdec_auto_is_silent_and_explicit_values_emit() {
+        // auto/空串不发射（5.0 默认硬解；4.1 不认识 --hwdec）。
+        for silent in ["auto", ""] {
+            let mut args = EngineArgs::new("s");
+            args.hwdec = silent.into();
+            assert!(!has_prefix(&argv(&args), "--hwdec"));
+        }
+        let mut args = EngineArgs::new("s");
+        args.hwdec = "disabled".into();
+        assert!(has(&argv(&args), "--hwdec=disabled"));
+        args.hwdec = "d3d11va".into();
+        assert!(has(&argv(&args), "--hwdec=d3d11va"));
     }
 
     #[test]

@@ -188,6 +188,37 @@ pub fn set_volume(binary: &str, adb: &str, serial: &str, index: i64) -> Result<(
     .map(|_| ())
 }
 
+/// `duo-core connect --adb --target`（设备卡无线连接）：归一目标由
+/// duo-core 补端口，成功回显 `{target, state}`；失败 Err 携带 adb 原因。
+pub fn connect_wireless(
+    binary: &str,
+    adb: &str,
+    target: &str,
+) -> Result<serde_json::Value, String> {
+    let stdout = run_capture(
+        binary,
+        &[
+            "connect".into(),
+            "--adb".into(),
+            adb.into(),
+            "--target".into(),
+            target.into(),
+        ],
+    )?;
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("duo-core connect 输出异常：{e}"))
+}
+
+/// `duo-core disconnect --adb [--target]`（无线设备右键断开；缺 target
+/// 全断）。
+pub fn disconnect_wireless(binary: &str, adb: &str, target: Option<&str>) -> Result<(), String> {
+    let mut args = vec!["disconnect".to_string(), "--adb".into(), adb.into()];
+    if let Some(target) = target {
+        args.push("--target".into());
+        args.push(target.into());
+    }
+    run_capture(binary, &args).map(|_| ())
+}
+
 // ------------------------------------------------------------- watch pump
 
 /// 设备监控（库内轮询线程 → 共享状态图；2026-09-17 起零子进程）。
