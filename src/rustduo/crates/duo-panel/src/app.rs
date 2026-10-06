@@ -1720,33 +1720,46 @@ impl PanelApp {
                 }
             })
         };
+        // 行高自适应：矮行（设置卡 32px）单行紧凑，高行（浮层 60px）
+        // 双行名+地址——共享渲染器两处几何不再互踩。
+        let compact = rect.height() < 44.0;
         match name {
+            Some(name) if compact => {
+                let line = elide(name, 14.0);
+                paint::text_left(
+                    painter,
+                    egui::pos2(text_x, rect.center().y - 7.0),
+                    &line,
+                    14.0,
+                    t.ink,
+                );
+            }
             Some(name) => {
-                let name_line = elide(name, 13.0);
+                let name_line = elide(name, 14.0);
                 paint::text_left(
                     painter,
                     egui::pos2(text_x, rect.center().y - 8.0),
                     &name_line,
-                    13.0,
+                    14.0,
                     t.ink,
                 );
                 let secondary = if full_secondary { serial } else { short };
-                let sub_line = elide(secondary, 11.0);
+                let sub_line = elide(secondary, 12.0);
                 paint::text_left(
                     painter,
                     egui::pos2(text_x, rect.center().y + 9.0),
                     &sub_line,
-                    11.0,
+                    12.0,
                     t.ink2,
                 );
             }
             None => {
-                let line = elide(short, 13.0);
+                let line = elide(short, 14.0);
                 paint::text_left(
                     painter,
                     egui::pos2(text_x, rect.center().y - 6.0),
                     &line,
-                    13.0,
+                    14.0,
                     t.ink,
                 );
             }
@@ -2450,20 +2463,14 @@ impl PanelApp {
         let is_dark = t.kind == ThemeKind::Dark;
         // 七修补丁：岛画成时轨道全透（岛材质即轨道；旧半透 α=「透明层」
         // 双层残留），岛缺失帧回退半透轨道
-        let track = if self.settings.draft.glass_enabled {
-            if self.island_drawn[0] {
-                egui::Color32::TRANSPARENT
-            } else {
-                crate::theme::srgba(
-                    t.segment_track.r(),
-                    t.segment_track.g(),
-                    t.segment_track.b(),
-                    if is_dark { 185 } else { 205 },
-                )
-            }
+        let track = if self.settings.draft.glass_enabled && self.island_drawn[0] {
+            // 岛材质即轨道；岛缺失帧用实底轨道（半透兜底会透出滚动
+            // 文字，读作穿帮——2026-10-06 GLM 验收抓出）
+            egui::Color32::TRANSPARENT
         } else {
             t.segment_track
         };
+        let _ = is_dark;
         crate::paint::rounded_fill(ui.painter(), rect, 16.0, track);
         // 结构线（1px、几不可见）：亮色专用；暗色靠亮度差，不描。
         if !is_dark {

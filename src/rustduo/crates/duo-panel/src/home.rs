@@ -165,7 +165,7 @@ fn rename_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         ui.painter(),
         Pos2::new(card.left() + 16.0, card.top() + 18.0),
         "设备命名",
-        15.0,
+        16.0,
         t.ink,
         true,
     );
@@ -193,7 +193,7 @@ fn rename_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
     );
     let edit = egui::TextEdit::singleline(&mut app.rename_input)
         .id(egui::Id::new("duo-rename-input"))
-        .font(egui::FontId::proportional(13.0))
+        .font(egui::FontId::proportional(14.0))
         .frame(false)
         .desired_width(edit_area.width())
         .hint_text("");
@@ -226,7 +226,7 @@ fn rename_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         ui.painter(),
         save.center(),
         "保存",
-        13.0,
+        14.0,
         true,
         mul_alpha(egui::Color32::WHITE, 1.0),
     );
@@ -241,7 +241,7 @@ fn rename_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
     };
     paint::rounded_fill(ui.painter(), cancel, 16.0, cancel_wash);
     paint::rounded_stroke(ui.painter(), cancel, 16.0, t.card_border);
-    paint::text_centered(ui.painter(), cancel.center(), "取消", 13.0, false, t.ink);
+    paint::text_centered(ui.painter(), cancel.center(), "取消", 14.0, false, t.ink);
     if cancel_resp.clicked() {
         app.rename_open = None;
     }
@@ -285,7 +285,7 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         ui.painter(),
         Pos2::new(card.left() + 16.0, card.top() + 18.0),
         "无线连接",
-        15.0,
+        16.0,
         t.ink,
         true,
     );
@@ -314,7 +314,7 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
     let edit_id = egui::Id::new("duo-wireless-input");
     let edit = egui::TextEdit::singleline(&mut app.wireless_input)
         .id(edit_id)
-        .font(egui::FontId::proportional(13.0))
+        .font(egui::FontId::proportional(14.0))
         .frame(false)
         .desired_width(edit_area.width())
         .hint_text("");
@@ -324,7 +324,7 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
             Pos2::new(edit_area.left() + 2.0, edit_area.center().y),
             egui::Align2::LEFT_CENTER,
             "192.168.1.100 或 192.168.1.100:40135",
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(14.0),
             crate::theme::srgba(108, 108, 116, 210),
         );
     }
@@ -370,7 +370,7 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
         ui.painter(),
         connect.center(),
         if busy { "连接中" } else { "连接" },
-        13.0,
+        14.0,
         true,
         mul_alpha(egui::Color32::WHITE, if busy { 0.6 } else { 1.0 }),
     );
@@ -421,7 +421,7 @@ fn wireless_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
     };
     paint::rounded_fill(ui.painter(), cancel, 16.0, cancel_wash);
     paint::rounded_stroke(ui.painter(), cancel, 16.0, t.card_border);
-    paint::text_centered(ui.painter(), cancel.center(), "取消", 13.0, false, t.ink);
+    paint::text_centered(ui.painter(), cancel.center(), "取消", 14.0, false, t.ink);
     if cancel_resp.clicked() {
         app.wireless_open = false;
     }
@@ -595,7 +595,7 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter(),
         Pos2::new(rect.left() + 12.0, rect.center().y - 7.5),
         "设备镜像",
-        15.0,
+        16.0,
         t.ink,
         true,
     );
@@ -625,7 +625,7 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter(),
             btn.center(),
             "投屏",
-            13.0,
+            14.0,
             true,
             egui::Color32::WHITE,
         );
@@ -638,7 +638,7 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter(),
             btn.center(),
             "投屏",
-            13.0,
+            14.0,
             true,
             mul_alpha(egui::Color32::WHITE, 0.4),
         );
@@ -801,7 +801,7 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     );
     let edit = egui::TextEdit::singleline(&mut app.search)
         .id(egui::Id::new("duo-search"))
-        .font(egui::FontId::proportional(13.0))
+        .font(egui::FontId::proportional(14.0))
         .frame(false)
         .desired_width(field.width());
     let resp = child.add(edit);
@@ -817,7 +817,7 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             Pos2::new(field.left() + 2.0, field.center().y),
             egui::Align2::LEFT_CENTER,
             "搜索",
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(14.0),
             hint,
         );
     }
@@ -869,7 +869,7 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, clip: Rect, entries: 
             ui.painter(),
             Pos2::new(rect.center().x, rect.top() + 32.0),
             "应用列表加载中…",
-            13.0,
+            14.0,
             false,
             color,
         );
@@ -903,7 +903,7 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, clip: Rect, entries: 
             ui.painter(),
             btn.center(),
             "刷新已装应用",
-            13.0,
+            14.0,
             false,
             t2.accent,
         );
@@ -918,7 +918,7 @@ fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, clip: Rect, entries: 
             ui.painter(),
             Pos2::new(rect.center().x, rect.top() + 24.0),
             "无匹配应用",
-            13.0,
+            14.0,
             false,
             t.ink2,
         );
@@ -1417,7 +1417,7 @@ pub fn toast(app: &PanelApp, ctx: &egui::Context) {
     let galley = ctx.fonts(|f| {
         f.layout_job(egui::text::LayoutJob::simple(
             text.clone(),
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(14.0),
             egui::Color32::WHITE,
             f32::INFINITY,
         ))
