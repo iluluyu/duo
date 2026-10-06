@@ -1685,7 +1685,6 @@ impl PanelApp {
         rect: Rect,
         is_wifi: bool,
         serial: &str,
-        selected: bool,
         full_secondary: bool,
     ) {
         let t = self.tokens;
@@ -1705,7 +1704,7 @@ impl PanelApp {
             if is_wifi { "无线" } else { "USB" },
             11.0,
             false,
-            t.ink2,
+            if is_wifi { t.accent } else { t.running },
         );
         let short = serial.split(':').next().unwrap_or(serial);
         let name = self.device_names.get(serial);
@@ -1764,13 +1763,6 @@ impl PanelApp {
                 );
             }
         }
-        if selected {
-            painter.circle_filled(
-                egui::pos2(rect.right() - 18.0, rect.center().y),
-                3.0,
-                t.accent,
-            );
-        }
     }
 
     /// 设备卡浮层（点卡展开，2026-10-06 Opus 规格 + 双模型 QA 修复）：
@@ -1782,10 +1774,7 @@ impl PanelApp {
     pub(crate) fn device_picker(&mut self, ui: &mut egui::Ui) {
         let rows = self.device_rows();
         let t = self.tokens;
-        let weak_fill = {
-            let h = t.hover_on_canvas;
-            egui::Color32::from_rgba_unmultiplied(h.r(), h.g(), h.b(), 30)
-        };
+        let is_dark = matches!(t.kind, crate::theme::ThemeKind::Dark);
         ui.style_mut().spacing.item_spacing.y = 0.0;
         // 兜底卡底：玻璃贴图就绪前的帧垫不透明菜单底色（就绪后由毛玻璃
         // 接管，跳过）。预占底位、内容定形后回填矩形。
@@ -1804,8 +1793,40 @@ impl PanelApp {
                 ui.allocate_response(egui::vec2(ui.available_width(), 60.0), egui::Sense::click());
             let rect = row_resp.rect;
             let hover = row_resp.hovered();
-            let fill = if hover { t.hover_on_canvas } else { weak_fill };
-            paint::rounded_fill(ui.painter(), rect, 10.0, fill);
+            // 一整块玻璃：静止行不画底（玻璃即底，行块拼接感已废）；
+            // 仅 hover/选中画内缩槽——rgba 微调明暗而非不透明灰。
+            let slot = rect.shrink2(egui::vec2(4.0, 4.0));
+            let (tint_a, lift) = if is_dark {
+                (
+                    36u8,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),
+                )
+            } else {
+                (18u8, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 12))
+            };
+            if *selected {
+                let a = if hover { tint_a + 10 } else { tint_a };
+                let base = if is_dark {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, a)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)
+                };
+                paint::rounded_fill(ui.painter(), slot, 10.0, base);
+                let edge = egui::Color32::from_rgba_unmultiplied(
+                    t.accent.r(),
+                    t.accent.g(),
+                    t.accent.b(),
+                    140,
+                );
+                paint::rounded_stroke(ui.painter(), slot, 10.0, edge);
+                let bar = Rect::from_min_size(
+                    egui::pos2(slot.left() + 10.0, slot.center().y - 8.0),
+                    egui::vec2(2.0, 16.0),
+                );
+                ui.painter().rect_filled(bar, 1.0, t.accent);
+            } else if hover {
+                paint::rounded_fill(ui.painter(), slot, 10.0, lift);
+            }
             // 传输胶囊
             let tag = Rect::from_min_size(
                 egui::pos2(rect.left() + 8.0, rect.center().y - 11.0),

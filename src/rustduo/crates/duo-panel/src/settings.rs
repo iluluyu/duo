@@ -429,6 +429,9 @@ mod geom {
     pub const TITLE_H: f32 = 20.0; // 卡标题 16px 字盒高
     /// 标题字形顶到卡顶（4px 网格：16 让开 r16 弧带起段）
     pub const TITLE_TOP: f32 = 16.0;
+    /// 设备卡：当前设备行（双行+内槽）/ 历史行（Grok B 方案）
+    pub const DEV_ACTIVE_H: f32 = 52.0;
+    pub const DEV_HIST_H: f32 = 40.0;
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
     pub const MARGIN: f32 = 20.0; // 页边距（4px 网格定稿）
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
@@ -531,21 +534,19 @@ impl SettingsLayout {
         let mut dev_rows = Vec::new();
         let mut wifi_label = None;
         let mut wifi_rows = Vec::new();
-        let mut dev_items = TITLE_H + SPG;
-        dev_items += dev_count as f32 * (ROW_H + SP);
+        let mut dev_items = TITLE_H + SPG + DEV_ACTIVE_H;
+        dev_items += dev_count.saturating_sub(1) as f32 * (DEV_HIST_H + SP);
         if wifi_count > 0 {
-            dev_items += LABEL_H + 4.0 + wifi_count as f32 * (ROW_H + SP);
+            dev_items += LABEL_H + 4.0 + wifi_count as f32 * (DEV_HIST_H + SP);
         }
         let devices = (dev_count > 0 || wifi_count > 0)
             .then(|| card_frame(Pos2::new(left, y), cw, CARD_EXTRA + dev_items));
         if let Some(dev) = &devices {
             let mut cy = dev.title.y + TITLE_H + SPG;
-            for _ in 0..dev_count {
-                dev_rows.push(Rect::from_min_size(
-                    Pos2::new(x, cy),
-                    Vec2::new(inner_w, ROW_H),
-                ));
-                cy += ROW_H + SPG;
+            for i in 0..dev_count {
+                let h = if i == 0 { DEV_ACTIVE_H } else { DEV_HIST_H };
+                dev_rows.push(Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, h)));
+                cy += h + SP;
             }
             if wifi_count > 0 {
                 wifi_label = Some(Pos2::new(x, cy + 2.0));
@@ -553,9 +554,9 @@ impl SettingsLayout {
                 for _ in 0..wifi_count {
                     wifi_rows.push(Rect::from_min_size(
                         Pos2::new(x, cy),
-                        Vec2::new(inner_w, ROW_H),
+                        Vec2::new(inner_w, DEV_HIST_H),
                     ));
-                    cy += ROW_H + SP;
+                    cy += DEV_HIST_H + SP;
                 }
             }
             y += CARD_EXTRA + dev_items + CARD_SP;
@@ -883,50 +884,70 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         if let Some((is_wifi, serial, _)) = &active_device {
             if let Some(row) = layout.dev_rows.first() {
                 let row = sy(*row);
-                app.paint_device_row(&painter, row, *is_wifi, serial, false, true);
+                // 「使用中」槽（Grok B 方案）：accent 微底 + 描边 + 左缘条，
+                // 当前设备读作活跃而非只读文本
+                let slot = row.shrink2(Vec2::new(2.0, 4.0));
+                paint::rounded_fill(&painter, slot, 12.0, over(t.card, t.accent, 0.10));
+                paint::rounded_stroke(&painter, slot, 12.0, over(t.card, t.accent, 0.40));
+                let bar = Rect::from_min_size(
+                    Pos2::new(slot.left() + 8.0, slot.center().y - 10.0),
+                    Vec2::new(3.0, 20.0),
+                );
+                painter.rect_filled(bar, 1.0, t.accent);
+                let inner =
+                    Rect::from_min_max(Pos2::new(row.left() + 14.0, row.top()), row.right_bottom());
+                app.paint_device_row(&painter, inner, *is_wifi, serial, true);
             }
         }
         if let Some(label) = layout.wifi_label {
-            paint::text_left(&painter, py(label), "无线地址历史", 12.0, t.ink2);
+            paint::text_left(&painter, py(label), "历史", 12.0, t.ink2);
         }
         for (row, addr) in layout.wifi_rows.iter().zip(recent.iter()) {
             let row = sy(*row);
-            let del = Rect::from_min_size(
-                Pos2::new(row.right() - 8.0 - 28.0, row.center().y - 12.0),
-                Vec2::new(28.0, 24.0),
+            // 历史行（Grok B）：无行底；连接=accent 胶囊；✕=矢量圆钮
+            let del = Rect::from_center_size(
+                Pos2::new(row.right() - 8.0 - 13.0, row.center().y),
+                Vec2::new(26.0, 26.0),
             );
             let conn = Rect::from_min_size(
-                Pos2::new(del.left() - 8.0 - 48.0, row.center().y - 12.0),
-                Vec2::new(48.0, 24.0),
+                Pos2::new(del.left() - 8.0 - 52.0, row.center().y - 13.0),
+                Vec2::new(52.0, 26.0),
             );
-            let resp = ui.allocate_rect(row, Sense::click());
-            let wash = if resp.hovered() {
-                t.hover_on_canvas
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            paint::rounded_fill(&painter, row, 10.0, wash);
-            let max_w = conn.left() - 16.0 - row.left();
+            let max_w = conn.left() - 14.0 - row.left();
             let label = paint::elide_to_width(addr, max_w.max(24.0), &|c| {
                 if c.is_ascii() {
-                    13.0 * 0.55
+                    14.0 * 0.55
                 } else {
-                    13.0
+                    14.0
                 }
             });
             paint::text_left(
                 &painter,
-                Pos2::new(row.left() + 8.0, row.center().y),
+                Pos2::new(row.left() + 6.0, row.center().y - 7.0),
                 &label,
-                13.0,
+                14.0,
                 t.ink,
             );
             let conn_resp = ui.allocate_rect(conn, Sense::click());
-            paint::rounded_stroke(&painter, conn, 12.0, t.card_border);
-            paint::text_centered(&painter, conn.center(), "连接", 11.0, false, t.ink);
+            paint::rounded_fill(&painter, conn, 13.0, over(t.card, t.accent, 0.14));
+            paint::text_centered(&painter, conn.center(), "连接", 12.0, false, t.accent);
             let del_resp = ui.allocate_rect(del, Sense::click());
-            paint::rounded_stroke(&painter, del, 12.0, t.card_border);
-            paint::text_centered(&painter, del.center(), "✕", 11.0, false, t.ink2);
+            let del_hover = del_resp.hovered();
+            if del_hover {
+                paint::rounded_fill(&painter, del, 13.0, over(t.card, t.danger, 0.12));
+            }
+            let xcol = if del_hover { t.danger } else { t.ink2 };
+            let c = del.center();
+            let r = 4.5_f32;
+            let stroke = egui::Stroke::new(1.4_f32, xcol);
+            painter.line_segment(
+                [Pos2::new(c.x - r, c.y - r), Pos2::new(c.x + r, c.y + r)],
+                stroke,
+            );
+            painter.line_segment(
+                [Pos2::new(c.x - r, c.y + r), Pos2::new(c.x + r, c.y - r)],
+                stroke,
+            );
             if conn_resp.clicked() {
                 app.connect_wireless_addr(addr);
             }
@@ -1303,8 +1324,7 @@ fn card_name<'a>(c: &Card, layout: &'a SettingsLayout) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geom::ROW_H;
-    use geom::SP;
+    use geom::{DEV_ACTIVE_H, DEV_HIST_H, ROW_H, SP};
 
     #[test]
     fn settings_layout_devices_card_geometry() {
@@ -1316,7 +1336,10 @@ mod tests {
         assert_eq!(layout.wifi_rows.len(), 1);
         assert!(layout.wifi_label.is_some());
         assert!(dev.bg.top() < layout.engine.bg.top());
-        assert_eq!(layout.dev_rows[0].height(), ROW_H, "设备行高与按钮行一致");
+        // 当前设备行 52（双行+内槽），后续行 40（Grok B 方案）
+        assert_eq!(layout.dev_rows[0].height(), DEV_ACTIVE_H);
+        assert_eq!(layout.dev_rows[1].height(), DEV_HIST_H);
+        assert_eq!(layout.wifi_rows[0].height(), DEV_HIST_H);
         let empty = SettingsLayout::compute(420.0, 760.0, "", false, false, 0, 0);
         assert!(empty.devices.is_none());
         assert!(empty.dev_rows.is_empty());
