@@ -1872,7 +1872,14 @@ impl PanelApp {
                     egui::pos2(rect.right() - 60.0, rect.center().y - 12.0),
                     egui::vec2(48.0, 24.0),
                 );
-                let resp = ui.allocate_rect(btn, egui::Sense::click());
+                // interact 不占布局位（allocate_rect 会把后续行推下去：
+                // min_rect 随 hover 抖 → 玻璃矩形变 → 每帧 CPU 重建贴图
+                // = 实况卡 + 行位浮动）。命中区常驻、绘制只在 hover。
+                let resp = ui.interact(
+                    btn,
+                    egui::Id::new(("picker-rename", serial)),
+                    egui::Sense::click(),
+                );
                 paint::text_centered(ui.painter(), btn.center(), "改名", 11.0, false, t.accent);
                 if resp.clicked() {
                     let serial = serial.clone();
