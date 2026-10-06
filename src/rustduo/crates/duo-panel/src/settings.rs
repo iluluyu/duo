@@ -425,6 +425,9 @@ mod geom {
     pub const LABEL_H: f32 = 18.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
     pub const TITLE_H: f32 = 22.0; // 卡标题 15px 字盒高
+    /// 标题字形顶到卡顶：压过圆角弧带（r14）才不显贴上沿——2026-10-06
+    /// 用户裁定 14 太高，18 为视觉中心落点。
+    pub const TITLE_TOP: f32 = 18.0;
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
     pub const MARGIN: f32 = 16.0; // 滚动区左右边距
     /// GlassCard.implicitHeight = 3 + pad*2 + content + 10（阴影宿主上下边）。
@@ -698,7 +701,7 @@ fn card_frame(pos: Pos2, w: f32, h: f32) -> Card {
     Card {
         bg: Rect::from_min_size(Pos2::new(pos.x, pos.y + 3.0), Vec2::new(w, h - 13.0)),
         // 纵向内边 = shadowHost 3 + cardPad 12（PAD=20 只是横向：8+12）
-        title: Pos2::new(pos.x + geom::PAD, pos.y + 15.0),
+        title: Pos2::new(pos.x + geom::PAD, pos.y + geom::TITLE_TOP),
         inner: Rect::from_min_size(
             Pos2::new(pos.x + geom::PAD, pos.y + geom::PAD),
             Vec2::new(w - geom::PAD * 2.0, h - geom::PAD * 2.0),
@@ -850,7 +853,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         card_title(
             &painter,
             &t,
-            Pos2::new(shifted.left() + geom::PAD, shifted.top() + 14.0),
+            Pos2::new(shifted.left() + geom::PAD, shifted.top() + geom::TITLE_TOP),
             card_name(c, &layout),
         );
     }
