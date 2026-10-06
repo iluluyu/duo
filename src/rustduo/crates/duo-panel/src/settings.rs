@@ -86,12 +86,14 @@ fn mode_button(
         let border = over(t.bg, t.accent, 0.45);
         paint::rounded_stroke(ui.painter(), rect, 10.0, border);
     }
+    // 选中态不再换字重（雅黑↔等线整个字面跳变很刺眼）；颜色+底+边
+    // 三重区分已足。2026-10-06 用户拍板。
     paint::text_centered(
         ui.painter(),
         rect.center(),
         text,
         13.0,
-        selected,
+        false,
         if selected { t.accent } else { t.ink2 },
     );
     resp.clicked()
