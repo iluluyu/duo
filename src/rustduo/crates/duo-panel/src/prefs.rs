@@ -145,6 +145,46 @@ pub fn forget_wireless_target(target: &str) {
     write_doc(&doc);
 }
 
+// ---------------------------------------------------------------- devices
+
+/// 设备自定义名（gui_prefs.json devices.names：serial → 名称）。
+pub fn load_device_names() -> BTreeMap<String, String> {
+    read_doc()
+        .get("devices")
+        .and_then(|v| v.get("names"))
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 记住/清除（空白删除）一台设备的名字。
+pub fn save_device_name(serial: &str, name: &str) {
+    let mut doc = read_doc();
+    let mut section = doc
+        .get("devices")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let mut names = section
+        .get("names")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if name.trim().is_empty() {
+        names.remove(serial);
+    } else {
+        names.insert(
+            serial.into(),
+            serde_json::Value::String(name.trim().to_string()),
+        );
+    }
+    section.insert("names".into(), serde_json::Value::Object(names));
+    doc.insert("devices".into(), serde_json::Value::Object(section));
+    write_doc(&doc);
+}
+
 // ---------------------------------------------------------------- display
 
 /// 按应用显示模式：`{"mode": "flex"}` 或 `{"mode": "fixed", "aspect": id}`。
@@ -506,6 +546,26 @@ mod tests {
             assert_eq!(load_wireless_target(), "192.168.1.100:5555");
             save_wireless_target("192.168.1.100:40135");
             assert_eq!(load_pinned_prefs(), vec!["a.b".to_string()]);
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn device_names_roundtrip_and_clear() {
+        let _guard = lock_home();
+        let home = scratch("device-names");
+        with_home(&home, || {
+            assert!(load_device_names().is_empty());
+            save_device_name("4444bd6b", "工作平板");
+            save_device_name("192.168.1.100:5555", "客厅平板");
+            let names = load_device_names();
+            assert_eq!(names.get("4444bd6b").map(String::as_str), Some("工作平板"));
+            assert_eq!(names.len(), 2);
+            // 空白 = 清除；其他节不受影响
+            save_device_name("4444bd6b", "  ");
+            assert_eq!(load_device_names().len(), 1);
+            save_wireless_target("192.168.1.100:5555");
+            assert_eq!(load_device_names().len(), 1);
         });
         let _ = std::fs::remove_dir_all(&home);
     }

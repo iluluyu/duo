@@ -131,7 +131,120 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     search_island(app, ui, layout.search, glass_on);
     running_card(app, ui, ui.max_rect(), chips_h);
     wireless_dialog(app, ui);
+    rename_dialog(app, ui);
     ui.allocate_rect(ui.max_rect(), Sense::hover());
+}
+
+/// 设备命名对话框：速罩 + 居中卡，与无线对话框同构；Enter 保存 / Esc
+/// 关闭 / 点外关闭；空白保存 = 清除命名。
+fn rename_dialog(app: &mut PanelApp, ui: &mut egui::Ui) {
+    let Some(serial) = app.rename_open.clone() else {
+        return;
+    };
+    let t = app.tokens;
+    let full = ui.max_rect();
+    let scrim = ui.allocate_rect(full, Sense::click());
+    ui.painter().rect_filled(
+        full,
+        egui::CornerRadius::ZERO,
+        crate::theme::srgba(0, 0, 0, 110),
+    );
+    if scrim.clicked() {
+        app.rename_open = None;
+        return;
+    }
+    let w = 320.0;
+    let h = 168.0;
+    let card = Rect::from_min_size(
+        Pos2::new(full.center().x - w / 2.0, full.center().y - h / 2.0),
+        Vec2::new(w, h),
+    );
+    ui.allocate_rect(card, Sense::hover());
+    paint::card(ui.painter(), card, &t);
+    paint::text_left_weight(
+        ui.painter(),
+        Pos2::new(card.left() + 16.0, card.top() + 18.0),
+        "设备命名",
+        15.0,
+        t.ink,
+        true,
+    );
+    let short = serial.split(':').next().unwrap_or(&serial);
+    paint::text_left(
+        ui.painter(),
+        Pos2::new(card.left() + 16.0, card.top() + 42.0),
+        &format!("给 {short} 起个好认的名字（留空 = 清除）"),
+        12.0,
+        t.ink2,
+    );
+    let field_rect = Rect::from_min_size(
+        Pos2::new(card.left() + 16.0, card.top() + 64.0),
+        Vec2::new(w - 32.0, 36.0),
+    );
+    paint::rounded_fill(ui.painter(), field_rect, 18.0, t.search);
+    let edit_area = Rect::from_min_max(
+        Pos2::new(field_rect.left() + 14.0, field_rect.top() + 4.0),
+        Pos2::new(field_rect.right() - 14.0, field_rect.bottom() - 4.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(edit_area)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let edit = egui::TextEdit::singleline(&mut app.rename_input)
+        .id(egui::Id::new("duo-rename-input"))
+        .font(egui::FontId::proportional(13.0))
+        .frame(false)
+        .desired_width(edit_area.width())
+        .hint_text("");
+    let resp = child.add(edit);
+    let focused = ui.ctx().memory(|m| m.focused());
+    if focused.is_none() {
+        resp.request_focus();
+    }
+    let mut save_clicked = false;
+    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        save_clicked = true;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.rename_open = None;
+        return;
+    }
+    let busy = false;
+    let _ = busy;
+    let save = Rect::from_min_size(
+        Pos2::new(card.right() - 16.0 - 68.0, card.bottom() - 16.0 - 32.0),
+        Vec2::new(68.0, 32.0),
+    );
+    let cancel = Rect::from_min_size(
+        Pos2::new(save.left() - 12.0 - 68.0, save.top()),
+        Vec2::new(68.0, 32.0),
+    );
+    let save_resp = ui.allocate_rect(save, Sense::click());
+    paint::rounded_fill(ui.painter(), save, 16.0, mul_alpha(t.accent, 1.0));
+    paint::text_centered(
+        ui.painter(),
+        save.center(),
+        "保存",
+        13.0,
+        true,
+        mul_alpha(egui::Color32::WHITE, 1.0),
+    );
+    if save_resp.clicked() || save_clicked {
+        app.save_rename();
+    }
+    let cancel_resp = ui.allocate_rect(cancel, Sense::click());
+    let cancel_wash = if cancel_resp.hovered() {
+        t.hover_on_canvas
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    paint::rounded_fill(ui.painter(), cancel, 16.0, cancel_wash);
+    paint::rounded_stroke(ui.painter(), cancel, 16.0, t.card_border);
+    paint::text_centered(ui.painter(), cancel.center(), "取消", 13.0, false, t.ink);
+    if cancel_resp.clicked() {
+        app.rename_open = None;
+    }
 }
 
 /// 无线连接对话框（2026-10）：速罩 + 居中卡。KISS 视觉——未入玻璃管线
@@ -346,8 +459,8 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         t.ink,
     );
     // DemiBold 档（字体栈 duo-bold）另画——text_left 是常规档
-    let sub = if serial.is_some() {
-        serial.unwrap_or_default()
+    let sub = if let Some(serial) = serial {
+        app.device_display(&serial)
     } else {
         "连接设备后可启动应用与投屏".into()
     };
@@ -399,6 +512,10 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             stroke,
         );
         let picker_id = egui::Id::new("duo-device-picker");
+        // DUO_SHOT_PICKER=1：出图预开设备浮层（验证玻璃/行布局）。
+        if app.shot.is_some() && std::env::var("DUO_SHOT_PICKER").is_ok() {
+            ui.memory_mut(|m| m.open_popup(picker_id));
+        }
         if card_resp.clicked() {
             ui.memory_mut(|m| m.toggle_popup(picker_id));
         }
@@ -408,9 +525,10 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             &card_resp,
             egui::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
-                ui.set_width(232.0);
+                ui.set_width(crate::app::MENU_INNER_WIDTH.max(200.0));
                 app.glass_underlay(ui, false);
                 app.device_picker(ui);
+                app.glass_record_main(ui);
             },
         );
     }

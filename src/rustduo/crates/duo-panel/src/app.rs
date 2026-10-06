@@ -198,6 +198,12 @@ pub struct PanelApp {
     pub(crate) wireless_target: String,
     /// 历史无线地址（最近优先；设置页设备卡/对话框共用）。
     pub(crate) wireless_recent: Vec<String>,
+    /// 设备自定义名（gui_prefs devices.names；显示优先于 serial）。
+    pub(crate) device_names: BTreeMap<String, String>,
+    /// 设备命名对话框：Some(serial) = 打开中。
+    pub(crate) rename_open: Option<String>,
+    /// 命名对话框输入框内容。
+    pub(crate) rename_input: String,
     /// 显式选中的活动设备（内存态；None = 默认 USB 优先）。双在线
     /// （USB+无线）时设备卡右键可切换。
     pub(crate) active_serial: Option<String>,
@@ -307,6 +313,11 @@ impl PanelApp {
             wireless_input: String::new(),
             wireless_target: crate::prefs::load_wireless_target(),
             wireless_recent: crate::prefs::load_wireless_recent(),
+            device_names: crate::prefs::load_device_names(),
+            rename_open: std::env::var("DUO_SHOT_RENAME")
+                .ok()
+                .map(|_| "192.168.1.100:5555".to_string()),
+            rename_input: String::new(),
             active_serial: None,
             toast: None,
             media_volume: BTreeMap::new(),
@@ -1591,8 +1602,37 @@ impl PanelApp {
         self.installed_bg.is_some()
     }
 
-    /// 设备行共享渲染：USB 绿/无线蓝胶囊 + serial（short=去端口前段）
-    /// + 选中蓝点。
+    /// 设备显示名：自定义名 > serial 去端口前段。
+    pub(crate) fn device_display(&self, serial: &str) -> String {
+        self.device_names
+            .get(serial)
+            .cloned()
+            .unwrap_or_else(|| serial.split(':').next().unwrap_or(serial).to_string())
+    }
+
+    /// 打开设备命名对话框（预填现名）。
+    pub(crate) fn open_rename(&mut self, serial: &str) {
+        self.rename_input = self.device_names.get(serial).cloned().unwrap_or_default();
+        self.rename_open = Some(serial.to_string());
+    }
+
+    /// 保存命名（空白 = 清除），刷新内存表并 toast。
+    pub(crate) fn save_rename(&mut self) {
+        let Some(serial) = self.rename_open.take() else {
+            return;
+        };
+        let name = self.rename_input.trim().to_string();
+        crate::prefs::save_device_name(&serial, &name);
+        self.device_names = crate::prefs::load_device_names();
+        if name.is_empty() {
+            self.toast_now("已清除设备命名");
+        } else {
+            self.toast_now(format!("已命名为 {name}"));
+        }
+    }
+
+    /// 设备行共享渲染：USB 绿/无线蓝胶囊 + 主文本（名或 serial 前段）
+    /// + 命名设备次行 serial（full_secondary=设置页排障全文）+ 选中蓝点。
     pub(crate) fn paint_device_row(
         &self,
         painter: &egui::Painter,
@@ -1600,7 +1640,7 @@ impl PanelApp {
         is_wifi: bool,
         serial: &str,
         selected: bool,
-        short: bool,
+        full_secondary: bool,
     ) {
         let t = self.tokens;
         let tag = Rect::from_min_size(
@@ -1621,26 +1661,50 @@ impl PanelApp {
             false,
             t.ink2,
         );
-        let text = if short {
-            serial.split(':').next().unwrap_or(serial)
-        } else {
-            serial
+        let short = serial.split(':').next().unwrap_or(serial);
+        let name = self.device_names.get(serial);
+        let text_x = tag.right() + 10.0;
+        let max_w = (rect.right() - 44.0 - text_x).max(24.0);
+        let elide = |text: &str, size: f32| {
+            paint::elide_to_width(text, max_w, &|c| {
+                if c.is_ascii() {
+                    size * 0.55
+                } else {
+                    size
+                }
+            })
         };
-        let max_w = (rect.right() - 40.0 - tag.right() - 10.0).max(24.0);
-        let label = paint::elide_to_width(text, max_w, &|c| {
-            if c.is_ascii() {
-                13.0 * 0.55
-            } else {
-                13.0
+        match name {
+            Some(name) => {
+                let name_line = elide(name, 13.0);
+                paint::text_left(
+                    painter,
+                    egui::pos2(text_x, rect.center().y - 8.0),
+                    &name_line,
+                    13.0,
+                    t.ink,
+                );
+                let secondary = if full_secondary { serial } else { short };
+                let sub_line = elide(secondary, 11.0);
+                paint::text_left(
+                    painter,
+                    egui::pos2(text_x, rect.center().y + 9.0),
+                    &sub_line,
+                    11.0,
+                    t.ink2,
+                );
             }
-        });
-        paint::text_left(
-            painter,
-            egui::pos2(tag.right() + 10.0, rect.center().y),
-            &label,
-            13.0,
-            t.ink,
-        );
+            None => {
+                let line = elide(short, 13.0);
+                paint::text_left(
+                    painter,
+                    egui::pos2(text_x, rect.center().y),
+                    &line,
+                    13.0,
+                    t.ink,
+                );
+            }
+        }
         if selected {
             painter.circle_filled(
                 egui::pos2(rect.right() - 18.0, rect.center().y),
@@ -1650,26 +1714,84 @@ impl PanelApp {
         }
     }
 
-    /// 设备卡浮层（点卡展开）：每台一行，点击即切并关浮层。
+    /// 设备卡浮层（点卡展开）：每台一行（名 + 次行 serial），hover 出
+    /// 「改名」，点击即切；末行「添加设备…」开无线对话框。玻璃质感与
+    /// 右键菜单同源（glass_underlay + glass_record_main 由调用方包）。
     pub(crate) fn device_picker(&mut self, ui: &mut egui::Ui) {
         let rows = self.device_rows();
         for (is_wifi, serial, selected) in &rows {
-            let resp = ui.allocate_response(
-                egui::vec2(ui.available_width().max(200.0), 40.0),
-                egui::Sense::click(),
-            );
-            let wash = if resp.hovered() {
+            let row_resp =
+                ui.allocate_response(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+            let rect = row_resp.rect;
+            let hover = row_resp.hovered();
+            let wash = if hover {
                 self.tokens.hover_on_canvas
             } else {
                 egui::Color32::TRANSPARENT
             };
-            paint::rounded_fill(ui.painter(), resp.rect, 10.0, wash);
-            self.paint_device_row(ui.painter(), resp.rect, *is_wifi, serial, *selected, true);
-            if resp.clicked() {
+            paint::rounded_fill(ui.painter(), rect, 10.0, wash);
+            self.paint_device_row(ui.painter(), rect, *is_wifi, serial, *selected, false);
+            if row_resp.clicked() {
                 let serial = serial.clone();
                 self.select_device(&serial);
                 ui.ctx().memory_mut(|m| m.close_popup());
             }
+            // hover 时「改名」文字钮（子区域后分配 = 点击层级在上）
+            if hover {
+                let btn = Rect::from_min_size(
+                    egui::pos2(rect.right() - 46.0, rect.center().y - 11.0),
+                    egui::vec2(38.0, 22.0),
+                );
+                let resp = ui.allocate_rect(btn, egui::Sense::click());
+                paint::text_centered(
+                    ui.painter(),
+                    btn.center(),
+                    "改名",
+                    11.0,
+                    false,
+                    self.tokens.accent,
+                );
+                if resp.clicked() {
+                    let serial = serial.clone();
+                    self.open_rename(&serial);
+                    ui.ctx().memory_mut(|m| m.close_popup());
+                }
+            }
+        }
+        // 添加设备（无线连接）：矢量加号（不用字形），点开对话框
+        let add =
+            ui.allocate_response(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
+        let rect = add.rect;
+        let wash = if add.hovered() {
+            self.tokens.hover_on_canvas
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        paint::rounded_fill(ui.painter(), rect, 10.0, wash);
+        let c = egui::pos2(rect.left() + 31.0, rect.center().y);
+        let stroke = egui::Stroke {
+            width: 1.5,
+            color: self.tokens.accent,
+        };
+        ui.painter().line_segment(
+            [egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x + 5.0, c.y)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [egui::pos2(c.x, c.y - 5.0), egui::pos2(c.x, c.y + 5.0)],
+            stroke,
+        );
+        paint::text_left(
+            ui.painter(),
+            egui::pos2(rect.left() + 54.0, rect.center().y),
+            "添加设备…",
+            13.0,
+            self.tokens.ink,
+        );
+        menu_hairline(ui, &self.tokens);
+        if add.clicked() {
+            self.open_wireless();
+            ui.ctx().memory_mut(|m| m.close_popup());
         }
     }
 
