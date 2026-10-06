@@ -427,8 +427,8 @@ mod geom {
     pub const LABEL_H: f32 = 16.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
     pub const TITLE_H: f32 = 20.0; // 卡标题 16px 字盒高
-    /// 标题字形顶到卡顶（4px 网格：16 让开 r16 弧带起段）
-    pub const TITLE_TOP: f32 = 16.0;
+    /// 标题字形顶到卡顶（用户两轮裁定：16 仍贴上沿，20 落稳）
+    pub const TITLE_TOP: f32 = 20.0;
     /// 设备卡：当前设备行（双行+内槽）/ 历史行（Grok B 方案）
     pub const DEV_ACTIVE_H: f32 = 52.0;
     pub const DEV_HIST_H: f32 = 40.0;
@@ -884,19 +884,12 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         if let Some((is_wifi, serial, _)) = &active_device {
             if let Some(row) = layout.dev_rows.first() {
                 let row = sy(*row);
-                // 「使用中」槽（Grok B 方案）：accent 微底 + 描边 + 左缘条，
-                // 当前设备读作活跃而非只读文本
+                // 「使用中」槽：accent 微底 + 描边（左缘条 2026-10-06
+                // 用户裁定删除——多余元素）
                 let slot = row.shrink2(Vec2::new(2.0, 4.0));
                 paint::rounded_fill(&painter, slot, 12.0, over(t.card, t.accent, 0.10));
                 paint::rounded_stroke(&painter, slot, 12.0, over(t.card, t.accent, 0.40));
-                let bar = Rect::from_min_size(
-                    Pos2::new(slot.left() + 8.0, slot.center().y - 10.0),
-                    Vec2::new(3.0, 20.0),
-                );
-                painter.rect_filled(bar, 1.0, t.accent);
-                let inner =
-                    Rect::from_min_max(Pos2::new(row.left() + 14.0, row.top()), row.right_bottom());
-                app.paint_device_row(&painter, inner, *is_wifi, serial, true);
+                app.paint_device_row(&painter, row, *is_wifi, serial, true);
             }
         }
         if let Some(label) = layout.wifi_label {
