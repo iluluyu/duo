@@ -357,15 +357,9 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         Pos2::new(rect.right() - 12.0 - 52.0, rect.center().y - 14.0),
         Vec2::new(52.0, 28.0),
     );
-    // ≥2 台在线：无线钮左侧加切换钮（▾ 台数），点开与右键同源的设备
-    // 菜单；单台零额外 UI。
-    let switch = (online_count > 1).then(|| {
-        Rect::from_min_size(
-            Pos2::new(wbtn.left() - 8.0 - 44.0, rect.center().y - 14.0),
-            Vec2::new(44.0, 28.0),
-        )
-    });
-    let max_text_w = (switch.map_or(wbtn.left(), |s: Rect| s.left()) - 8.0 - sub_x.x).max(24.0);
+    // ≥2 台在线：整卡可点开设备列表浮层（右侧矢量雪佛龙提示；不用
+    // 字形——▾ 在字体栈里是豆腐块，2026-10-06 真机教训）。
+    let max_text_w = (wbtn.left() - 8.0 - sub_x.x).max(24.0);
     let sub = paint::elide_to_width(&sub, max_text_w, &|c| {
         if c.is_ascii() {
             12.0 * 0.55
@@ -374,39 +368,6 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     paint::text_left(ui.painter(), sub_x, &sub, 12.0, t.ink2);
-    if let Some(sw) = switch {
-        let sw_resp = ui.allocate_rect(sw, Sense::click());
-        let wash = if sw_resp.hovered() {
-            t.hover_on_canvas
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        paint::rounded_fill(ui.painter(), sw, 14.0, wash);
-        paint::rounded_stroke(ui.painter(), sw, 14.0, t.card_border);
-        paint::text_centered(
-            ui.painter(),
-            sw.center(),
-            &format!("▾ {online_count}"),
-            12.0,
-            false,
-            t.ink,
-        );
-        let sw_id = egui::Id::new("duo-device-switch");
-        if sw_resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(sw_id));
-        }
-        egui::popup_below_widget(
-            ui,
-            sw_id,
-            &sw_resp,
-            egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_width(crate::app::MENU_INNER_WIDTH);
-                app.glass_underlay(ui, false);
-                app.device_menu(ui);
-            },
-        );
-    }
     let card_resp = ui.allocate_rect(rect, Sense::click());
     let wireless_resp = ui.allocate_rect(wbtn, Sense::click());
     let wash = if wireless_resp.hovered() {
@@ -419,6 +380,39 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     paint::text_centered(ui.painter(), wbtn.center(), "无线", 12.0, false, t.ink);
     if wireless_resp.clicked() {
         app.open_wireless();
+    }
+    // ≥2 台在线：矢量雪佛龙提示（不用字形——▾ 在字体栈里是豆腐块），
+    // 点击整卡开设备浮层（切换主入口）；单台点卡无动作。
+    if online_count > 1 {
+        let cx = wbtn.left() - 20.0;
+        let cy = rect.center().y;
+        let stroke = egui::Stroke {
+            width: 1.6,
+            color: t.ink2,
+        };
+        ui.painter().line_segment(
+            [egui::pos2(cx - 3.0, cy - 4.0), egui::pos2(cx + 1.0, cy)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [egui::pos2(cx - 3.0, cy + 4.0), egui::pos2(cx + 1.0, cy)],
+            stroke,
+        );
+        let picker_id = egui::Id::new("duo-device-picker");
+        if card_resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(picker_id));
+        }
+        egui::popup_below_widget(
+            ui,
+            picker_id,
+            &card_resp,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_width(232.0);
+                app.glass_underlay(ui, false);
+                app.device_picker(ui);
+            },
+        );
     }
     app.context_menu(&card_resp, |app, ui| app.device_menu(ui));
 }
@@ -697,6 +691,29 @@ fn search_capsule(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
 
 /// 应用网格（Main.qml grid：cellW = w/max(2,floor(w/92))、cellH 102）。
 fn grid(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect, clip: Rect, entries: &[AppEntry]) {
+    // 现拉加载态（首拉/切设备未命中 stash）：呼吸文字替代空列表，
+    // 避免「没有已安装的应用」误导。
+    if app.apps_loading() {
+        let t = app.tokens;
+        let time = ui.ctx().input(|i| i.time) as f32;
+        let a = 0.45 + 0.35 * (time * 2.2).sin().abs();
+        let color = egui::Color32::from_rgba_unmultiplied(
+            t.ink2.r(),
+            t.ink2.g(),
+            t.ink2.b(),
+            (a * 255.0) as u8,
+        );
+        paint::text_centered(
+            ui.painter(),
+            Pos2::new(rect.center().x, rect.top() + 32.0),
+            "应用列表加载中…",
+            13.0,
+            false,
+            color,
+        );
+        ui.ctx().request_repaint();
+        return;
+    }
     let installed_count = entries.iter().filter(|e| e.installed).count();
     if installed_count == 0 {
         // 空态（Main.qml 无已装应用 Column）
