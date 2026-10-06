@@ -1802,14 +1802,14 @@ impl PanelApp {
             if *selected {
                 let slot = rect.shrink2(egui::vec2(4.0, 4.0));
                 let edge = if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 85)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110)
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70)
                 };
                 let pts = duo_core::icons::g2_outline(
                     f64::from(slot.width()),
                     f64::from(slot.height()),
-                    10.0,
+                    14.0,
                     5.0,
                 );
                 let path: Vec<egui::Pos2> = pts

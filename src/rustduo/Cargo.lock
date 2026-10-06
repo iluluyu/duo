@@ -868,7 +868,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "duo-core"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "image",
  "regex",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "duo-panel"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "duo-core",
  "eframe",
