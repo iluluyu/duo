@@ -922,7 +922,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         if let Some((is_wifi, serial, _)) = &active_device {
             if let Some(row) = layout.dev_rows.first() {
                 let row = sy(*row);
-                app.paint_device_row(&painter, row, *is_wifi, serial, false, false);
+                app.paint_device_row(&painter, row, *is_wifi, serial, false, true);
             }
         }
         if let Some(label) = layout.wifi_label {
