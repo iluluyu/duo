@@ -202,6 +202,9 @@ pub struct PanelApp {
     pub(crate) device_names: BTreeMap<String, String>,
     /// 设备命名对话框：Some(serial) = 打开中。
     pub(crate) rename_open: Option<String>,
+    /// 设备浮层待开（等玻璃快照就绪；玻璃关/超时立开）。
+    picker_pending: bool,
+    picker_wait_frames: u32,
     /// 命名对话框输入框内容。
     pub(crate) rename_input: String,
     /// 显式选中的活动设备（内存态；None = 默认 USB 优先）。双在线
@@ -317,6 +320,8 @@ impl PanelApp {
             rename_open: std::env::var("DUO_SHOT_RENAME")
                 .ok()
                 .map(|_| "192.168.1.100:5555".to_string()),
+            picker_pending: false,
+            picker_wait_frames: 0,
             rename_input: String::new(),
             active_serial: None,
             toast: None,
@@ -713,11 +718,10 @@ impl PanelApp {
         }
     }
 
-    pub(crate) fn context_menu(
-        &mut self,
-        resp: &egui::Response,
-        add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
-    ) {
+    /// 玻璃弹层快照引导（右键菜单/设备浮层共用）：建 menu_glass；无
+    /// 快照时发一次全窗截图请求（贴图由各弹层的 glass_record_main
+    /// 逐帧构建）。玻璃关 = no-op（走 window_fill 不透明退化）。
+    pub(crate) fn ensure_menu_glass(&mut self, ctx: &egui::Context) {
         if self.menu_glass.is_none() && self.settings.draft.glass_enabled {
             self.menu_glass = Some(MenuGlass {
                 menu_rect: self.menu_rect_hint,
@@ -727,13 +731,20 @@ impl PanelApp {
                 ..Default::default()
             });
             if self.menu_snapshot.is_none() {
-                resp.ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                        GLASS_SHOT_TAG.to_string(),
-                    )));
-                resp.ctx.request_repaint();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                    GLASS_SHOT_TAG.to_string(),
+                )));
+                ctx.request_repaint();
             }
         }
+    }
+
+    pub(crate) fn context_menu(
+        &mut self,
+        resp: &egui::Response,
+        add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) {
+        self.ensure_menu_glass(&resp.ctx);
         resp.context_menu(|ui| {
             ui.set_width(MENU_INNER_WIDTH);
             self.glass_underlay(ui, false);
@@ -1610,6 +1621,37 @@ impl PanelApp {
             .unwrap_or_else(|| serial.split(':').next().unwrap_or(serial).to_string())
     }
 
+    /// 设备浮层开门节流：玻璃开时等全窗快照就绪再开（右键菜单是先热
+    /// 快照后开菜单，popover 点击即开则贴图永远迟到一步）；玻璃关或等
+    /// 待超 30 帧直接开。返回本帧是否应开。
+    pub(crate) fn picker_open_tick(&mut self) -> bool {
+        if !self.picker_pending {
+            return false;
+        }
+        self.picker_wait_frames += 1;
+        let warm = self.menu_snapshot.is_some();
+        if !self.settings.draft.glass_enabled || warm || self.picker_wait_frames > 30 {
+            self.picker_pending = false;
+            self.picker_wait_frames = 0;
+            return true;
+        }
+        false
+    }
+
+    /// 请求开设备浮层（点击/出图钩子）。返回 true = 立即开；false =
+    /// 已排队等快照（就绪/超时后 picker_open_tick 放行）。
+    pub(crate) fn request_picker(&mut self, ctx: &egui::Context) -> bool {
+        self.ensure_menu_glass(ctx);
+        if !self.settings.draft.glass_enabled || self.menu_snapshot.is_some() {
+            return true;
+        }
+        if !self.picker_pending {
+            self.picker_pending = true;
+            self.picker_wait_frames = 0;
+        }
+        false
+    }
+
     /// 打开设备命名对话框（预填现名）。
     pub(crate) fn open_rename(&mut self, serial: &str) {
         self.rename_input = self.device_names.get(serial).cloned().unwrap_or_default();
@@ -1714,43 +1756,120 @@ impl PanelApp {
         }
     }
 
-    /// 设备卡浮层（点卡展开）：每台一行（名 + 次行 serial），hover 出
-    /// 「改名」，点击即切；末行「添加设备…」开无线对话框。玻璃质感与
-    /// 右键菜单同源（glass_underlay + glass_record_main 由调用方包）。
+    /// 设备卡浮层（点卡展开，2026-10-06 Opus 规格 + 双模型 QA 修复）：
+    /// 宽度对齐设备卡（调用方不再 set_width）；行 60 高（双行：名
+    /// 13px + serial 11px），静止态每行弱填充（防白色断带），hover 全
+    /// 洗色；选中蓝点右置、hover 时让位「改名」（同色互斥）；末行分
+    /// 隔线 +「添加设备…」。玻璃贴图与右键菜单同源（ensure_menu_glass
+    /// 引导）。
     pub(crate) fn device_picker(&mut self, ui: &mut egui::Ui) {
         let rows = self.device_rows();
+        let t = self.tokens;
+        let weak_fill = {
+            let h = t.hover_on_canvas;
+            egui::Color32::from_rgba_unmultiplied(h.r(), h.g(), h.b(), 30)
+        };
+        ui.style_mut().spacing.item_spacing.y = 0.0;
+        // 兜底卡底：玻璃贴图就绪前的帧垫不透明菜单底色（就绪后由毛玻璃
+        // 接管，跳过）。预占底位、内容定形后回填矩形。
+        let tex_ready = self
+            .menu_glass
+            .as_ref()
+            .and_then(|g| g.main_tex.as_ref())
+            .is_some();
+        let bg_idx = if tex_ready {
+            None
+        } else {
+            Some(ui.painter().add(egui::Shape::Noop))
+        };
         for (is_wifi, serial, selected) in &rows {
             let row_resp =
-                ui.allocate_response(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+                ui.allocate_response(egui::vec2(ui.available_width(), 60.0), egui::Sense::click());
             let rect = row_resp.rect;
             let hover = row_resp.hovered();
-            let wash = if hover {
-                self.tokens.hover_on_canvas
+            let fill = if hover { t.hover_on_canvas } else { weak_fill };
+            paint::rounded_fill(ui.painter(), rect, 10.0, fill);
+            // 传输胶囊
+            let tag = Rect::from_min_size(
+                egui::pos2(rect.left() + 8.0, rect.center().y - 11.0),
+                egui::vec2(46.0, 22.0),
+            );
+            let tint = if *is_wifi {
+                over(t.bg, t.accent, 0.16)
             } else {
-                egui::Color32::TRANSPARENT
+                over(t.bg, t.running, 0.16)
             };
-            paint::rounded_fill(ui.painter(), rect, 10.0, wash);
-            self.paint_device_row(ui.painter(), rect, *is_wifi, serial, *selected, false);
+            paint::rounded_fill(ui.painter(), tag, 11.0, tint);
+            paint::text_centered(
+                ui.painter(),
+                tag.center(),
+                if *is_wifi { "无线" } else { "USB" },
+                11.0,
+                false,
+                t.ink2,
+            );
+            // 文本：命名 = 双行（名/serial），未命名 = 单行 serial 前段
+            let text_x = tag.right() + 10.0;
+            let max_w = (rect.right() - 72.0 - text_x).max(24.0);
+            let elide = |text: &str, size: f32| {
+                paint::elide_to_width(text, max_w, &|c| {
+                    if c.is_ascii() {
+                        size * 0.55
+                    } else {
+                        size
+                    }
+                })
+            };
+            let short = serial.split(':').next().unwrap_or(serial);
+            match self.device_names.get(serial) {
+                Some(name) => {
+                    let name_line = elide(name, 13.0);
+                    paint::text_left(
+                        ui.painter(),
+                        egui::pos2(text_x, rect.top() + 21.0),
+                        &name_line,
+                        13.0,
+                        t.ink,
+                    );
+                    let sub_line = elide(short, 11.0);
+                    paint::text_left(
+                        ui.painter(),
+                        egui::pos2(text_x, rect.top() + 42.0),
+                        &sub_line,
+                        11.0,
+                        t.ink2,
+                    );
+                }
+                None => {
+                    let line = elide(short, 13.0);
+                    paint::text_left(
+                        ui.painter(),
+                        egui::pos2(text_x, rect.center().y),
+                        &line,
+                        13.0,
+                        t.ink,
+                    );
+                }
+            }
+            if *selected && !hover {
+                ui.painter().circle_filled(
+                    egui::pos2(rect.right() - 18.0, rect.center().y),
+                    3.0,
+                    t.accent,
+                );
+            }
             if row_resp.clicked() {
                 let serial = serial.clone();
                 self.select_device(&serial);
                 ui.ctx().memory_mut(|m| m.close_popup());
             }
-            // hover 时「改名」文字钮（子区域后分配 = 点击层级在上）
             if hover {
                 let btn = Rect::from_min_size(
-                    egui::pos2(rect.right() - 46.0, rect.center().y - 11.0),
-                    egui::vec2(38.0, 22.0),
+                    egui::pos2(rect.right() - 60.0, rect.center().y - 12.0),
+                    egui::vec2(48.0, 24.0),
                 );
                 let resp = ui.allocate_rect(btn, egui::Sense::click());
-                paint::text_centered(
-                    ui.painter(),
-                    btn.center(),
-                    "改名",
-                    11.0,
-                    false,
-                    self.tokens.accent,
-                );
+                paint::text_centered(ui.painter(), btn.center(), "改名", 11.0, false, t.accent);
                 if resp.clicked() {
                     let serial = serial.clone();
                     self.open_rename(&serial);
@@ -1758,9 +1877,16 @@ impl PanelApp {
                 }
             }
         }
-        // 添加设备（无线连接）：矢量加号（不用字形），点开对话框
+        let sep = ui.available_rect_before_wrap();
+        let y = sep.top() + 4.5;
+        ui.add_space(9.0);
+        ui.painter().line_segment(
+            [egui::pos2(sep.left(), y), egui::pos2(sep.right(), y)],
+            egui::Stroke::new(1.0_f32, self.tokens.hairline_on_card),
+        );
+        // 添加设备（无线连接）：矢量加号 + 文字；与设备行区隔（透明静止态）
         let add =
-            ui.allocate_response(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
+            ui.allocate_response(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
         let rect = add.rect;
         let wash = if add.hovered() {
             self.tokens.hover_on_canvas
@@ -1770,7 +1896,7 @@ impl PanelApp {
         paint::rounded_fill(ui.painter(), rect, 10.0, wash);
         let c = egui::pos2(rect.left() + 31.0, rect.center().y);
         let stroke = egui::Stroke {
-            width: 1.5,
+            width: 1.6,
             color: self.tokens.accent,
         };
         ui.painter().line_segment(
@@ -1783,15 +1909,33 @@ impl PanelApp {
         );
         paint::text_left(
             ui.painter(),
-            egui::pos2(rect.left() + 54.0, rect.center().y),
+            egui::pos2(rect.left() + 64.0, rect.center().y),
             "添加设备…",
             13.0,
             self.tokens.ink,
         );
-        menu_hairline(ui, &self.tokens);
         if add.clicked() {
             self.open_wireless();
             ui.ctx().memory_mut(|m| m.close_popup());
+        }
+        if let Some(idx) = bg_idx {
+            let rect = ui
+                .min_rect()
+                .expand2(egui::vec2(8.0, 6.0))
+                .intersect(ui.max_rect());
+            ui.painter().set(
+                idx,
+                egui::Shape::rect_filled(
+                    rect,
+                    12.0,
+                    egui::Color32::from_rgba_unmultiplied(
+                        t.menu_fill.r(),
+                        t.menu_fill.g(),
+                        t.menu_fill.b(),
+                        244,
+                    ),
+                ),
+            );
         }
     }
 

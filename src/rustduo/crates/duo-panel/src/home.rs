@@ -513,11 +513,17 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
         );
         let picker_id = egui::Id::new("duo-device-picker");
         // DUO_SHOT_PICKER=1：出图预开设备浮层（验证玻璃/行布局）。
-        if app.shot.is_some() && std::env::var("DUO_SHOT_PICKER").is_ok() {
-            ui.memory_mut(|m| m.open_popup(picker_id));
-        }
-        if card_resp.clicked() {
+        let shot_picker = app.shot.is_some() && std::env::var("DUO_SHOT_PICKER").is_ok();
+        // 出图钩子幂等 open（每帧触发，toggle 会振荡）；真实点击才 toggle。
+        if shot_picker {
+            if app.request_picker(ui.ctx()) {
+                ui.memory_mut(|m| m.open_popup(picker_id));
+            }
+        } else if card_resp.clicked() && app.request_picker(ui.ctx()) {
             ui.memory_mut(|m| m.toggle_popup(picker_id));
+        }
+        if app.picker_open_tick() {
+            ui.memory_mut(|m| m.open_popup(picker_id));
         }
         egui::popup_below_widget(
             ui,
@@ -525,7 +531,8 @@ fn device_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
             &card_resp,
             egui::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
-                ui.set_width(crate::app::MENU_INNER_WIDTH.max(200.0));
+                // 宽度交给 popup_below_widget 的默认（= 设备卡宽）；
+                // 不再 set_width 截断（v1 被砍成 200px 的病根）。
                 app.glass_underlay(ui, false);
                 app.device_picker(ui);
                 app.glass_record_main(ui);
