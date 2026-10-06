@@ -192,6 +192,9 @@ pub struct PanelApp {
     pub(crate) wireless_input: String,
     /// 上次成功/使用的无线目标（持久化 gui_prefs.json wireless 节）。
     pub(crate) wireless_target: String,
+    /// 显式选中的活动设备（内存态；None = 默认 USB 优先）。双在线
+    /// （USB+无线）时设备卡右键可切换。
+    pub(crate) active_serial: Option<String>,
     pub(crate) toast: Option<(String, Instant)>,
     pub(crate) media_volume: i64,
     /// 网格滚动偏移（像素；QML interactive 网格的 egui 对应物）。
@@ -296,6 +299,7 @@ impl PanelApp {
             wireless_open: std::env::var("DUO_SHOT_WIRELESS").is_ok(),
             wireless_input: String::new(),
             wireless_target: crate::prefs::load_wireless_target(),
+            active_serial: None,
             toast: None,
             media_volume: -1,
             grid_scroll: 0.0,
@@ -453,7 +457,8 @@ impl PanelApp {
             .collect()
     }
 
-    /// QML device/fallbackDevice 语义：首个在线设备，回退首个任意设备。
+    /// QML device/fallbackDevice 语义 + 多设备扩展：在线时 serial =
+    /// 活动裁决（显式选择 > USB 优先），多台时状态行报台数。
     pub(crate) fn device_summary(&self) -> (String, Option<String>, usize, bool) {
         let Some(watch) = &self.watch else {
             return ("设备监控未启动（缺 duo-core）".into(), None, 0, false);
@@ -462,23 +467,23 @@ impl PanelApp {
         if states.is_empty() {
             return ("未连接设备".into(), None, 0, false);
         }
-        let online: Vec<&String> = states
-            .iter()
-            .filter(|(_, st)| st.as_str() == "device")
-            .map(|(k, _)| k)
-            .collect();
-        let (serial, state) = if let Some(first) = online.first() {
-            (*first, "在线")
-        } else {
-            states
+        let online = watch.online();
+        if online.is_empty() {
+            let (serial, state) = states
                 .iter()
                 .next()
-                .map(|(k, v)| (k, Self::state_text(v)))
-                .unwrap()
+                .map(|(k, v)| (k.clone(), Self::state_text(v)))
+                .unwrap();
+            return (state.to_string(), Some(serial), 0, true);
+        }
+        let state = if online.len() > 1 {
+            format!("{} 台设备在线", online.len())
+        } else {
+            "在线".into()
         };
         (
-            state.to_string(),
-            Some(serial.to_string()),
+            state,
+            backend::pick_active_serial(&online, self.active_serial.as_deref()),
             online.len(),
             !states.is_empty(),
         )
@@ -603,17 +608,37 @@ impl PanelApp {
         ui.style_mut().spacing.button_padding = prev_pad;
     }
 
-    /// 设备卡右键：无线连接入口 + 无线设备（serial 含 `:`）断开。
+    /// 设备卡右键：多在线时先选设备（显式选择覆盖 USB 优先默认），
+    /// 无线连接入口，常驻无线各自可断（与当前选择无关）。
     pub(crate) fn device_menu(&mut self, ui: &mut egui::Ui) {
+        let online = self.watch.as_ref().map(|w| w.online()).unwrap_or_default();
+        if online.len() > 1 {
+            let selected = self.serial();
+            menu_caption(ui, &self.tokens, "设备");
+            for serial in &online {
+                let label = if serial.contains(':') {
+                    format!("无线 {serial}")
+                } else {
+                    format!("USB {serial}")
+                };
+                let marked = selected.as_deref() == Some(serial.as_str());
+                if self.menu_item(ui, &label, Some(marked)) {
+                    self.active_serial = Some(serial.clone());
+                    ui.close_menu();
+                }
+            }
+            menu_hairline(ui, &self.tokens);
+        }
         if self.menu_item(ui, "无线连接…", None) {
             self.open_wireless();
             ui.close_menu();
         }
-        if let Some(serial) = self.serial() {
-            if serial.contains(':') {
-                menu_hairline(ui, &self.tokens);
-                if self.menu_item(ui, "断开无线连接", None) {
-                    self.disconnect_wireless_now();
+        let wireless: Vec<String> = online.iter().filter(|s| s.contains(':')).cloned().collect();
+        if !wireless.is_empty() {
+            menu_hairline(ui, &self.tokens);
+            for serial in &wireless {
+                if self.menu_item(ui, &format!("断开 {serial}"), None) {
+                    self.disconnect_wireless_target(serial);
                     ui.close_menu();
                 }
             }
@@ -1158,7 +1183,10 @@ impl PanelApp {
     }
 
     pub(crate) fn serial(&self) -> Option<String> {
-        self.watch.as_ref().and_then(|w| w.online_serial())
+        let Some(watch) = &self.watch else {
+            return None;
+        };
+        backend::pick_active_serial(&watch.online(), self.active_serial.as_deref())
     }
 
     pub(crate) fn refresh_installed(&mut self) {
@@ -1477,18 +1505,15 @@ impl PanelApp {
         }));
     }
 
-    /// 断开当前无线设备（serial 含 `:` 才在菜单出现）。
-    pub(crate) fn disconnect_wireless_now(&mut self) {
-        let Some(serial) = self.serial() else {
-            return;
-        };
+    /// 断开指定无线设备（serial 含 `:`，来自设备菜单）。
+    pub(crate) fn disconnect_wireless_target(&mut self, serial: &str) {
         let Some(binary) = self.duo_core.clone() else {
             self.toast_now("找不到 duo-core 二进制");
             return;
         };
         let adb = self.adb.clone();
         self.toast_now(format!("正在断开 {serial} …"));
-        let serial_for_bg = serial.clone();
+        let serial_for_bg = serial.to_string();
         self.wireless_bg = Some(Background::spawn(move || {
             let bin = binary.display().to_string();
             backend::disconnect_wireless(&bin, &adb, Some(&serial_for_bg))
