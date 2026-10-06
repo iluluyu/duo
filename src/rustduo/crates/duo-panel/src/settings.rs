@@ -802,6 +802,10 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let engine_locked = app.engine_locked();
     let full_bleed = app.settings.draft.glass_enabled && cfg!(target_os = "windows");
     let device_rows = app.device_rows();
+    // 设备卡降权为只读：仅当前活动设备（排障看全文 serial），切换职责
+    // 在首页设备卡浮层（2026-10-06 Kiro Opus 重设计）。
+    let active_device = device_rows.iter().find(|(_, _, sel)| *sel).cloned();
+    let dev_count = if active_device.is_some() { 1 } else { 0 };
     let recent: Vec<String> = app
         .wireless_recent
         .iter()
@@ -814,7 +818,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
         &problems,
         engine_locked,
         full_bleed,
-        device_rows.len(),
+        dev_count,
         recent.len(),
     );
 
@@ -913,57 +917,12 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     let sy = |r: Rect| Rect::from_min_size(Pos2::new(r.min.x, r.min.y - off), r.size());
     let py = |p: Pos2| Pos2::new(p.x, p.y - off);
 
-    // 设备卡内容（在线设备行点击切换；历史地址行内连/忘）
+    // 设备卡内容（只读当前设备行 + 历史地址 连接/✕）
     if layout.devices.is_some() {
-        for (row, (is_wifi, serial, selected)) in layout.dev_rows.iter().zip(device_rows.iter()) {
-            let row = sy(*row);
-            let resp = ui.allocate_rect(row, Sense::click());
-            let wash = if resp.hovered() {
-                t.hover_on_canvas
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            paint::rounded_fill(&painter, row, 10.0, wash);
-            let tag = Rect::from_min_size(
-                Pos2::new(row.left() + 8.0, row.center().y - 10.0),
-                Vec2::new(40.0, 20.0),
-            );
-            let tag_bg = if *is_wifi {
-                over(t.bg, t.accent, 0.16)
-            } else {
-                over(t.bg, t.running, 0.16)
-            };
-            paint::rounded_fill(&painter, tag, 10.0, tag_bg);
-            paint::text_centered(
-                &painter,
-                tag.center(),
-                if *is_wifi { "无线" } else { "USB" },
-                11.0,
-                false,
-                t.ink2,
-            );
-            let text_x = tag.right() + 10.0;
-            let max_w = row.right() - 40.0 - text_x;
-            let label = paint::elide_to_width(serial, max_w.max(24.0), &|c| {
-                if c.is_ascii() {
-                    13.0 * 0.55
-                } else {
-                    13.0
-                }
-            });
-            paint::text_left(
-                &painter,
-                Pos2::new(text_x, row.center().y),
-                &label,
-                13.0,
-                t.ink,
-            );
-            if *selected {
-                let dot = egui::pos2(row.right() - 18.0, row.center().y);
-                ui.painter().circle_filled(dot, 3.0, t.accent);
-            }
-            if resp.clicked() {
-                app.select_device(serial);
+        if let Some((is_wifi, serial, _)) = &active_device {
+            if let Some(row) = layout.dev_rows.first() {
+                let row = sy(*row);
+                app.paint_device_row(&painter, row, *is_wifi, serial, false, false);
             }
         }
         if let Some(label) = layout.wifi_label {

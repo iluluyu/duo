@@ -20,6 +20,7 @@ use duo_core::settings::resolve_adb_path;
 
 use crate::backend::{self, Background, DeviceWatch};
 use crate::model::{AppEntry, AppsModel};
+use crate::paint;
 use crate::prefs::{
     load_audio_prefs, load_bar_prefs, load_behavior_prefs, load_density_prefs, load_display_prefs,
     load_pinned_prefs, load_scale_prefs, save_audio_prefs, save_bar_prefs, save_behavior_prefs,
@@ -28,7 +29,7 @@ use crate::prefs::{
 };
 use crate::sessions::{panel_log_path, session_label, Sessions, MIRROR_KEY};
 use crate::settings_view::SettingsPageModel;
-use crate::theme::{ThemeKind, Tokens};
+use crate::theme::{over, ThemeKind, Tokens};
 use crate::winproc;
 
 /// 两页常驻（胶囊即导航）。
@@ -1570,10 +1571,105 @@ impl PanelApp {
             .collect()
     }
 
-    /// 显式选活动设备（设备卡切换器/设置页同一入口）。
+    /// 显式选活动设备（设备卡浮层/右键菜单同一入口）；手动切换给
+    /// toast（离线自动回退另有文案）。
     pub(crate) fn select_device(&mut self, serial: &str) {
         if self.serial().as_deref() != Some(serial) {
             self.active_serial = Some(serial.to_string());
+            let tag = if serial.contains(':') {
+                "无线"
+            } else {
+                "USB"
+            };
+            let short = serial.split(':').next().unwrap_or(serial);
+            self.toast_now(format!("已切换到 {tag} {short}"));
+        }
+    }
+
+    /// 应用列表探测进行中（网格区加载态）。
+    pub(crate) fn apps_loading(&self) -> bool {
+        self.installed_bg.is_some()
+    }
+
+    /// 设备行共享渲染：USB 绿/无线蓝胶囊 + serial（short=去端口前段）
+    /// + 选中蓝点。
+    pub(crate) fn paint_device_row(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        is_wifi: bool,
+        serial: &str,
+        selected: bool,
+        short: bool,
+    ) {
+        let t = self.tokens;
+        let tag = Rect::from_min_size(
+            egui::pos2(rect.left() + 8.0, rect.center().y - 11.0),
+            egui::vec2(46.0, 22.0),
+        );
+        let tint = if is_wifi {
+            over(t.bg, t.accent, 0.16)
+        } else {
+            over(t.bg, t.running, 0.16)
+        };
+        paint::rounded_fill(painter, tag, 11.0, tint);
+        paint::text_centered(
+            painter,
+            tag.center(),
+            if is_wifi { "无线" } else { "USB" },
+            11.0,
+            false,
+            t.ink2,
+        );
+        let text = if short {
+            serial.split(':').next().unwrap_or(serial)
+        } else {
+            serial
+        };
+        let max_w = (rect.right() - 40.0 - tag.right() - 10.0).max(24.0);
+        let label = paint::elide_to_width(text, max_w, &|c| {
+            if c.is_ascii() {
+                13.0 * 0.55
+            } else {
+                13.0
+            }
+        });
+        paint::text_left(
+            painter,
+            egui::pos2(tag.right() + 10.0, rect.center().y),
+            &label,
+            13.0,
+            t.ink,
+        );
+        if selected {
+            painter.circle_filled(
+                egui::pos2(rect.right() - 18.0, rect.center().y),
+                3.0,
+                t.accent,
+            );
+        }
+    }
+
+    /// 设备卡浮层（点卡展开）：每台一行，点击即切并关浮层。
+    pub(crate) fn device_picker(&mut self, ui: &mut egui::Ui) {
+        let rows = self.device_rows();
+        for (is_wifi, serial, selected) in &rows {
+            let resp = ui.allocate_response(
+                egui::vec2(ui.available_width().max(200.0), 40.0),
+                egui::Sense::click(),
+            );
+            let wash = if resp.hovered() {
+                self.tokens.hover_on_canvas
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            paint::rounded_fill(ui.painter(), resp.rect, 10.0, wash);
+            self.paint_device_row(ui.painter(), resp.rect, *is_wifi, serial, *selected, true);
+            if resp.clicked() {
+                let serial = serial.clone();
+                self.select_device(&serial);
+                ui.ctx().memory_mut(|m| m.close_popup());
+            }
         }
     }
 
