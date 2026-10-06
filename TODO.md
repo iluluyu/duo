@@ -15,6 +15,12 @@
       落地）；⑤Android 11+ 首次无线需配对或 USB tcpip（插 USB →
       `adb tcpip 5555` → connect 免配对，测试机无线全程验证）；
       ⑥隐私：真实 IP 已从仓内全部清除（用 192.168.1.x 文档段）。
+- [x] **2026-10-06 「（推荐）」文案清除 + 设备行死点排查（结案）**：
+      编码/硬解首胶囊「自动（推荐）」→「自动」（用户拍板：推荐语义
+      多余）。同类排查：拖拽间隙层排除清单再对账——设备卡行
+      （连接/✕）也不在列，同硬解病，已补（dev_rows 并入）。
+      间隙层排除清单现为全量：scrcpy/adb/fps/bitrate/rs×4/dpi/
+      codec/hwdec/audio/tso/glass/anim/top/bottom/theme/dev_rows。
 - [x] **2026-10-06 设置对齐批次 + 硬解死点修复 + 混合 DPI 全屏根修
       + 粗体换面（结案，Grok 审计/sol 裁决/GLM 验收）**：①硬解三胶囊
       点不动=拖拽间隙层排除清单漏 hwdec_row（codec/audio 在列、

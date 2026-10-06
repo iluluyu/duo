@@ -1,6 +1,6 @@
 [package]
 name = "duo-panel"
-version = "0.4.5"
+version = "0.4.6"
 edition.workspace = true
 license.workspace = true
 description = "Duo panel UI in egui (TODO 0.4 v0): settings page, glass window, app grid. Real system-level DWM blur replaces the C# manual-sampling acrylic path."
