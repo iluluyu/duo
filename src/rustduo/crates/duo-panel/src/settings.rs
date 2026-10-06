@@ -505,6 +505,8 @@ pub struct SettingsLayout {
     pub bitrate_cell: Rect,
     pub quality: Card,
     pub codec_row: [Rect; 4],
+    pub hwdec_label: Pos2,
+    pub hwdec_row: [Rect; 3],
     pub audio_label: Pos2,
     pub audio_row: [Rect; 3],
     pub tso_row: Rect,
@@ -589,6 +591,10 @@ impl SettingsLayout {
             + SP
             + ROW_H
             + SP
+            + LABEL_H
+            + SP
+            + ROW_H
+            + SP
             + ROW_H
             + SP
             + ROW_H
@@ -602,6 +608,10 @@ impl SettingsLayout {
         let quality = card_frame(Pos2::new(left, y), cw, quality_h);
         let mut cy = quality.title.y + TITLE_H + SP;
         let codec_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
+        cy += ROW_H + SP;
+        let hwdec_label = Pos2::new(x, cy + 10.0);
+        cy += LABEL_H + SP;
+        let hwdec_row: [Rect; 3] = seg_row(x, cy, inner_w, 3).try_into().unwrap();
         cy += ROW_H + SP;
         let audio_label = Pos2::new(x, cy + 10.0);
         cy += LABEL_H + SP;
@@ -657,6 +667,8 @@ impl SettingsLayout {
             bitrate_cell,
             quality,
             codec_row,
+            hwdec_label,
+            hwdec_row,
             audio_label,
             audio_row,
             tso_row,
@@ -943,6 +955,25 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             app.settings.draft.video_codec == *value,
         ) {
             app.settings.set_video_codec(value);
+        }
+    }
+    group_label(&painter, &t, py(layout.hwdec_label), "硬件解码");
+    const HWDECS: [(&str, &str); 3] = [
+        ("auto", "自动(推荐)"),
+        ("disabled", "软件解码"),
+        ("d3d11va", "D3D11 硬解"),
+    ];
+    for (i, (value, label)) in HWDECS.iter().enumerate() {
+        let r = sy(layout.hwdec_row[i]);
+        if mode_button(
+            &mut ui,
+            &t,
+            egui::Id::new(("hwdec", i)),
+            r,
+            label,
+            app.settings.draft.hwdec == *value,
+        ) {
+            app.settings.set_hwdec(value);
         }
     }
     group_label(&painter, &t, py(layout.audio_label), "音频");

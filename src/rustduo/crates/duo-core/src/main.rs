@@ -36,6 +36,8 @@ const USAGE: &str = "usage: duo-core <command> [options]
   apps     --adb <path> --serial <serial>
   sweep    --adb <path> --serial <serial> [--data-dir <dir>] [--packages <json>]
   audio-lock --data-dir <dir> acquire|release|status
+  connect  --adb <path> --target <ip[:port]>   无线 adb 连接（裸 IP 补 :5555）
+  disconnect --adb <path> [--target <ip[:port>]]  断开无线设备（缺 target 全断）
   mirror [mirror flags]                 branded app session (duo mirror 对译)";
 
 fn main() {
@@ -63,6 +65,8 @@ fn main() {
             &flag("--packages"),
         ),
         "audio-lock" => cmd_audio_lock(&flag("--data-dir"), &argv[1..]),
+        "connect" => cmd_connect(&flag("--adb"), &flag("--target")),
+        "disconnect" => cmd_disconnect(&flag("--adb"), &flag("--target")),
         "mirror" => exit(duo_core::mirror::run(&argv[1..])),
         _ => {
             eprintln!("{USAGE}");
@@ -394,6 +398,101 @@ fn cmd_sweep(
     emit_json(&serde_json::json!({
         "rendered": outcome.rendered,
         "labels": labels,
+    }));
+}
+
+/// connect --adb <path> --target <ip[:port>]
+///
+/// 归一目标（裸 IP 补 :5555）后 spawn 一次 ``adb connect``：裁决走
+/// stdout 文本（adb 失败也可能 rc=0），成功回显 JSON，失败 stderr +
+/// rc 1；挂死 10s 杀进程。面板 watch 循环 2s 内自动抬升新设备。
+fn cmd_connect(adb: &Option<String>, target: &Option<String>) {
+    use duo_core::wireless::{
+        connect_argv, normalize_target, parse_connect_output, run_argv_with_timeout,
+        CONNECT_TIMEOUT_S,
+    };
+    let adb = adb_required(adb);
+    let Some(raw) = target else {
+        eprintln!("{USAGE}: --target required");
+        exit(2);
+    };
+    let target = match normalize_target(raw) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!("{err}");
+            exit(2);
+        }
+    };
+    let argv = connect_argv(&adb, &target);
+    let (rc, stdout, stderr) = match run_argv_with_timeout(&argv, CONNECT_TIMEOUT_S) {
+        Ok(triple) => triple,
+        Err(err) => {
+            eprintln!("{err}");
+            exit(2);
+        }
+    };
+    let text = if stdout.trim().is_empty() {
+        stderr.as_str()
+    } else {
+        stdout.as_str()
+    };
+    match parse_connect_output(&target, text) {
+        Ok(outcome) => emit_json(&serde_json::json!({
+            "target": target,
+            "state": outcome.state_name(),
+        })),
+        Err(err) => {
+            let detail = if stderr.trim().is_empty() {
+                err
+            } else {
+                format!("{err}; adb stderr: {}", stderr.trim())
+            };
+            eprintln!("{detail} (rc={rc})");
+            exit(1);
+        }
+    }
+}
+
+/// disconnect --adb <path> [--target <ip[:port>]]
+///
+/// ``adb disconnect [target]``：缺 target 断开全部无线设备。adb 断开
+/// 几乎不失败（未知目标也是 rc=0），stdout 文本仅作诊断透传。
+fn cmd_disconnect(adb: &Option<String>, target: &Option<String>) {
+    use duo_core::wireless::{
+        disconnect_argv, normalize_target, run_argv_with_timeout, CONNECT_TIMEOUT_S,
+    };
+    let adb = adb_required(adb);
+    let normalized = target.as_deref().map(normalize_target).transpose();
+    let normalized = match normalized {
+        Ok(normalized) => normalized,
+        Err(err) => {
+            eprintln!("{err}");
+            exit(2);
+        }
+    };
+    let argv = disconnect_argv(&adb, normalized.as_deref());
+    let (rc, stdout, stderr) = match run_argv_with_timeout(&argv, CONNECT_TIMEOUT_S) {
+        Ok(triple) => triple,
+        Err(err) => {
+            eprintln!("{err}");
+            exit(2);
+        }
+    };
+    if rc != 0 {
+        let detail = if stderr.trim().is_empty() {
+            &stdout
+        } else {
+            &stderr
+        };
+        eprintln!(
+            "adb disconnect failed (rc={rc}): {}",
+            detail.trim().chars().take(120).collect::<String>()
+        );
+        exit(1);
+    }
+    emit_json(&serde_json::json!({
+        "target": normalized,
+        "state": "disconnected",
     }));
 }
 
