@@ -1734,10 +1734,13 @@ impl PanelApp {
                 );
             }
             Some(name) => {
+                // 双行块整体垂直居中（14+2+12=28 块高）：名顶 = 中心-14，
+                // serial 顶 = 中心+2——旧 -8/+9 在 52px 行里 serial 贴底
+                // 边线（用户报 4444bd6b 压线）。
                 let name_line = elide(name, 14.0);
                 paint::text_left(
                     painter,
-                    egui::pos2(text_x, rect.center().y - 8.0),
+                    egui::pos2(text_x, rect.center().y - 14.0),
                     &name_line,
                     14.0,
                     t.ink,
@@ -1746,7 +1749,7 @@ impl PanelApp {
                 let sub_line = elide(secondary, 12.0);
                 paint::text_left(
                     painter,
-                    egui::pos2(text_x, rect.center().y + 9.0),
+                    egui::pos2(text_x, rect.center().y + 2.0),
                     &sub_line,
                     12.0,
                     t.ink2,
@@ -1794,20 +1797,29 @@ impl PanelApp {
             let rect = row_resp.rect;
             let hover = row_resp.hovered();
             // 一整块玻璃（2026-10-06 用户定稿）：行内零填充零底色，
-            // 选中=黑白高亮描边（浅色黑边/深色白边），别无他物。
+            // 选中=黑白描边唯一表达；复检定稿：1px 淡一档 + G2 连续
+            // 曲率轮廓（与图标/squircle 同构，非圆弧）。
             if *selected {
                 let slot = rect.shrink2(egui::vec2(4.0, 4.0));
                 let edge = if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 225)
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 205)
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110)
                 };
-                ui.painter().rect_stroke(
-                    slot,
-                    egui::CornerRadius::same(10),
-                    egui::Stroke::new(1.5_f32, edge),
-                    egui::StrokeKind::Inside,
+                let pts = duo_core::icons::g2_outline(
+                    f64::from(slot.width()),
+                    f64::from(slot.height()),
+                    10.0,
+                    5.0,
                 );
+                let path: Vec<egui::Pos2> = pts
+                    .iter()
+                    .map(|p| egui::Pos2::new(slot.left() + p.0 as f32, slot.top() + p.1 as f32))
+                    .collect();
+                ui.painter().add(egui::Shape::closed_line(
+                    path,
+                    egui::Stroke::new(1.0_f32, edge),
+                ));
             }
             // 传输胶囊
             let tag = Rect::from_min_size(

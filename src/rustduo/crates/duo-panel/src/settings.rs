@@ -886,7 +886,9 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
                 let row = sy(*row);
                 // 「使用中」槽：accent 微底 + 描边（左缘条 2026-10-06
                 // 用户裁定删除——多余元素）
-                let slot = row.shrink2(Vec2::new(2.0, 4.0));
+                // 槽只横向内缩：竖向 shrink 会吃掉 serial 底缘贴线/压线
+                // （用户报 4444bd6b 超出边线）——行高 52 全给内容。
+                let slot = row.shrink2(Vec2::new(2.0, 0.0));
                 paint::rounded_fill(&painter, slot, 12.0, over(t.card, t.accent, 0.10));
                 paint::rounded_stroke(&painter, slot, 12.0, over(t.card, t.accent, 0.40));
                 app.paint_device_row(&painter, row, *is_wifi, serial, true);
