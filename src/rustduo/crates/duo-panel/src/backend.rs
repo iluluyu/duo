@@ -266,20 +266,32 @@ impl DeviceWatch {
         *self.degraded.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// 唯一在线 serial（空 = 无/多台）。
-    pub fn online_serial(&self) -> Option<String> {
-        let online: Vec<String> = self
-            .states()
+    /// 在线 serial 列表（面板选择器输入）。
+    pub fn online(&self) -> Vec<String> {
+        self.states()
             .into_iter()
             .filter(|(_, state)| state == "device")
             .map(|(serial, _)| serial)
-            .collect();
-        if online.len() == 1 {
-            Some(online[0].clone())
-        } else {
-            None
+            .collect()
+    }
+}
+
+/// 活动设备裁决：显式选择（仍在线者）> USB 优先 > 首个无线。
+/// USB + 无线常驻双在线是无线功能的稳态；旧「恰一台才 Some」在双在线
+/// 时恒 None，面板全线报设备未连接（2026-10-06 真机：用户插线后反而
+/// 无法使用的根因）。默认 USB 优先 = 插线走有线、拔线无缝切无线，
+/// 右键选择可显式覆盖（active 仅内存态，重启回默认）。
+pub fn pick_active_serial(online: &[String], active: Option<&str>) -> Option<String> {
+    if let Some(active) = active {
+        if online.iter().any(|s| s == active) {
+            return Some(active.to_string());
         }
     }
+    online
+        .iter()
+        .find(|s| !s.contains(':'))
+        .or_else(|| online.first())
+        .cloned()
 }
 
 /// 背景任务柄（线程内 catch 一切，结果经轮询取回）。
@@ -306,4 +318,49 @@ impl<T: Send + 'static> Background<T> {
 /// 供 spawn 前健康等待用的极小 sleep。
 pub fn yield_slice() {
     thread::sleep(Duration::from_millis(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_active_serial;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn explicit_selection_wins_while_online() {
+        let online = s(&["4444bd6b", "192.168.1.100:5555"]);
+        assert_eq!(
+            pick_active_serial(&online, Some("192.168.1.100:5555")).as_deref(),
+            Some("192.168.1.100:5555")
+        );
+        assert_eq!(
+            pick_active_serial(&online, Some("4444bd6b")).as_deref(),
+            Some("4444bd6b")
+        );
+    }
+
+    #[test]
+    fn stale_selection_falls_back_to_usb_first() {
+        let online = s(&["192.168.1.100:5555", "4444bd6b"]);
+        assert_eq!(
+            pick_active_serial(&online, Some("10.9.9.9:5555")).as_deref(),
+            Some("4444bd6b"),
+            "离线选择被忽略，双在线默认 USB"
+        );
+    }
+
+    #[test]
+    fn usb_preferred_wireless_only_and_empty() {
+        assert_eq!(
+            pick_active_serial(&s(&["192.168.1.100:5555", "4444bd6b"]), None).as_deref(),
+            Some("4444bd6b")
+        );
+        assert_eq!(
+            pick_active_serial(&s(&["192.168.1.100:5555"]), None).as_deref(),
+            Some("192.168.1.100:5555")
+        );
+        assert_eq!(pick_active_serial(&[], None), None);
+    }
 }
