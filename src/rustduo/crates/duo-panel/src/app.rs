@@ -1793,39 +1793,21 @@ impl PanelApp {
                 ui.allocate_response(egui::vec2(ui.available_width(), 60.0), egui::Sense::click());
             let rect = row_resp.rect;
             let hover = row_resp.hovered();
-            // 一整块玻璃：静止行不画底（玻璃即底，行块拼接感已废）；
-            // 仅 hover/选中画内缩槽——rgba 微调明暗而非不透明灰。
-            let slot = rect.shrink2(egui::vec2(4.0, 4.0));
-            let (tint_a, lift) = if is_dark {
-                (
-                    36u8,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),
-                )
-            } else {
-                (18u8, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 12))
-            };
+            // 一整块玻璃（2026-10-06 用户定稿）：行内零填充零底色，
+            // 选中=黑白高亮描边（浅色黑边/深色白边），别无他物。
             if *selected {
-                let a = if hover { tint_a + 10 } else { tint_a };
-                let base = if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, a)
+                let slot = rect.shrink2(egui::vec2(4.0, 4.0));
+                let edge = if is_dark {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 225)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, a)
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 205)
                 };
-                paint::rounded_fill(ui.painter(), slot, 10.0, base);
-                let edge = egui::Color32::from_rgba_unmultiplied(
-                    t.accent.r(),
-                    t.accent.g(),
-                    t.accent.b(),
-                    140,
+                ui.painter().rect_stroke(
+                    slot,
+                    egui::CornerRadius::same(10),
+                    egui::Stroke::new(1.5_f32, edge),
+                    egui::StrokeKind::Inside,
                 );
-                paint::rounded_stroke(ui.painter(), slot, 10.0, edge);
-                let bar = Rect::from_min_size(
-                    egui::pos2(slot.left() + 10.0, slot.center().y - 8.0),
-                    egui::vec2(2.0, 16.0),
-                );
-                ui.painter().rect_filled(bar, 1.0, t.accent);
-            } else if hover {
-                paint::rounded_fill(ui.painter(), slot, 10.0, lift);
             }
             // 传输胶囊
             let tag = Rect::from_min_size(
