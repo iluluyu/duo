@@ -646,40 +646,76 @@ fn mirror_card(app: &mut PanelApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
-/// 音量条（Main.qml mediaVolumeSlider 直译：4px 轨、未知中性、12px 拇指、
-/// 拖动视觉先行 + 200ms 防抖落命令）。
+/// 音量条（2026-10 Opus 重做）：4px 轨；已知 = accent 浅底轨 + accent
+/// 填充 + 12px 拇指（拖动 14px）+ 右端数值；未知 = 中性 50% 占位 +
+/// 灰拇指 + 「—」（拖动即时转已知并落命令，首拖=探测+设值）；
+/// 拖动视觉先行 + 200ms 防抖落命令；命中区垂直 ±12px。
 fn volume_slider(app: &mut PanelApp, ui: &mut egui::Ui, zone: Rect) {
     let t = app.tokens;
     let track = Rect::from_min_size(
         Pos2::new(zone.left(), zone.center().y - 2.0),
-        Vec2::new(zone.width(), 4.0),
+        Vec2::new(zone.width() - 30.0, 4.0),
     );
-    paint::rounded_fill(ui.painter(), track, 2.0, t.hairline_on_card);
     let known = app.volume_known();
-    let resp = ui.allocate_rect(track.expand(6.0), Sense::click_and_drag());
+    let resp = ui.allocate_rect(track.expand2(Vec2::new(4.0, 12.0)), Sense::click_and_drag());
     let mut visual = app.volume_value() as f32;
+    let mut dragging = false;
     if resp.is_pointer_button_down_on() && resp.dragged() {
         if let Some(pos) = resp.interact_pointer_pos() {
             let frac = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
             visual = (frac * 15.0).round();
             app.volume_dragged(visual as i64);
+            dragging = true;
         }
     } else if known {
         visual = app.volume_value() as f32;
     }
-    let filled = known || app.volume_pending.is_some();
-    if filled {
-        let w = track.width() * visual / 15.0;
-        paint::rounded_fill(
-            ui.painter(),
-            Rect::from_min_size(track.left_top(), Vec2::new(w, 4.0)),
-            2.0,
-            t.accent,
-        );
-        let cx = track.left() + w;
-        ui.painter()
-            .circle_filled(Pos2::new(cx, track.center().y), 6.0, t.accent);
-    }
+    let live = known || dragging || app.volume_pending.is_some();
+    let rest = if live {
+        crate::theme::over(t.bg, t.accent, 0.15)
+    } else {
+        crate::theme::over(t.bg, t.ink, 0.05)
+    };
+    paint::rounded_fill(ui.painter(), track, 2.0, rest);
+    let frac = if live { visual / 15.0 } else { 0.5 };
+    let w = track.width() * frac;
+    let fill_color = if live {
+        t.accent
+    } else {
+        crate::theme::over(t.bg, t.ink, 0.14)
+    };
+    paint::rounded_fill(
+        ui.painter(),
+        Rect::from_min_size(track.left_top(), Vec2::new(w, 4.0)),
+        2.0,
+        fill_color,
+    );
+    let cx = track.left() + w;
+    let thumb_r = if dragging { 7.0 } else { 6.0 };
+    let thumb_color = if live {
+        t.accent
+    } else {
+        crate::theme::over(t.bg, t.ink, 0.30)
+    };
+    ui.painter()
+        .circle_filled(Pos2::new(cx, track.center().y), thumb_r, thumb_color);
+    let label = if live {
+        format!("{}", visual as i64)
+    } else {
+        "—".to_string()
+    };
+    paint::text_centered(
+        ui.painter(),
+        Pos2::new(track.right() + 16.0, track.center().y),
+        &label,
+        11.0,
+        false,
+        if live {
+            t.ink2
+        } else {
+            crate::theme::over(t.bg, t.ink, 0.35)
+        },
+    );
 }
 
 /// 搜索悬浮玻璃岛（七修：活合成背板——磁贴色块全知，滚动即重建，

@@ -268,59 +268,6 @@ fn fade_tokens(t: &Tokens, f: impl Fn(egui::Color32) -> egui::Color32 + Copy) ->
     tt
 }
 
-/// 渲染倍率滑杆（QML renderScaleSlider：轨 4px hairline + accent 填充 +
-/// thumb 16 白 + accent 边；1.0–3.0 步 0.1）。h24 区域。
-#[must_use]
-fn render_scale_slider(
-    ui: &mut Ui,
-    t: &Tokens,
-    id: egui::Id,
-    rect: Rect,
-    value: f64,
-) -> Option<f64> {
-    let resp = ui.interact(rect, id, Sense::click_and_drag());
-    let track = Rect::from_center_size(
-        Pos2::new(rect.center().x, rect.center().y),
-        Vec2::new(rect.width(), 4.0),
-    );
-    let frac = ((value - 1.0) / 2.0).clamp(0.0, 1.0) as f32;
-    paint::rounded_fill(ui.painter(), track, 2.0, t.hairline_on_card);
-    let fill = Rect::from_min_max(
-        track.min,
-        Pos2::new(track.left() + track.width() * frac, track.bottom()),
-    );
-    if fill.width() > 0.0 {
-        paint::rounded_fill(ui.painter(), fill, 2.0, t.accent);
-    }
-    let cx = track.left() + track.width() * frac;
-    ui.painter()
-        .circle_filled(Pos2::new(cx, track.center().y), 8.0, egui::Color32::WHITE);
-    paint::circle_stroke(
-        ui.painter(),
-        Pos2::new(cx, track.center().y),
-        8.0,
-        if resp.dragged() {
-            t.accent_hover
-        } else {
-            t.accent
-        },
-    );
-    if resp.dragged() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            let v = 1.0 + f as f64 * 2.0;
-            return Some((v * 10.0).round() / 10.0);
-        }
-    }
-    if resp.clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            return Some(1.0 + f as f64 * 2.0);
-        }
-    }
-    None
-}
-
 /// 路径行（标题 h26 + [TextField 撑开 | 浏览 | 检测] h32）。返回
 /// (路径改动, 点了浏览, 点了检测)。
 #[must_use]
@@ -474,7 +421,6 @@ mod geom {
     pub const CELL_H: f32 = 58.0; // 标签 20 + 6 + 数字框 32
     pub const LABEL_H: f32 = 20.0;
     pub const ROW_H: f32 = 32.0; // 按钮/开关行
-    pub const SLIDER_H: f32 = 24.0;
     pub const TITLE_H: f32 = 19.0; // 卡标题 13px 字盒高
     pub const LOCK_H: f32 = 36.0; // 引擎锁提示条
     pub const MARGIN: f32 = 16.0; // 滚动区左右边距
@@ -519,7 +465,7 @@ pub struct SettingsLayout {
     pub dpi_cell: Rect,
     pub rs_label: Pos2,
     pub rs_value: Pos2,
-    pub rs_slider: Rect,
+    pub rs_row: [Rect; 4],
     pub windowbar: Card,
     pub top_label: Pos2,
     pub top_row: [Rect; 2],
@@ -650,7 +596,7 @@ impl SettingsLayout {
             + SP
             + LABEL_H
             + SP
-            + SLIDER_H;
+            + geom::ROW_H;
         let quality_h = CARD_EXTRA + q_items;
         let quality = card_frame(Pos2::new(left, y), cw, quality_h);
         let mut cy = quality.title.y + TITLE_H + SP;
@@ -673,7 +619,7 @@ impl SettingsLayout {
         let rs_label = Pos2::new(x, cy + 10.0);
         let rs_value = Pos2::new(x + inner_w - 20.0, cy + 10.0);
         cy += LABEL_H + SP;
-        let rs_slider = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, SLIDER_H));
+        let rs_row: [Rect; 4] = seg_row(x, cy, inner_w, 4).try_into().unwrap();
         y += quality_h + CARD_SP;
 
         // 窗口栏（默认）卡
@@ -727,7 +673,7 @@ impl SettingsLayout {
             dpi_cell,
             rs_label,
             rs_value,
-            rs_slider,
+            rs_row,
             windowbar,
             top_label,
             top_row,
@@ -834,6 +780,14 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     // 无条件 clamp：先滑到底再放大窗口（max_scroll 变小/归零）时旧
     // scroll 残留会把内容顶出视口且滚动分支被闸关死（真机卡死根因）
     app.settings_scroll = app.settings_scroll.min(max_scroll);
+    // DUO_SHOT_SET_SCROLL=px：出图模式预滚设置页（下半区控件入镜验证）
+    if app.shot.is_some() {
+        if let Ok(v) = std::env::var("DUO_SHOT_SET_SCROLL") {
+            if let Ok(px) = v.parse::<f32>() {
+                app.settings_scroll = px.min(max_scroll);
+            }
+        }
+    }
     let menu_open = app.menu_effectively_open(ui.ctx());
     if max_scroll > 0.0 && !menu_open {
         if ui.rect_contains_pointer(pan_zone) {
@@ -1154,24 +1108,31 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
     ) {
         app.settings.set_dpi(Some(v));
     }
-    group_label(&painter, &t, py(layout.rs_label), "渲染倍率（1× 原生）");
+    group_label(&painter, &t, py(layout.rs_label), "渲染倍率");
     let scale_now = app.settings.draft.render_scale;
-    paint::text_centered(
-        &painter,
-        py(layout.rs_value),
-        &format!("{scale_now:.1}×"),
-        13.0,
-        true,
-        t.accent,
-    );
-    if let Some(v) = render_scale_slider(
-        &mut ui,
-        &t,
-        egui::Id::new("rscale"),
-        sy(layout.rs_slider),
-        scale_now,
-    ) {
-        app.settings.set_render_scale(v);
+    let presets = [1.0f64, 1.4, 2.0, 3.0];
+    let on_preset = presets.iter().any(|v| (v - scale_now).abs() < 1e-9);
+    if !on_preset {
+        // 非档位自由值（右键菜单微调所得）：胶囊不亮，右端提示现值
+        paint::text_left(
+            &painter,
+            layout.rs_value,
+            &format!("{scale_now:.1}×"),
+            13.0,
+            t.accent,
+        );
+    }
+    for (i, v) in presets.iter().enumerate() {
+        if mode_button(
+            &mut ui,
+            &t,
+            egui::Id::new(("rscale", i)),
+            sy(layout.rs_row[i]),
+            &format!("{v:.1}×").replace(".0×", "×"),
+            on_preset && (v - scale_now).abs() < 1e-9,
+        ) {
+            app.settings.set_render_scale(*v);
+        }
     }
 
     // 窗口栏（默认）卡内容
@@ -1257,7 +1218,10 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
             layout.adb_row,
             layout.fps_cell,
             layout.bitrate_cell,
-            layout.rs_slider,
+            layout.rs_row[0],
+            layout.rs_row[1],
+            layout.rs_row[2],
+            layout.rs_row[3],
             layout.dpi_switch,
             layout.dpi_cell,
             layout.tso_row,
