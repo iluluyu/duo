@@ -1744,7 +1744,7 @@ impl PanelApp {
                 let line = elide(short, 13.0);
                 paint::text_left(
                     painter,
-                    egui::pos2(text_x, rect.center().y),
+                    egui::pos2(text_x, rect.center().y - 6.0),
                     &line,
                     13.0,
                     t.ink,
@@ -1830,7 +1830,7 @@ impl PanelApp {
                     let name_line = elide(name, 13.0);
                     paint::text_left(
                         ui.painter(),
-                        egui::pos2(text_x, rect.top() + 21.0),
+                        egui::pos2(text_x, rect.top() + 15.0),
                         &name_line,
                         13.0,
                         t.ink,
@@ -1838,7 +1838,7 @@ impl PanelApp {
                     let sub_line = elide(short, 11.0);
                     paint::text_left(
                         ui.painter(),
-                        egui::pos2(text_x, rect.top() + 42.0),
+                        egui::pos2(text_x, rect.top() + 38.0),
                         &sub_line,
                         11.0,
                         t.ink2,

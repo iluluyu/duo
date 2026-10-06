@@ -88,17 +88,27 @@ pub fn install_fonts(ctx: &egui::Context) {
         );
         bold_stack.push("duo-bold-segoe".into());
     }
-    let cjk_b = if cfg!(target_os = "windows") {
-        r"C:\Windows\Fonts\msyhbd.ttc"
+    // 粗体中文优先等线 Bold（雅黑 Bold 笔画过重=「塑料感」），缺则回落雅黑
+    let cjk_b_candidates: &[&str] = if cfg!(target_os = "windows") {
+        &[
+            r"C:\Windows\Fonts\Dengb.ttf",
+            r"C:\Windows\Fonts\msyhbd.ttc",
+        ]
     } else {
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"
+        &["/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"]
     };
-    if let Ok(bytes) = std::fs::read(cjk_b) {
-        fonts.font_data.insert(
-            "duo-bold-cjk".into(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-        );
-        bold_stack.push("duo-bold-cjk".into());
+    let cjk_b = cjk_b_candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .copied();
+    if let Some(cjk_b) = cjk_b {
+        if let Ok(bytes) = std::fs::read(cjk_b) {
+            fonts.font_data.insert(
+                "duo-bold-cjk".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            bold_stack.push("duo-bold-cjk".into());
+        }
     }
     bold_stack.extend(stack.iter().cloned());
     bold_stack.extend(
