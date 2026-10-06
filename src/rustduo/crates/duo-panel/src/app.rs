@@ -1809,7 +1809,7 @@ impl PanelApp {
                 let pts = duo_core::icons::g2_outline(
                     f64::from(slot.width()),
                     f64::from(slot.height()),
-                    14.0,
+                    f64::from(slot.height()) / 2.0,
                     5.0,
                 );
                 let path: Vec<egui::Pos2> = pts
