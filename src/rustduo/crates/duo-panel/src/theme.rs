@@ -12,11 +12,14 @@ pub enum ThemeKind {
 }
 
 impl ThemeKind {
-    /// settings.theme（light/dark/system）→ 面板主题。system 在 v0 折叠为
-    /// 暗色（eframe 无 OS 跟随钩子，跟随留 TODO）。
-    pub fn from_settings(s: &str) -> Self {
+    /// light/dark 直选；system 跟随 OS，读不到时回暗色。
+    pub fn from_settings(s: &str, system: Option<egui::Theme>) -> Self {
         match s {
             "light" => ThemeKind::Light,
+            "system" => match system {
+                Some(egui::Theme::Light) => ThemeKind::Light,
+                Some(egui::Theme::Dark) | None => ThemeKind::Dark,
+            },
             _ => ThemeKind::Dark,
         }
     }
@@ -381,9 +384,24 @@ mod tests {
     }
 
     #[test]
-    fn theme_from_settings_folds_system_to_dark() {
-        assert_eq!(ThemeKind::from_settings("dark"), ThemeKind::Dark);
-        assert_eq!(ThemeKind::from_settings("system"), ThemeKind::Dark);
-        assert_eq!(ThemeKind::from_settings("light"), ThemeKind::Light);
+    fn theme_from_settings_follows_system() {
+        assert_eq!(ThemeKind::from_settings("dark", None), ThemeKind::Dark);
+        assert_eq!(
+            ThemeKind::from_settings("light", Some(egui::Theme::Dark)),
+            ThemeKind::Light
+        );
+        assert_eq!(ThemeKind::from_settings("system", None), ThemeKind::Dark);
+        assert_eq!(
+            ThemeKind::from_settings("system", Some(egui::Theme::Light)),
+            ThemeKind::Light
+        );
+        assert_eq!(
+            ThemeKind::from_settings("system", Some(egui::Theme::Dark)),
+            ThemeKind::Dark
+        );
+        assert_eq!(
+            ThemeKind::from_settings("nope", Some(egui::Theme::Light)),
+            ThemeKind::Dark
+        );
     }
 }

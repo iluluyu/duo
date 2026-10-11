@@ -4,10 +4,8 @@
 //! 图标合成留 Python 面板侧，见 duo/core/apps.py。
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::process::Stdio;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::catalog::{catalog_by_package, APP_CATALOG};
 use crate::quiet::quiet_command;
@@ -218,36 +216,19 @@ pub fn run_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
 /// 一次 ``pm list packages -3`` 查询 + 目录合并。失败（rc≠0/超时/无法
 /// 启动）返回 Err——查询失败与"无应用"必须可区分（devices.rs 同合同）。
 pub fn run_apps_query(adb_binary: &str, serial: &str) -> Result<Vec<AppRow>, String> {
-    let mut child = quiet_command(adb_binary)
+    let child = quiet_command(adb_binary)
         .args(["-s", serial, "shell", "pm", "list", "packages", "-3"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("adb pm list failed to launch: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs_f64(PM_LIST_TIMEOUT_S);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("adb pm list timed out".into());
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("adb pm list wait failed: {e}")),
-        }
-    };
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout_buf);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr_buf);
-    }
-    let _ = child.wait();
+    let (status, stdout_buf, stderr_buf) =
+        crate::quiet::wait_piped(child, Duration::from_secs_f64(PM_LIST_TIMEOUT_S)).map_err(
+            |err| match err {
+                crate::quiet::WaitPipedError::TimedOut => "adb pm list timed out".to_string(),
+                crate::quiet::WaitPipedError::Wait(e) => format!("adb pm list wait failed: {e}"),
+            },
+        )?;
     if !status.success() {
         let msg = String::from_utf8_lossy(if stderr_buf.is_empty() {
             &stdout_buf

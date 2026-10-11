@@ -887,7 +887,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
                 // 「使用中」槽：accent 微底 + 描边（左缘条 2026-10-06
                 // 用户裁定删除——多余元素）
                 // 槽只横向内缩：竖向 shrink 会吃掉 serial 底缘贴线/压线
-                // （用户报 a1b2c3d4 超出边线）——行高 52 全给内容。
+                // （真机反馈超出边线）——行高 52 全给内容。
                 let slot = row.shrink2(Vec2::new(2.0, 0.0));
                 paint::rounded_fill(&painter, slot, 12.0, over(t.card, t.accent, 0.10));
                 paint::rounded_stroke(&painter, slot, 12.0, over(t.card, t.accent, 0.40));
@@ -1196,7 +1196,7 @@ pub fn show(app: &mut PanelApp, ui: &mut Ui) {
 
     // 外观卡内容
     group_label(&painter, &t, py(layout.theme_label), "主题");
-    const THEMES: [(&str, &str); 3] = [("light", "亮色"), ("dark", "暗色"), ("system", "跟随系统")];
+    const THEMES: [(&str, &str); 3] = [("system", "系统"), ("light", "亮色"), ("dark", "暗色")];
     for (i, (value, label)) in THEMES.iter().enumerate() {
         let r = sy(layout.theme_row[i]);
         if mode_button(

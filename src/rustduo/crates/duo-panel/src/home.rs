@@ -5,6 +5,7 @@
 //! → 网格(+16) → 运行卡(bottom 56) → Toast(bottom 16)。
 //! 每个绘制函数头部注明 QML 出处；数值不发明（总则 1）。
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use egui::{Pos2, Rect, Sense, Vec2};
@@ -68,9 +69,10 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     let chips_h = running_card_height(ui.max_rect().width(), &chips, ui);
     let entries: Vec<AppEntry> = app.grid_entries();
     // 过渡状态按全量应用列表清理（不能用搜索结果：搜索隐藏/恢复会重播入场）。
+    let live: HashSet<&str> = app.apps.apps.iter().map(|e| e.package.as_str()).collect();
     app.icon_fades
         .borrow_mut()
-        .retain(|pkg, _| app.apps.apps.iter().any(|e| &e.package == pkg));
+        .retain(|pkg, _| live.contains(pkg.as_str()));
     let layout = HomeLayout::compute_with_chips_height(
         ui.max_rect().width(),
         ui.max_rect().height(),
@@ -129,7 +131,7 @@ pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     grid(app, ui, layout.grid, grid_clip, &entries);
 
     search_island(app, ui, layout.search, glass_on);
-    running_card(app, ui, ui.max_rect(), chips_h);
+    running_card(app, ui, ui.max_rect(), chips_h, &chips);
     wireless_dialog(app, ui);
     rename_dialog(app, ui);
     ui.allocate_rect(ui.max_rect(), Sense::hover());
@@ -1281,12 +1283,14 @@ pub fn running_card_height(w: f32, chips: &[(String, String, bool)], ui: &egui::
 }
 
 /// 运行卡（Main.qml chipsZone：bottom 56、卡内 Flow 间距 8 芯片）。
-fn running_card(app: &mut PanelApp, ui: &mut egui::Ui, page: Rect, flow_h: f32) {
-    if flow_h <= 0.0 {
-        return;
-    }
-    let chips: Vec<(String, String, bool)> = app.running_chips();
-    if chips.is_empty() {
+fn running_card(
+    app: &mut PanelApp,
+    ui: &mut egui::Ui,
+    page: Rect,
+    flow_h: f32,
+    chips: &[(String, String, bool)],
+) {
+    if flow_h <= 0.0 || chips.is_empty() {
         return;
     }
     let t = app.tokens;

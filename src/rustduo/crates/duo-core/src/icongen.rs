@@ -139,6 +139,25 @@ pub fn apply_g2_mask(image: &RgbaImage, radius_ratio: f32) -> RgbaImage {
 /// 像素，60px 图标上读作毛刺）；均值滤波无振铃、单调，平滑度由超采样
 /// 档位保证（apps.py scale=6 语义的零振铃版）。
 fn g2_mask(width: u32, height: u32, radius: i64) -> GrayImage {
+    // 同宽高同半径的蒙版全进程复用（sweep 每包相同，避免重复 6× 光栅化）。
+    use std::sync::{Mutex, OnceLock};
+    type MaskCache = Mutex<std::collections::HashMap<(u32, u32, i64), GrayImage>>;
+    static CACHE: OnceLock<MaskCache> = OnceLock::new();
+    let key = (width, height, radius);
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(hit) = guard.get(&key) {
+            return hit.clone();
+        }
+    }
+    let built = g2_mask_uncached(width, height, radius);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, built.clone());
+    }
+    built
+}
+
+fn g2_mask_uncached(width: u32, height: u32, radius: i64) -> GrayImage {
     let outline = g2_outline(f64::from(width), f64::from(height), radius as f64, 5.0);
     let supersampled: Vec<(f64, f64)> = outline
         .iter()
@@ -153,15 +172,23 @@ fn g2_mask(width: u32, height: u32, radius: i64) -> GrayImage {
 /// n× 超采样图 → 目标尺寸的精确均值缩回（n 为整数倍）。
 fn box_downscale(src: &GrayImage, factor: u32, width: u32, height: u32) -> GrayImage {
     let mut out = GrayImage::new(width, height);
-    for y in 0..height {
-        for x in 0..width {
+    let src_px = src.as_raw();
+    let src_w = src.width() as usize;
+    let f = factor as usize;
+    let area = factor * factor;
+    let dst = out.as_mut();
+    for y in 0..height as usize {
+        for x in 0..width as usize {
             let mut sum = 0_u32;
-            for dy in 0..factor {
-                for dx in 0..factor {
-                    sum += u32::from(src.get_pixel(x * factor + dx, y * factor + dy)[0]);
+            let y0 = y * f;
+            let x0 = x * f;
+            for dy in 0..f {
+                let row = (y0 + dy) * src_w + x0;
+                for dx in 0..f {
+                    sum += u32::from(src_px[row + dx]);
                 }
             }
-            out.put_pixel(x, y, image::Luma([(sum / (factor * factor)) as u8]));
+            dst[y * width as usize + x] = (sum / area) as u8;
         }
     }
     out
@@ -171,6 +198,7 @@ fn box_downscale(src: &GrayImage, factor: u32, width: u32, height: u32) -> GrayI
 /// 无抗锯齿——抗锯齿由超采样 + 缩回完成）。
 fn fill_polygon(points: &[(f64, f64)], width: i64, height: i64) -> GrayImage {
     let mut mask = GrayImage::new(width as u32, height as u32);
+    let stride = width as usize;
     let count = points.len();
     for row in 0..height {
         let sample_y = row as f64 + 0.5;
@@ -190,8 +218,12 @@ fn fill_polygon(points: &[(f64, f64)], width: i64, height: i64) -> GrayImage {
             }
             let start = (pair[0] - 0.5).ceil().max(0.0) as i64;
             let end = (pair[1] - 0.5).floor().min(width as f64 - 1.0) as i64;
-            for x in start..=end {
-                mask.put_pixel(x as u32, row as u32, image::Luma([255]));
+            if start <= end {
+                let row_off = row as usize * stride;
+                let pixels = mask.as_mut();
+                for x in start as usize..=end as usize {
+                    pixels[row_off + x] = 255;
+                }
             }
         }
     }

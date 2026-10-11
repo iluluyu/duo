@@ -6,8 +6,6 @@
 //! 不闪），连续 3 次失败才真正清空（“确实没了”）。
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::thread;
 use std::time::Duration;
 
 use crate::quiet::quiet_command;
@@ -40,36 +38,19 @@ pub fn parse_device_states(devices_output: &str) -> DeviceStates {
 /// “查询失败”与“无设备”必须可区分，否则一次抖动就清空面板列表。
 pub fn run_devices_query(adb_binary: &str) -> Result<DeviceStates, String> {
     // 超时轮询（Python 合同：挂死 10s 也是查询失败，不是空列表）。
-    let mut child = quiet_command(adb_binary)
+    let child = quiet_command(adb_binary)
         .arg("devices")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("adb devices failed to launch: {e}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(QUERY_TIMEOUT_S);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("adb devices timed out".into());
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("adb devices wait failed: {e}")),
-        }
-    };
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout_buf);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr_buf);
-    }
-    let _ = child.wait();
+    let (status, stdout_buf, stderr_buf) =
+        crate::quiet::wait_piped(child, Duration::from_secs_f64(QUERY_TIMEOUT_S)).map_err(
+            |err| match err {
+                crate::quiet::WaitPipedError::TimedOut => "adb devices timed out".to_string(),
+                crate::quiet::WaitPipedError::Wait(e) => format!("adb devices wait failed: {e}"),
+            },
+        )?;
     if !status.success() {
         let msg = String::from_utf8_lossy(if stderr_buf.is_empty() {
             &stdout_buf

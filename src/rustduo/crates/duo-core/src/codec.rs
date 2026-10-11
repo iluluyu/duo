@@ -8,11 +8,10 @@
 //! 探测失败一律降级为无 pin 的 h264——镜像必须还能启动，绝不硬错误。
 
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -126,19 +125,11 @@ pub fn encoders_cache_path(base: Option<&Path>) -> PathBuf {
 /// 读缓存：缺失/损坏/过期/serial 不符 → None。serial 不符绝不读别机缓存：
 /// 编码器组件是机型专属（c2.qti.* vs c2.mtk.*），串号命中会 pin 不存在的
 /// 编码器导致 scrcpy 启不来。
-pub fn load_cached_encoders(
-    path: &Path,
-    serial: &str,
-    now: Option<f64>,
-) -> Option<Vec<EncoderInfo>> {
+fn read_encoder_cache(path: &Path, serial: &str) -> Option<(f64, Vec<EncoderInfo>)> {
     let raw = fs::read_to_string(path).ok()?;
     let data: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let probed_at = data.get("probed_at")?.as_f64()?;
     if data.get("serial")?.as_str()? != serial {
-        return None;
-    }
-    let timestamp = now.unwrap_or_else(unix_now);
-    if timestamp - probed_at > ENCODERS_TTL_S {
         return None;
     }
     let mut encoders = Vec::new();
@@ -150,7 +141,25 @@ pub fn load_cached_encoders(
             hardware: py_bool(obj.get("hardware")?)?,
         });
     }
-    (!encoders.is_empty()).then_some(encoders)
+    (!encoders.is_empty()).then_some((probed_at, encoders))
+}
+
+pub fn load_cached_encoders(
+    path: &Path,
+    serial: &str,
+    now: Option<f64>,
+) -> Option<Vec<EncoderInfo>> {
+    let (probed_at, encoders) = read_encoder_cache(path, serial)?;
+    let timestamp = now.unwrap_or_else(unix_now);
+    if timestamp - probed_at > ENCODERS_TTL_S {
+        return None;
+    }
+    Some(encoders)
+}
+
+/// 同 serial 的过期缓存。启动路径先用它开会话，再后台重探。
+pub fn load_stale_encoders(path: &Path, serial: &str) -> Option<Vec<EncoderInfo>> {
+    read_encoder_cache(path, serial).map(|(_, encoders)| encoders)
 }
 
 /// 落盘一次探测结果（时间戳 + serial；schema 与 Python 版逐字段相同）。
@@ -174,10 +183,15 @@ pub fn save_encoders_cache(
         probed_at: now.unwrap_or_else(unix_now),
         encoders,
     };
+    // temp+rename：两个后台重探交错写时不会留下半截文件（读侧失败会
+    // 回退同步探测，自愈但多付一次；Windows rename 不覆盖，先删后改）。
+    let tmp = path.with_extension("json.tmp");
     fs::write(
-        path,
+        &tmp,
         serde_json::to_string_pretty(&payload).expect("payload serializes"),
-    )
+    )?;
+    let _ = fs::remove_file(path);
+    fs::rename(&tmp, path)
 }
 
 /// Python ``bool()`` 真值语义（缓存条目 hardware 字段的容错读取）。
@@ -232,31 +246,13 @@ pub fn probe_encoders(scrcpy_path: &str, serial: &str, timeout_s: f64) -> Option
             Err(_) => return None,
         }
     }
-    let mut child = child?;
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout_s.max(0.0));
-    loop {
-        match child.try_wait() {
-            // check=False 合同：非零退出码照样解析输出。
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout_buf);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr_buf);
-    }
+    let child = child?;
+    // 非零退出码照样解析；超时/等待失败当探测失败。
+    let Ok((_, stdout_buf, stderr_buf)) =
+        crate::quiet::wait_piped(child, Duration::from_secs_f64(timeout_s.max(0.0)))
+    else {
+        return None;
+    };
     let output = format!(
         "{}\n{}",
         String::from_utf8_lossy(&stdout_buf),
@@ -492,6 +488,10 @@ mod tests {
         assert_eq!(
             load_cached_encoders(&path, "TESTSERIAL", Some(1000.0 + ENCODERS_TTL_S + 1.0)),
             None
+        );
+        assert_eq!(
+            load_stale_encoders(&path, "TESTSERIAL"),
+            Some(encoders.clone())
         );
         // TTL 边界仍新鲜。
         assert_eq!(

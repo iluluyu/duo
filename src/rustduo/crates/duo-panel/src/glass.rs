@@ -466,31 +466,39 @@ fn box_pass(buf: &mut [f32], w: usize, h: usize, r: usize, horizontal: bool) {
         (h, w, 3 * w, 3)
     };
     let window = (2 * r + 1) as f32;
-    let mut out = vec![0.0_f32; buf.len()];
-    for line in 0..lines {
-        let base = line * line_step;
-        let at = |i: usize| base + i.min(line_len - 1) * step;
-        let mut sum = [0.0_f32; 3];
-        for k in 0..=r {
-            for c in 0..3 {
-                sum[c] += buf[at(k) + c];
-            }
-        }
-        for c in 0..3 {
-            sum[c] += buf[at(0) + c] * r as f32;
-        }
-        for i in 0..line_len {
-            for c in 0..3 {
-                out[base + i * step + c] = sum[c] / window;
-            }
-            let add = at(i + r + 1);
-            let sub = at(i.saturating_sub(r));
-            for c in 0..3 {
-                sum[c] += buf[add + c] - buf[sub + c];
-            }
-        }
+    thread_local! {
+        static SCRATCH: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    buf.copy_from_slice(&out);
+    SCRATCH.with(|cell| {
+        let mut out = cell.borrow_mut();
+        if out.len() != buf.len() {
+            out.resize(buf.len(), 0.0);
+        }
+        for line in 0..lines {
+            let base = line * line_step;
+            let at = |i: usize| base + i.min(line_len - 1) * step;
+            let mut sum = [0.0_f32; 3];
+            for k in 0..=r {
+                for c in 0..3 {
+                    sum[c] += buf[at(k) + c];
+                }
+            }
+            for c in 0..3 {
+                sum[c] += buf[at(0) + c] * r as f32;
+            }
+            for i in 0..line_len {
+                for c in 0..3 {
+                    out[base + i * step + c] = sum[c] / window;
+                }
+                let add = at(i + r + 1);
+                let sub = at(i.saturating_sub(r));
+                for c in 0..3 {
+                    sum[c] += buf[add + c] - buf[sub + c];
+                }
+            }
+        }
+        buf.copy_from_slice(&out);
+    });
 }
 
 /// 液态玻璃旋钮（Opus 终裁 2026-09-22：满材质/定向 rim/保守折射/
@@ -711,10 +719,10 @@ pub(crate) fn build_liquid_texture(
     }
     // 取证：DUO_DUMP_ISLAND=1 倾印岛贴图本体（诊断锯齿/rim 形状）
     if std::env::var("DUO_DUMP_ISLAND").is_ok() {
-        let dir = std::path::PathBuf::from(
-            std::env::var("DUO_DUMP_DIR")
-                .unwrap_or_else(|_| r"C:\Users\user\Desktop\duo_shots".into()),
-        );
+        let dir = std::path::PathBuf::from(std::env::var("DUO_DUMP_DIR").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+            format!("{home}\\Desktop\\duo_shots")
+        }));
         let _ = std::fs::create_dir_all(&dir);
         let px: Vec<u8> = pixels
             .iter()

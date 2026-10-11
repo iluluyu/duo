@@ -282,7 +282,10 @@ impl PanelApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         crate::fonts::install_fonts(&cc.egui_ctx);
         let settings = SettingsPageModel::load(None);
-        let tokens = Tokens::of(ThemeKind::from_settings(&settings.draft.theme));
+        let tokens = Tokens::of(ThemeKind::from_settings(
+            &settings.draft.theme,
+            cc.egui_ctx.system_theme(),
+        ));
         let adb = resolve_adb_path(&settings.draft, None, "adb");
         let mut app = Self {
             page: Page::Home,
@@ -1736,7 +1739,7 @@ impl PanelApp {
             Some(name) => {
                 // 双行块整体垂直居中（14+2+12=28 块高）：名顶 = 中心-14，
                 // serial 顶 = 中心+2——旧 -8/+9 在 52px 行里 serial 贴底
-                // 边线（用户报 a1b2c3d4 压线）。
+                // 边线（真机反馈压线）。
                 let name_line = elide(name, 14.0);
                 paint::text_left(
                     painter,
@@ -2261,18 +2264,31 @@ impl PanelApp {
     fn sync_visuals(&self, ctx: &egui::Context) {
         let t = self.tokens;
         let is_dark = matches!(t.kind, ThemeKind::Dark);
+        let glass = self.settings.draft.glass_enabled;
+        let want_window = if glass {
+            egui::Color32::TRANSPARENT
+        } else {
+            t.menu_fill
+        };
+        // 主题/玻璃未变且菜单皮已卸下时跳过，避免每帧 bump style。
+        let style = ctx.style();
+        let current = style.visuals.panel_fill == t.bg
+            && style.visuals.window_fill == want_window
+            && style.visuals.selection.bg_fill == t.accent
+            && style.visuals.widgets.inactive.bg_stroke
+                == egui::Stroke::new(1.0_f32, t.card_border)
+            && style.spacing.menu_width == MENU_WIDTH;
+        drop(style);
+        if current {
+            return;
+        }
         let mut visuals = if is_dark {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
         };
         visuals.panel_fill = t.bg;
-        let glass = self.settings.draft.glass_enabled;
-        visuals.window_fill = if glass {
-            egui::Color32::TRANSPARENT
-        } else {
-            t.menu_fill
-        };
+        visuals.window_fill = want_window;
         visuals.window_stroke = if glass {
             egui::Stroke::NONE
         } else {
@@ -3257,7 +3273,7 @@ impl eframe::App for PanelApp {
             self.last_screen_size = Some(cur_size);
             self.menu_snapshot = None;
         }
-        let kind = ThemeKind::from_settings(&self.settings.draft.theme);
+        let kind = ThemeKind::from_settings(&self.settings.draft.theme, ctx.system_theme());
         if self.tokens.kind != kind {
             self.tokens = Tokens::of(kind);
             self.menu_snapshot = None;
