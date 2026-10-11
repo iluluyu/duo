@@ -202,7 +202,7 @@ duo/                       # 仓库根（不变）
 - [x] 部署脚本全链健壮化（✅ 2026-09-17 完成）：
       - `install-windows.ps1` 支持 GNU/MSVC 双 release 路径自动探测；安装前清理残留进程杜绝文件锁占用；
       - `uninstall-windows.ps1` 补齐 `duo-core` 停止并支持目录递归彻底清除；
-      - `build_wsl.sh` 消除硬编码 user 用户名，支持动态 Windows 路径解析与 `--install` 直装参数；
+      - `build_wsl.sh` 消除硬编码的 Windows 用户名，支持动态 Windows 路径解析与 `--install` 直装参数；
       - `build_windows.ps1` 修正注释路径并提供 `-Install` 快速系统安装入口；
       - Python 旧打包脚本重命名为 `build_pyduo.ps1`，彻底消除同名脚本歧义。
 - [ ] 真机跑通清单回填（见根 TODO.md「待 Windows 实测」）

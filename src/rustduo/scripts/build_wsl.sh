@@ -27,7 +27,10 @@ resolve_win_home() {
         echo "/mnt/c/Users/$USER"
         return 0
     fi
-    echo "/mnt/c/Users/user"
+    # 兜底：问 Windows 侧要 %USERPROFILE%（不写死用户名）
+    local win_home
+    win_home="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" || true
+    [[ -n "$win_home" ]] && wslpath "$win_home"
 }
 
 MODE="${1:-}"

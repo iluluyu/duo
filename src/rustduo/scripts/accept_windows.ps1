@@ -6,7 +6,6 @@ $ErrorActionPreference = "Stop"
 $candidates = @(
     "$env:LOCALAPPDATA\Duo\duo-core.exe",
     "$env:USERPROFILE\.local\share\duo\tools\duo-core.exe",
-    "C:\Users\user\.local\share\duo\tools\duo-core.exe",
     "$PSScriptRoot\..\target\x86_64-pc-windows-gnu\release\duo-core.exe",
     "$PSScriptRoot\..\target\release\duo-core.exe"
 )

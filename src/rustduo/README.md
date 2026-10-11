@@ -36,9 +36,9 @@ cargo clippy --all-targets && cargo fmt --check
 PATH="/usr/x86_64-w64-mingw32/bin:$PATH" \
   cargo build --target x86_64-pc-windows-gnu --release
 cp target/x86_64-pc-windows-gnu/release/duo-core.exe \
-  /mnt/c/Users/user/.local/share/duo/tools/
+  /mnt/c/Users/<你的用户名>/.local/share/duo/tools/
 cp target/x86_64-pc-windows-gnu/release/duo-panel.exe \
-  /mnt/c/Users/user/.local/share/duo/tools/Duo.exe
+  /mnt/c/Users/<你的用户名>/.local/share/duo/tools/Duo.exe
 ```
 
 产物：`duo-core.exe`（console CLI）+ `Duo.exe`（面板，GUI 子系统 +

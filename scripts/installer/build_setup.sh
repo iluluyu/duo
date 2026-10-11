@@ -10,8 +10,12 @@ RUST="$ROOT/src/rustduo"
 STAGE="$ROOT/dist/installer"
 OUT="$ROOT/dist"
 VERSION="$(awk -F'"' '/^version/{print $2; exit}' "$RUST/crates/duo-panel/Cargo.toml")"
-ISCC="${ISCC:-/mnt/c/Users/user/scoop/shims/iscc.exe}"
 command -v iscc.exe >/dev/null 2>&1 && ISCC="$(command -v iscc.exe)"
+if [[ -z "${ISCC:-}" ]]; then
+    # WSL 兜底：解析 Windows 侧用户目录下的 scoop shim
+    WIN_HOME="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
+    [[ -n "$WIN_HOME" ]] && ISCC="$WIN_HOME/scoop/shims/iscc.exe"
+fi
 
 if [[ "${1:-}" != "--no-build" ]]; then
     "$RUST/scripts/build_wsl.sh"
