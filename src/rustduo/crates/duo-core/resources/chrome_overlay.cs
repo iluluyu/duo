@@ -4482,9 +4482,12 @@ namespace DuoChrome
                 }
                 return;
             }
-            int at = s.IndexOf("Texture:");
+            int at = s.IndexOf("Texture");
             if (at < 0) return;
-            string rest = s.Substring(at + 8).Trim();
+            // scrcpy 5.x 实际行是 "Texture (D3D11VA): WxH"——冒号前有插值后缀。
+            int colon = s.IndexOf(':', at);
+            if (colon < 0) return;
+            string rest = s.Substring(colon + 1).Trim();
             int x = rest.IndexOf('x');
             if (x <= 0) return;
             int w, h;

@@ -41,6 +41,9 @@ pub struct SessionSpec {
     /// （防 APP 方向请求↔窗口形状乒乓风暴；pyduo C# overlay 同款）。
     #[serde(default)]
     pub orientation_lock: Option<String>,
+    /// 方向锁目标设备（多设备时不打错机）。
+    #[serde(default)]
+    pub orientation_serial: Option<String>,
 }
 
 fn default_max_restarts() -> u32 {
@@ -71,6 +74,13 @@ pub fn parse_display_id(log_text: &str) -> Option<u32> {
         }
     }
     last
+}
+
+/// 字框（短边 × 9:16 px）保持 925dp 所需密度（未钳制；925 = 平行视窗
+/// 阈值 901dp 上留 24dp 余量）。mirror 侧固定屏 cap 与 flex 平板
+/// 应用 cap 共用同一公式。
+pub fn density_for_letterbox(short_px: i64) -> f64 {
+    short_px as f64 * 9.0 / 16.0 * 160.0 / 925.0
 }
 
 /// 在 ``New display:`` 之后找最后一个 ``(id=<digits>)``（贪婪回溯序）。
@@ -156,33 +166,72 @@ fn spawn_and_wait(spec: &SessionSpec, abort: &AtomicBool) -> i32 {
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
+    let lock_offset = spec.orientation_lock.as_ref().map(|_| {
+        std::fs::metadata(&spec.log_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    });
     let Ok(mut child) = cmd.spawn() else {
         return 127;
     };
+    // scrcpy 5.x 日志全走 stdout（含 New display；stderr 只剩 adb push
+    // 进度），stderr 解析自 5.x 升级起守空管道——锁改尾读日志文件。
+    if let (Some(adb), Some(offset)) = (spec.orientation_lock.clone(), lock_offset) {
+        let serial = spec.orientation_serial.clone();
+        let path = spec.log_path.clone();
+        thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Seek, SeekFrom};
+            let mut file = loop {
+                match std::fs::File::open(&path) {
+                    Ok(f) => break f,
+                    Err(_) => thread::sleep(Duration::from_millis(50)),
+                }
+            };
+            let _ = file.seek(SeekFrom::Start(offset));
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => thread::sleep(Duration::from_millis(100)),
+                    Ok(_) => {
+                        if let Some(id) = parse_display_id(&line) {
+                            lock_orientation(&adb, serial.as_deref(), id);
+                        }
+                    }
+                }
+            }
+        });
+    }
     if let Some(stderr) = child.stderr.take() {
-        let log_path = spec.log_path.clone();
+        let mut log = log_file
+            .as_ref()
+            .and_then(|f| f.try_clone().ok())
+            .or_else(|| open_append(&spec.log_path).ok());
         let adb = spec.orientation_lock.clone();
+        let lock_serial = spec.orientation_serial.clone();
         let lock_needed = adb.is_some();
         thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
+            use std::io::{BufRead, BufReader, Write};
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
-                    Ok(0) | Err(_) => return,
+                    Ok(0) | Err(_) => {
+                        if let Some(f) = log.as_mut() {
+                            let _ = f.flush();
+                        }
+                        return;
+                    }
                     Ok(_) => {
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&log_path)
-                        {
-                            use std::io::Write;
+                        if let Some(f) = log.as_mut() {
                             let _ = writeln!(f, "{}", line.trim_end());
+                            let _ = f.flush();
                         }
                         if lock_needed {
                             if let Some(id) = parse_display_id(&line) {
-                                lock_orientation(&adb.clone().unwrap(), id);
+                                lock_orientation(&adb.clone().unwrap(), lock_serial.as_deref(), id);
                             }
                         }
                     }
@@ -209,8 +258,11 @@ fn open_append(log_path: &Path) -> std::io::Result<File> {
 }
 
 /// 一次性方向忽略锁（"1" 而非 "true"：wm 按 int 解析，真机实测）。
-fn lock_orientation(adb: &str, display_id: u32) {
+fn lock_orientation(adb: &str, serial: Option<&str>, display_id: u32) {
     let mut cmd = quiet_command(adb);
+    if let Some(serial) = serial {
+        cmd.args(["-s", serial]);
+    }
     cmd.args([
         "shell",
         "wm",
@@ -260,10 +312,18 @@ mod tests {
             restart_delay_s: 0.05,
             env: BTreeMap::new(),
             orientation_lock: None,
+            orientation_serial: None,
         }
     }
 
     // ------------------------------------------------ virtual display id parse
+
+    #[test]
+    fn density_for_letterbox_keeps_parallel_threshold() {
+        // 925dp 目标：1440 短边 → 140（917dp > 901 阈值）；1080 → 105。
+        assert_eq!(density_for_letterbox(1440).round(), 140.0);
+        assert_eq!(density_for_letterbox(1080).round(), 105.0);
+    }
 
     #[test]
     fn parse_display_id_contract() {
@@ -351,6 +411,7 @@ mod tests {
             restart_delay_s: 0.25,
             env,
             orientation_lock: None,
+            orientation_serial: None,
         };
         let json = spec.to_json();
         assert_eq!(SessionSpec::from_json(&json).unwrap(), spec);

@@ -21,6 +21,7 @@ use crate::monitor::{
     LANDSCAPE_TARGET_DP, PORTRAIT_TARGET_DP,
 };
 use crate::paths::logs_dir;
+use crate::quiet::quiet_command;
 use crate::session::{run_session_abortable, SessionSpec};
 use crate::settings::{load_settings, resolve_tool, Settings, DEFAULT_VD_DPI};
 
@@ -94,10 +95,10 @@ pub fn pick_serial(explicit: Option<&str>, states: &DeviceStates) -> Result<Stri
 }
 
 /// 平行视窗密度上限：字框宽（短边×9:16 px）÷ 密度 ≥ ~925dp 目标的
-/// 最大整数密度（1440 短边 → 140，字框 ~917dp > 900dp 阈值留 17dp 余量）。
+/// 最大整数密度（1440 短边 → 140，字框 ~917dp > 900dp 阈值留 17dp
+/// 余量）；钳到出厂 160（固定屏几何不变，再大的密度只会让字框 <925dp）。
 fn parallel_view_dpi_cap(short_side_px: i64) -> i64 {
-    let letterbox_px = short_side_px as f64 * 9.0 / 16.0;
-    (letterbox_px * 160.0 / 925.0)
+    crate::session::density_for_letterbox(short_side_px)
         .round()
         .clamp(80.0, DEFAULT_VD_DPI as f64) as i64
 }
@@ -507,8 +508,8 @@ pub fn effective_bitrate(args: &MirrorArgs, settings: &Settings) -> u32 {
         .clamp(1, 200) as u32
 }
 
-/// codec 探测缓存语义对译 _resolve_video：新鲜缓存免探测，过期/换机
-/// 重探一次；失败不拦会话（resolve_codec 自降级）。
+/// codec 探测缓存：新鲜免探测；同 serial 过期先用旧值开会话并后台
+/// 重探；无缓存才同步探测。失败不拦会话（resolve_codec 自降级）。
 pub fn effective_video(
     args: &MirrorArgs,
     settings: &Settings,
@@ -523,7 +524,17 @@ pub fn effective_video(
     let cache_path = codec::encoders_cache_path(base);
     let mut encoders = codec::load_cached_encoders(&cache_path, serial, None);
     if encoders.is_none() {
-        if let Some(found) = codec::probe_encoders(scrcpy_path, serial, 15.0) {
+        if let Some(stale) = codec::load_stale_encoders(&cache_path, serial) {
+            let path = cache_path.clone();
+            let serial_owned = serial.to_string();
+            let scrcpy_owned = scrcpy_path.to_string();
+            thread::spawn(move || {
+                if let Some(found) = codec::probe_encoders(&scrcpy_owned, &serial_owned, 15.0) {
+                    let _ = codec::save_encoders_cache(&path, &serial_owned, &found, None);
+                }
+            });
+            encoders = Some(stale);
+        } else if let Some(found) = codec::probe_encoders(scrcpy_path, serial, 15.0) {
             let _ = codec::save_encoders_cache(&cache_path, serial, &found, None);
             encoders = Some(found);
         }
@@ -570,7 +581,13 @@ pub fn build_engine_args(
     engine.video = video;
     engine.hwdec = settings.hwdec.clone();
     engine.app_package = args.app.clone();
-    engine.screen_off = resolve_screen_off(args.no_screen_off, settings.turn_screen_off);
+    engine.screen_off = if args.app.is_some() {
+        // 应用会话：scrcpy 自面板级关屏（-S）+ stay-awake。手动按电源键的
+        // 显式休眠会压过 stay-awake 冻结虚拟屏，面板从一开始就关掉才稳。
+        !args.no_screen_off
+    } else {
+        resolve_screen_off(args.no_screen_off, settings.turn_screen_off)
+    };
     engine.vd_keep_content = args.no_vd_destroy_content;
     engine.audio = audio;
     engine.window_title = if title.is_empty() {
@@ -705,7 +722,12 @@ pub fn run(argv: &[String]) -> i32 {
             return 1;
         }
     };
-    let density_probe = run_device_density(&adb_path, &serial);
+    // 跟随设备（dpi 未设且无 --dpi）才消费探测；默认 160 时这次 adb 往返是空的。
+    let density_probe = if args.dpi.is_none() && settings.dpi.is_none() {
+        run_device_density(&adb_path, &serial)
+    } else {
+        None
+    };
     let plan = match plan_display(&args, &settings, primary_work_area(), density_probe) {
         Ok(plan) => plan,
         Err(err) => {
@@ -754,9 +776,10 @@ pub fn run(argv: &[String]) -> i32 {
         max_restarts: 3,
         restart_delay_s: 2.0,
         env: [("ADB".to_string(), adb_path.clone())].into(),
-        // flex 会话防旋转乒乓风暴（display 模式在 engine.argv 体现，
-        // session 侧按 --flex-display 旗标匹配后再下发）
+        // flex 会话防旋转乒乓风暴；冻结真因是设备休眠（-S 修复），
+        // 微信信箱冻结误诊为锁所致已回滚（2026-10-11 夜，T1-T6 标定）。
         orientation_lock: Some(adb_path.clone()),
+        orientation_serial: Some(serial.clone()),
     };
 
     // Window chrome：无边框窗口 + Windows 侧 overlay（会话前启动，与
@@ -862,6 +885,13 @@ pub fn run(argv: &[String]) -> i32 {
             }
             thread::sleep(Duration::from_secs(2));
         });
+    }
+    // 睡眠中启动的会话拿不到 Surface（-S/scrcpy 自带 power-on 叫不醒
+    // 已入睡设备，真机 T8 复现）：启动前先发用户级唤醒。
+    {
+        let mut cmd = quiet_command(&adb_path);
+        cmd.args(["-s", &serial, "shell", "input", "keyevent", "224"]);
+        let _ = cmd.output();
     }
     println!("starting engine... (Ctrl+C to stop)");
     let code = run_session_abortable(&spec, &abort, &mut |_| {});
@@ -1071,6 +1101,28 @@ mod tests {
             }),
             160
         );
+    }
+
+    #[test]
+    fn plan_display_flex_density_is_uniform_across_apps() {
+        // flex 不做按应用密度特殊化（2026-10-11 实测否决）：平行视窗要求
+        // 工作区短边 cap（本机 4K → 203），内容只有手机观感的 57%，用户
+        // 判定太小。酷安与椒盐/微信同走跟随设备（356）或显示器自适应。
+        for app in ["com.coolapk.market", "com.tencent.mm", "com.salt.music"] {
+            let mut a = args();
+            a.display = DisplayMode::Flex;
+            a.app = Some(app.into());
+            let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
+            assert_eq!(plan.display.dpi, Some(304));
+        }
+        // 固定屏的 §16 平行视窗 cap 不受影响。
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2560);
+        a.height = Some(1440);
+        a.app = Some("com.coolapk.market".into());
+        let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(140));
     }
 
     #[test]
