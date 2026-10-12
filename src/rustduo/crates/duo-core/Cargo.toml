@@ -1,6 +1,6 @@
 [package]
 name = "duo-core"
-version = "0.4.15"
+version = "0.4.16"
 edition.workspace = true
 license.workspace = true
 description = "Duo core logic + process layer: devices/watch/session/mirror/apps CLI (JSON-lines protocol)"
@@ -12,11 +12,13 @@ serde_json = "1"
 # chrome overlay 的源码 stamp（缓存失效键，对译 pyduo hashlib.sha256）。
 sha2 = "0.10"
 
-# monitor.rs 的 Windows 工作区探测（SPI_GETWORKAREA）所需的最小 feature 面；
-# 宿主窗口实验（host）已删，不再需要 Dwm/Gdi/Threading 等大面板。
+# monitor.rs 的 Windows 目标屏探测（临时线程 PMv2 + MonitorFromPoint/
+# GetMonitorInfoW/GetDpiForMonitor/GetCursorPos）所需的最小 feature 面。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
 ] }

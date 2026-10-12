@@ -109,6 +109,37 @@ FRAMECHANGED 闪帧）。沉浸/无 上巴维持无边框 + 胶囊。
 保住 engaged。
 
 
+### 顶栏绑定契约（2026-10-12）
+
+用户报告「沉浸顶栏右上角按钮经常不出现」。根因在【发现/绑定】，不在
+露出几何：
+
+- **旧发现**：`FindWindowW(null, title)` 按 Z 序取首个同标题顶层窗，
+  无可见性/进程校验。同标题隐藏幽灵窗（CREATE_NO_WINDOW 的 conhost、
+  会话 CLI）或另一会话的 scrcpy 窗会被先中——绑错后 engaged 判定
+  （前台/根窗==绑定窗）永假，顶栏整场不出现（几何、采样、z 序全对
+  也无用）。
+- **旧死线**：首绑 12s 超时 `Application.ExitThread`——无线 adb 首连 +
+  server push + 首帧经常超时，overlay 自杀后本场永远没顶栏。
+- **新契约**（`Controller.IsVideoWindow/FindVideoWindow/PidAlive`）：
+  枚举顶层窗，只接受「可见 + 根窗 + 标题精确匹配 + 属主进程名
+  scrcpy」；首绑无死线（overlay 生命周期归 duo-core 会话树，§12）；
+  绑定窗销毁时属主进程还活着 = scrcpy 重建窗（同 pid 重绑），进程已退
+  = 会话真结束、overlay 随之退出（不重发现——重发现会抢绑别的同标题
+  scrcpy 会话）。
+- **同标题多设备抢绑消除（同日二轮）**：进程名门分不开两个同名
+  scrcpy 会话——`ChromeOverlay::new` 恒传 `--owner-pid=std::process::id()`
+  （duo-core 自己就是会话树根；scrcpy 经 Scoop shim 两层父链仍是后代），
+  overlay 首绑在进程名门之上再加「属主 pid ∈ owner 后代」门，多设备
+  同开时只绑本会话树的视频窗。父链用 Toolhelp32 `PROCESSENTRY32W`
+  快照（每发现拍至多一拍，非 WMI 轮询；深度封顶 16 防 pid 复用成环）；
+  缺 `--owner-pid` 的旧调用面自动退化为仅进程名过滤；owner 根进程
+  死亡时首绑等待也随之退出（不再无限孤儿等待）。
+- 露出：光标进入窗口矩形内的上缘热区（36 逻辑像素，覆盖胶囊落点）即显示，
+  不再等首次移动。离开后 52 逻辑像素内短滞回；栏上悬停保持。热区命中也保住
+  engaged。不扩到窗外，不绕过绑定。毛玻璃仍按原节流采样。
+
+
 ### 胶囊右键固定（按 APP 持久化）
 
 `Controller._topPinned`（`ToggleTopPin`，胶囊任意处右键切换）：
@@ -162,10 +193,9 @@ scrcpy.exe + 会话 Duo.exe，还握着 panel 日志句柄（次日 WinError 32 
 
 **契约**（实现：`duo/core/winproc.py`，面板侧接线：`PanelController`）：
 
-- 停单个会话（`stopSession`、音频静音重启）：`terminate_tree`——Windows 走
-  `taskkill /T /F`（scrcpy/overlay 随树而死；设备端 scrcpy server 感知
-  socket 断开自毁虚拟屏，`--turn-screen-off` 也由 server 侧恢复），POSIX
-  走优雅 `terminate`。
+- 停单个会话：先向进程树里的可见窗口发 `WM_CLOSE`，让 scrcpy 自己拆掉交换链；
+  超时才 `taskkill /T /F`，且必须 `CREATE_NO_WINDOW`。裸启动 taskkill 会整屏闪一下。
+  等待在后台线程，界面不等。面板退出仍同步收尸。
 - 面板退出（`shutdown`）：树杀全部存活会话后关闭 Job Object。
 - 崩溃兜底：每个会话进程挂进 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的
   Job Object；面板无论怎么死（正常退出/崩溃/任务管理器强杀），内核关掉
@@ -183,6 +213,15 @@ scrcpy.exe + 会话 Duo.exe，还握着 panel 日志句柄（次日 WinError 32 
   SetForegroundWindow，随后静默退出。找不到可激活窗口（僵尸进程）才
   回退提示框并附任务管理器指引。实现：`duo-panel/src/winproc.rs`
   `activate_existing`。
+- **音频中继进程（2026-11，rustduo）**：音频不再寄生在视频会话里
+  （面板视频会话恒 `--no-audio`），由独立 `duo-core mirror --audio-only`
+  relay 承载（无窗口无视频，仅转发设备全局混音）。生命周期完全同会话：
+  relay 进程也挂进 ChildJob（面板无论怎么死，内核关 job 时一并拖走，
+  无孤儿）；`stop`/`reap`/`shutdown` 树杀 relay 并联动清 `audio.lock`
+  （仅当锁内 PID 是该 relay 的）。交棒/优先级/失败重试等仲裁语义见
+  `docs/mirroring-quality.md` §3；关键不变量：**任何音频仲裁绝不
+  terminate/重启存活视频会话**，owner 关窗后剩余窗接棒，同 serial
+  复用 relay 进程（零空窗）。
 
 
 ## §13 玻璃材质总开关（--glass 0|1 + --bar-theme）

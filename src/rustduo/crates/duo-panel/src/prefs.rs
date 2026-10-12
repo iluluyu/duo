@@ -325,6 +325,49 @@ pub fn save_audio_prefs(prefs: &BTreeMap<String, bool>) {
     save_flag_prefs("audio", "exclusive", prefs);
 }
 
+pub fn load_audio_priorities() -> BTreeMap<String, crate::sessions::AudioPriority> {
+    use crate::sessions::AudioPriority;
+    let mut prefs = BTreeMap::new();
+    let doc = read_doc();
+    let Some(audio) = doc.get("audio").and_then(|v| v.as_object()) else {
+        return prefs;
+    };
+    for (package, choice) in audio {
+        let priority = match choice.get("priority") {
+            Some(value) => match value.as_str() {
+                Some("off") => Some(AudioPriority::Off),
+                Some("normal") => Some(AudioPriority::Normal),
+                Some("high") => Some(AudioPriority::High),
+                _ => None,
+            },
+            None if choice.get("exclusive").and_then(|v| v.as_bool()) == Some(true) => {
+                Some(AudioPriority::High)
+            }
+            _ => None,
+        };
+        if let Some(priority) = priority {
+            prefs.insert(package.clone(), priority);
+        }
+    }
+    prefs
+}
+
+pub fn save_audio_priorities(prefs: &BTreeMap<String, crate::sessions::AudioPriority>) {
+    use crate::sessions::AudioPriority;
+    let audio: serde_json::Map<String, serde_json::Value> = prefs
+        .iter()
+        .map(|(package, priority)| {
+            let value = match priority {
+                AudioPriority::Off => "off",
+                AudioPriority::Normal => "normal",
+                AudioPriority::High => "high",
+            };
+            (package.clone(), serde_json::json!({"priority": value}))
+        })
+        .collect();
+    update_doc("audio", serde_json::Value::Object(audio));
+}
+
 /// 断开保留画面（behavior 节）。
 pub fn load_behavior_prefs() -> BTreeMap<String, bool> {
     load_flag_prefs("behavior", "keep_vd")
@@ -529,6 +572,39 @@ mod tests {
             save_scale_prefs(&scale);
             assert_eq!(load_scale_prefs().get("a.b"), Some(&2.0));
             assert_eq!(load_audio_prefs().get("a.b"), Some(&true), "audio 节仍在");
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn audio_priorities_migrate_roundtrip_and_preserve_other_sections() {
+        use crate::sessions::AudioPriority;
+        let _guard = lock_home();
+        let home = scratch("audio-priorities");
+        with_home(&home, || {
+            let mut doc = serde_json::Map::new();
+            doc.insert("pinned".into(), serde_json::json!(["a.b"]));
+            doc.insert(
+                "audio".into(),
+                serde_json::json!({
+                    "legacy": {"exclusive": true},
+                    "disabled": {"priority": "off", "exclusive": true},
+                    "normal": {"priority": "normal"},
+                    "invalid": {"priority": "bogus", "exclusive": true},
+                    "bad": 42
+                }),
+            );
+            write_doc(&doc);
+            let mut prefs = load_audio_priorities();
+            assert_eq!(prefs.get("legacy"), Some(&AudioPriority::High));
+            assert_eq!(prefs.get("disabled"), Some(&AudioPriority::Off));
+            assert_eq!(prefs.get("normal"), Some(&AudioPriority::Normal));
+            assert!(!prefs.contains_key("invalid"));
+            assert!(!prefs.contains_key("bad"));
+            prefs.insert("legacy".into(), AudioPriority::Normal);
+            save_audio_priorities(&prefs);
+            assert_eq!(load_audio_priorities(), prefs);
+            assert_eq!(load_pinned_prefs(), vec!["a.b"]);
         });
         let _ = std::fs::remove_dir_all(&home);
     }

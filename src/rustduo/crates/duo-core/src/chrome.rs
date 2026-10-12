@@ -144,6 +144,9 @@ pub struct OverlayArgs {
     pub glass: bool,
     /// light | dark | system（仅普通材质消费）。
     pub bar_theme: String,
+    /// duo-core 会话根 pid；>0 时 overlay 首绑限定其进程树（同标题多设备
+    /// 抢绑消除）。0 = 旧调用面，不传参。
+    pub owner_pid: u32,
 }
 
 impl Default for OverlayArgs {
@@ -165,6 +168,7 @@ impl Default for OverlayArgs {
             pin_file: None,
             glass: true,
             bar_theme: "system".into(),
+            owner_pid: 0,
         }
     }
 }
@@ -212,6 +216,10 @@ pub fn overlay_command(args: &OverlayArgs) -> Vec<String> {
     if args.corner_radius_dip > 0 {
         argv.push("--corner-radius".into());
         argv.push(args.corner_radius_dip.to_string());
+    }
+    if args.owner_pid > 0 {
+        argv.push("--owner-pid".into());
+        argv.push(args.owner_pid.to_string());
     }
     argv
 }
@@ -412,6 +420,8 @@ impl ChromeOverlay {
                 Some(pin) => Some(wsl_to_windows_path(pin)?),
                 None => None,
             },
+            // duo-core 自己就是会话进程树根（scrcpy 经 Scoop shim 仍是后代）。
+            owner_pid: std::process::id(),
             ..args
         });
         Ok(Self {
@@ -560,6 +570,25 @@ mod tests {
     }
 
     #[test]
+    fn overlay_source_binds_visible_scrcpy_only() {
+        // 顶栏绑定契约（docs/window-experience.md §10）：枚举 + 可见/根窗/
+        // 标题/进程名 scrcpy 过滤；首绑无死线；绑定进程退出即退 overlay。
+        assert!(OVERLAY_SOURCE_TEXT.contains("EnumWindows"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("GetWindowTextW"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("\"scrcpy\", true) != 0"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("FindVideoWindow"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("waiting for visible scrcpy window"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("exited, closing"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("--owner-pid"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("CreateToolhelp32Snapshot"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("IsDescendantOf"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("owner \" + _ownerPid + \" gone"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("TriggerTop = 36"));
+        assert!(OVERLAY_SOURCE_TEXT.contains("InTopHotZone"));
+        assert!(!OVERLAY_SOURCE_TEXT.contains("_cursorMoved"));
+    }
+
+    #[test]
     fn source_stamp_is_sha256_of_source() {
         let mut hasher = Sha256::new();
         hasher.update(OVERLAY_SOURCE_TEXT.as_bytes());
@@ -660,6 +689,16 @@ mod tests {
         assert_eq!(value_after(&argv, "--adb"), "C:\\a.exe");
         assert_eq!(value_after(&argv, "--home"), "1");
         assert!(!argv.join(" ").contains("TitleB64"));
+        assert!(!argv.iter().any(|a| a == "--owner-pid"), "0 = 旧调用不传");
+    }
+
+    #[test]
+    fn overlay_command_carries_owner_pid() {
+        let argv = overlay_command(&OverlayArgs {
+            owner_pid: 4242,
+            ..args("/x.exe", "t", "s", "a", false)
+        });
+        assert_eq!(value_after(&argv, "--owner-pid"), "4242");
     }
 
     #[test]

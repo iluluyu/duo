@@ -3,8 +3,9 @@
 //!
 //! scrcpy 在建屏时一次性设定虚拟屏密度，竖屏体验取决于按目标窗口几何
 //! 选密度：横屏 = flex 屏（自由跟随窗口）；竖屏 = 定尺寸固定屏（贴右缘
-//! 的塔形窗口）。PowerShell 工作区探测属进程层（winproc 移植，0.3），
-//! 此处只落几何推导。
+//! 的塔形窗口）。目标屏工作区探测（PMv2 物理像素 + origin + 有效 DPI，
+//! 2026-11）见 launch_monitor；多显示器开窗/密度语义论证见
+//! docs/mirroring-quality.md §5b。
 
 use crate::aspects::scaled_size;
 use crate::engine::{DisplayMode, DisplaySpec, WindowGeometry};
@@ -26,6 +27,61 @@ pub struct WorkArea {
     pub height: i64,
 }
 
+/// 启动目标屏：origin 为工作区左上角的全局（虚拟桌面）坐标——副屏/负
+/// 坐标屏非零；area 为物理像素工作区；effective_dpi 为宿主缩放（144 =
+/// 150%）；primary 标记主屏（flex 主屏沿用 OS 默认摆窗，见 §5b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetMonitor {
+    pub origin_x: i64,
+    pub origin_y: i64,
+    pub area: WorkArea,
+    pub effective_dpi: u32,
+    pub primary: bool,
+}
+
+/// native-canvas 初窗宽度上限（DIP，96 基准）：≈ 手机伴随窗宽度。
+pub const HOST_INITIAL_DIP_WIDTH: i64 = 600;
+
+/// DIP → 目标屏物理像素（600 DIP @144dpi → 900px）。
+pub fn dip_px(dip: i64, effective_dpi: u32) -> i64 {
+    dip * i64::from(effective_dpi.max(1)) / 96
+}
+
+/// 面板 Sessions 默认 spawner 启动时钉入的光标点（DUO_HOST_X/DUO_HOST_Y，
+/// 避免 adb 探测后光标已移屏）；两值都解析成功才生效。
+pub fn env_pinned_point() -> Option<(i64, i64)> {
+    let x = std::env::var("DUO_HOST_X").ok()?.parse::<i64>().ok()?;
+    let y = std::env::var("DUO_HOST_Y").ok()?.parse::<i64>().ok()?;
+    Some((x, y))
+}
+
+/// 启动目标屏：env 钉点 > 光标 > 主屏回退（探测失败回退常量主屏）。
+pub fn launch_monitor() -> TargetMonitor {
+    resolve_target_monitor(env_pinned_point().or_else(cursor_position))
+}
+
+/// 目标屏裁决：给点取所在屏，无点回主屏；非 Windows 恒回退。
+pub fn resolve_target_monitor(point: Option<(i64, i64)>) -> TargetMonitor {
+    match point {
+        Some((x, y)) => probe_physical(x, y, false),
+        None => probe_physical(0, 0, true),
+    }
+    .unwrap_or_else(fallback_monitor)
+}
+
+fn fallback_monitor() -> TargetMonitor {
+    TargetMonitor {
+        origin_x: 0,
+        origin_y: 0,
+        area: WorkArea {
+            width: FALLBACK_WORK_AREA.0,
+            height: FALLBACK_WORK_AREA.1,
+        },
+        effective_dpi: 96,
+        primary: true,
+    }
+}
+
 /// 单一方向的显示模式推荐参数。
 ///
 /// display_width/height 只给竖屏（固定 WxH 屏）；横屏走 flex，无需显示
@@ -38,47 +94,109 @@ pub struct DisplayRecommendation {
     pub window: Option<WindowGeometry>,
 }
 
-/// 主显示器工作区（物理像素）。Windows：SetProcessDPIAware 后
-/// SPI_GETWORKAREA（真机物理像素，对译 monitor.py 的 PowerShell 探测
-/// 意图）；其余平台/探测失败回退 4K 减任务栏常量。
-#[cfg(windows)]
+/// 主显示器工作区（物理像素）。Windows：临时线程 PMv2 探测主屏 rcWork
+///（真机物理像素）；其余平台/探测失败回退 4K 减任务栏常量。
 pub fn primary_work_area() -> WorkArea {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetProcessDPIAware, SystemParametersInfoW, SPI_GETWORKAREA,
+    resolve_target_monitor(None).area
+}
+
+/// 光标位置（全局虚拟桌面坐标）；CLI 无 env 钉点时按光标选屏。
+#[cfg(windows)]
+pub fn cursor_position() -> Option<(i64, i64)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::HiDpi::{
+        SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT::default();
+    let result = unsafe {
+        let previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let result = GetCursorPos(&mut pt);
+        if !previous.is_invalid() {
+            SetThreadDpiAwarenessContext(previous);
+        }
+        result
+    };
+    result.ok()?;
+    Some((i64::from(pt.x), i64::from(pt.y)))
+}
+
+#[cfg(not(windows))]
+pub fn cursor_position() -> Option<(i64, i64)> {
+    None
+}
+
+/// 点 → 所在物理屏。临时线程 PMv2（用后恢复）保证 GetMonitorInfoW/
+/// GetDpiForMonitor 返回物理像素；default_to_primary 时无点回主屏。
+#[cfg(windows)]
+fn probe_physical(x: i64, y: i64, default_to_primary: bool) -> Option<TargetMonitor> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        MONITOR_DEFAULTTOPRIMARY,
+    };
+    use windows::Win32::UI::HiDpi::{
+        GetDpiForMonitor, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        MDT_EFFECTIVE_DPI,
     };
     unsafe {
-        let _ = SetProcessDPIAware();
-        let mut rect = RECT::default();
-        let probed = SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some(&mut rect as *mut RECT as *mut core::ffi::c_void),
-            Default::default(),
-        )
-        .is_ok();
-        if probed {
-            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-            if w >= 640 && h >= 480 {
-                return WorkArea {
-                    width: i64::from(w),
-                    height: i64::from(h),
-                };
+        let prev = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let flags = if default_to_primary {
+            MONITOR_DEFAULTTOPRIMARY
+        } else {
+            MONITOR_DEFAULTTONEAREST
+        };
+        let monitor = MonitorFromPoint(
+            POINT {
+                x: x as i32,
+                y: y as i32,
+            },
+            flags,
+        );
+        let mut target = None;
+        if !monitor.is_invalid() {
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let (w, h) = (
+                    i64::from(info.rcWork.right - info.rcWork.left),
+                    i64::from(info.rcWork.bottom - info.rcWork.top),
+                );
+                if w >= 640 && h >= 480 {
+                    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+                    let dpi =
+                        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
+                            .is_ok()
+                        {
+                            dpi_x.max(1)
+                        } else {
+                            96
+                        };
+                    target = Some(TargetMonitor {
+                        origin_x: i64::from(info.rcWork.left),
+                        origin_y: i64::from(info.rcWork.top),
+                        area: WorkArea {
+                            width: w,
+                            height: h,
+                        },
+                        effective_dpi: dpi,
+                        primary: info.dwFlags & 1 != 0,
+                    });
+                }
             }
         }
-    }
-    WorkArea {
-        width: FALLBACK_WORK_AREA.0,
-        height: FALLBACK_WORK_AREA.1,
+        if !prev.is_invalid() {
+            SetThreadDpiAwarenessContext(prev);
+        }
+        target
     }
 }
 
 #[cfg(not(windows))]
-pub fn primary_work_area() -> WorkArea {
-    WorkArea {
-        width: FALLBACK_WORK_AREA.0,
-        height: FALLBACK_WORK_AREA.1,
-    }
+fn probe_physical(_x: i64, _y: i64, _default_to_primary: bool) -> Option<TargetMonitor> {
+    None
 }
 
 /// 固定 16:9 横屏预设：flex 跟随窗口，无窗口几何（初始窗=显示预设）。
@@ -283,5 +401,37 @@ mod tests {
         assert_eq!(scaled.width.unwrap() % 2, 0);
         assert_eq!(scaled.height.unwrap() % 2, 0);
         assert_eq!((scaled.width, scaled.height), (Some(2196), Some(1174)));
+    }
+
+    #[test]
+    fn dip_px_scales_with_effective_dpi() {
+        // DIP 按 96 基准换算：4K@144%、副屏@125%、无缩放。
+        assert_eq!(dip_px(600, 96), 600);
+        assert_eq!(dip_px(600, 120), 750);
+        assert_eq!(dip_px(600, 144), 900);
+    }
+
+    #[test]
+    fn fallback_monitor_is_primary_at_origin() {
+        // 探测失败回退：主屏、origin 0、4K-任务栏、96dpi。
+        let m = fallback_monitor();
+        assert!(m.primary);
+        assert_eq!((m.origin_x, m.origin_y), (0, 0));
+        assert_eq!(
+            (m.area.width, m.area.height),
+            (FALLBACK_WORK_AREA.0, FALLBACK_WORK_AREA.1)
+        );
+        assert_eq!(m.effective_dpi, 96);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_target_monitor_falls_back_off_windows() {
+        // 非 Windows 恒回退：无点与有点同形（主屏常量几何）。
+        assert_eq!(resolve_target_monitor(None), fallback_monitor());
+        assert_eq!(
+            resolve_target_monitor(Some((-9999, -9999))),
+            fallback_monitor()
+        );
     }
 }

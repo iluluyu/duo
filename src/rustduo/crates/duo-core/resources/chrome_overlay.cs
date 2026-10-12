@@ -137,6 +137,10 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
             public static extern IntPtr FindWindowW(string cls, string title);
+        public delegate bool EnumWindowsProc(IntPtr h, IntPtr lparam);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lparam);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            public static extern int GetWindowTextW(IntPtr h, StringBuilder text, int count);
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
@@ -223,6 +227,22 @@ namespace DuoChrome
         [DllImport("user32.dll")] public static extern bool AdjustWindowRectEx(
             ref RECT r, uint style, bool menu, uint exStyle);
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll")] public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+        [DllImport("kernel32.dll")] public static extern bool Process32FirstW(IntPtr snap, ref PROCESSENTRY32W e);
+        [DllImport("kernel32.dll")] public static extern bool Process32NextW(IntPtr snap, ref PROCESSENTRY32W e);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct PROCESSENTRY32W
+        {
+            public uint dwSize, cntUsage, th32ProcessID;
+            public IntPtr th32DefaultHeapID;
+            public uint th32ModuleID, cntThreads, th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szExeFile;
+        }
         [DllImport("user32.dll")] public static extern IntPtr SendMessageW(
             IntPtr h, uint msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] public static extern bool ReleaseCapture();
@@ -305,6 +325,7 @@ namespace DuoChrome
             string barTheme = "system";
             string embedStyle = "immersive";
             int videoW = 0, videoH = 0, cornerDip = 0;
+            uint ownerPid = 0;
             for (int i = 0; i + 1 < argv.Length; i += 2)
             {
                 if (argv[i] == "--title") title = argv[i + 1];
@@ -324,6 +345,7 @@ namespace DuoChrome
                 else if (argv[i] == "--pin-file") pinFile = argv[i + 1];
                 else if (argv[i] == "--embed") embed = argv[i + 1] == "1";
                 else if (argv[i] == "--embed-style") embedStyle = argv[i + 1];
+                else if (argv[i] == "--owner-pid") uint.TryParse(argv[i + 1], out ownerPid);
             }
             if (title == null || serial == null || adb == null)
             {
@@ -334,7 +356,7 @@ namespace DuoChrome
                     + "[--chrome-bottom immersive|native|none] "
                     + "[--pin-top 0|1] [--pin-file <path>] [--glass 0|1] "
                     + "[--bar-theme light|dark|system] [--embed 0|1] "
-                    + "[--embed-style immersive|native]");
+                    + "[--embed-style immersive|native] [--owner-pid <n>]");
                 return 2;
             }
             NativeMethods.SetProcessDPIAware();
@@ -370,7 +392,7 @@ namespace DuoChrome
             }
             using (Controller c = new Controller(
                 title, serial, adb, home, mode, videoW, videoH, sessionLog, cornerDip,
-                topMode, bottomMode, pinTop, pinFile, glass, barTheme))
+                topMode, bottomMode, pinTop, pinFile, glass, barTheme, ownerPid))
             {
                 Application.Run();
             }
@@ -3455,10 +3477,8 @@ namespace DuoChrome
         private const int TickMs = 50;
         private const int SampleMs = 300;
         private const int CapsuleSampleMs = 300;   // trio #1 acrylic refresh
-        private const int FirstWaitMs = 12000;
-        private const int LostWaitMs = 15000;
-        private const int TriggerTop = 6;      // logical px reveal band
-        private const int RetainTop = 48;      // logical px hysteresis
+        private const int TriggerTop = 36;     // logical px, covers the capsule rest band
+        private const int RetainTop = 52;      // logical px leave hysteresis
         private const int TopMargin = 10;      // logical px from top-right
         private const int MaxGraceMs = 700;
 
@@ -3472,7 +3492,11 @@ namespace DuoChrome
         private readonly ChinWindow _island;        // native 模式的全屏后备：沉浸小横条
         private readonly TopWindow _top;
         private IntPtr _hwnd = IntPtr.Zero;
+        private uint _videoPid;                   // 绑定窗属主 pid（docs/window-experience.md §10 顶栏绑定）
+        private readonly uint _ownerPid;          // duo-core 会话根 pid（0=旧调用，无此门）
         private int _waitedMs;
+        private NativeMethods.EnumWindowsProc _findProc;   // 枚举回调防 GC
+        private Dictionary<uint, uint> _parents;  // 发现拍内复用的父链快照
         private bool _repaired;
         private bool _fakedMax;
         private int _fakedMode;                    // 1 aspect fit, 2 full fill
@@ -3492,12 +3516,7 @@ namespace DuoChrome
         private NativeMethods.WinEventDelegate _fgHookProc;
         private IntPtr _fgHook = IntPtr.Zero;
         private int _ticks;
-        // 2026-09-09 启动沉浸（用户报告：按投屏时窗口不够沉浸，动一下才沉浸）：
-        // 窗口在静止光标下生成（点面板“投屏”按钮后光标停在窗口顶/底边附近）
-        // 时，距离触发的胶囊/下巴会在启动瞬间自己弹出。_cursorMoved = 首次
-        // 真实位移（≥ S(2)）之后才允许 proximity 露出；首个采样只作锚点。
-        private bool _cursorMoved;
-        private Point _cursorAnchor = new Point(int.MinValue, int.MinValue);
+
         private bool _topPinned;              // 右键胶囊固定（见 TopPinned）
         private readonly string _pinFile;    // 按应用持久化文件（null = 会话内）
         private EdgeStrip[] _strips;
@@ -3674,9 +3693,10 @@ namespace DuoChrome
         public Controller(string title, string serial, string adb, bool home,
             string displayMode, int videoW, int videoH, string sessionLog, int cornerDip,
             string topMode, string bottomMode, bool pinTop, string pinFile, bool glass,
-            string barTheme)
+            string barTheme, uint ownerPid)
         {
             _title = title; _serial = serial; _adb = adb;
+            _ownerPid = ownerPid;   // 同标题多设备抢绑消除：首绑限定后代（§10）
             _homeEnabled = home;
             _displayMode = displayMode == null ? "flex" : displayMode;
             _topMode = NormalizeBarMode(topMode);
@@ -4683,10 +4703,28 @@ namespace DuoChrome
             // path is already current.
             if (_resizing) UpdateResize();
             else if (_moving) UpdateMove();
-            if (_hwnd == IntPtr.Zero || !NativeMethods.IsWindow(_hwnd))
+            if (_hwnd == IntPtr.Zero)
             {
                 HideBars();          // never linger bars over a dead window
                 HideStrips();        // ...and never leave hot zones behind
+                Discover();
+                return;
+            }
+            if (!NativeMethods.IsWindow(_hwnd))
+            {
+                // 绑定窗已毁：属主还活着=scrcpy 重建窗（同 pid 重绑）；
+                // 进程已退=会话真结束，overlay 随之退出（不重发现——会抢绑
+                // 别的同标题 scrcpy 会话）。契约见 docs/window-experience.md §10。
+                if (!PidAlive(_videoPid))
+                {
+                    Log.Write("video process " + _videoPid + " exited, closing");
+                    HideBars();
+                    HideStrips();
+                    Application.ExitThread();
+                    return;
+                }
+                Log.Write("video window destroyed, rebinding pid=" + _videoPid);
+                _hwnd = IntPtr.Zero;
                 Discover();
                 return;
             }
@@ -4698,17 +4736,9 @@ namespace DuoChrome
             }
 
             Rectangle client = ClientRect();
+            Rectangle wr = WindowRect();
             Point cursor = CursorPosition();
-            // 启动沉浸门（见字段注释）：静止光标不武装距离露出；真实移动
-            // 一次后永久生效（含悬停不动的正常露出）。
-            if (!_cursorMoved)
-            {
-                if (_cursorAnchor.X != int.MinValue
-                    && Math.Abs(cursor.X - _cursorAnchor.X)
-                       + Math.Abs(cursor.Y - _cursorAnchor.Y) >= S(2))
-                    _cursorMoved = true;
-                _cursorAnchor = cursor;
-            }
+            bool topHot = !TopNone && !TopNative && InTopHotZone(client, wr, cursor);
             // 2026-09-09 组合修复：overBars 只统计【可见】巴的矩形。
             // 旧代码用隐藏巴的残留 Bounds——上巴 none 时胶囊从未 Show，
             // Bounds 停在屏幕原点 (0,0)+尺寸，成为一块幽灵热区：光标
@@ -4742,13 +4772,13 @@ namespace DuoChrome
                 NativeMethods.WindowFromPoint(probe), 2 /*GA_ROOT*/);
             bool foreground = NativeMethods.GetAncestor(
                 NativeMethods.GetForegroundWindow(), 2 /*GA_ROOT*/) == _hwnd;
+            bool occluded = rootAtCursor != _hwnd && !foreground && rootAtCursor != IntPtr.Zero;
             bool engaged = foreground || rootAtCursor == _hwnd
-                || overBars || overStrips || _resizing || _moving
+                || (!occluded && topHot) || overBars || overStrips || _resizing || _moving
                 // 固定 = 常驻（用户拍板 2026-09-10：失活不再隐藏；窗口可见
                 // 即露出——最小化/关闭由上方 IsIconic/IsWindow 门拦性；
                 // 被其他窗口盖住时三明治 z 序天然遮挡，不浮在别人上面）
                 || _topPinned;
-            Rectangle wr = WindowRect();
             EnforceFlexPin(wr);   // window never follows display rotation
             // Window-state duties run regardless of engagement: the corner
             // region must settle even when the cursor is away, and the
@@ -4783,7 +4813,7 @@ namespace DuoChrome
             // are always-on while engaged (agy v6 常驻可见).
             bool showTop = TopNative ? true
                 : (TopNone ? false
-                : (_cursorMoved && (_topPinned || ComputeTopVisibility(client, wr, cursor))));
+                : (_topPinned || topHot || (_top.Visible && _top.Bounds.Contains(cursor))));
             bool showChin = !BottomNone;
 
             SyncChin(client, showChin);
@@ -5069,14 +5099,15 @@ namespace DuoChrome
                 | 0x0010 /*SWP_NOACTIVATE*/);
         }
 
-        // 露出/保持带钳进窗口矩形（根因与日志证据见 docs/window-experience.md §10）
-        private bool ComputeTopVisibility(Rectangle client, Rectangle wr, Point cursor)
+        // 热区钳在窗口矩形内。进入即露出，离开用 RetainTop 短滞回。
+        private bool InTopHotZone(Rectangle client, Rectangle wr, Point cursor)
         {
-            bool inX = cursor.X >= client.Left && cursor.X < client.Right;
-            if (!inX) return _top.Visible && _top.Bounds.Contains(cursor);
-            if (cursor.Y >= wr.Top && cursor.Y < client.Top + S(TriggerTop)) return true;
-            return _top.Visible && cursor.Y >= wr.Top
-                && cursor.Y < client.Top + S(RetainTop);
+            if (cursor.X < wr.Left || cursor.X >= wr.Right) return false;
+            if (cursor.Y < wr.Top || cursor.Y >= wr.Bottom) return false;
+            int trigger = Math.Min(client.Top + S(TriggerTop), wr.Bottom);
+            int retain = Math.Min(client.Top + S(RetainTop), wr.Bottom);
+            if (cursor.Y < trigger) return true;
+            return _top.Visible && cursor.Y < retain;
         }
 
         /// <summary>巴窗显/隐归一：show = Show + Render（玻璃已在调用方
@@ -5360,21 +5391,111 @@ namespace DuoChrome
 
         // -- discovery + repair -------------------------------------------------
 
+        // 首绑契约：只绑「可见+根窗+标题精确+属主进程名 scrcpy」——FindWindowW
+        // 会先中同标题隐藏幽灵窗/别的会话（顶栏整场不出现的真因），见
+        // docs/window-experience.md §10 顶栏绑定。
+        private bool IsVideoWindow(IntPtr h, uint wantPid)
+        {
+            if (NativeMethods.GetAncestor(h, 2 /*GA_ROOT*/) != h) return false;
+            if (!NativeMethods.IsWindowVisible(h)) return false;
+            StringBuilder sb = new StringBuilder(512);
+            if (NativeMethods.GetWindowTextW(h, sb, sb.Capacity) == 0) return false;
+            if (sb.ToString() != _title) return false;
+            uint pid;
+            NativeMethods.GetWindowThreadProcessId(h, out pid);
+            if (pid == 0 || (wantPid != 0 && pid != wantPid)) return false;
+            if (wantPid != 0) return true;   // 同 pid 重建：身份已由 pid 保证
+            try
+            {
+                if (string.Compare(
+                    Process.GetProcessById((int)pid).ProcessName, "scrcpy", true) != 0)
+                    return false;
+            }
+            catch (ArgumentException) { return false; }   // 枚举与查询间进程退出
+            // owner 后代门：同标题多 scrcpy 会话只绑本会话树（§10）；缺参退化。
+            if (_ownerPid == 0) return true;
+            if (_parents == null) _parents = SnapshotParents();
+            return IsDescendantOf(pid, _ownerPid, _parents);
+        }
+
+        // Toolhelp32 父链快照（每发现拍至多一次，非 WMI 轮询）。
+        private static Dictionary<uint, uint> SnapshotParents()
+        {
+            Dictionary<uint, uint> parents = new Dictionary<uint, uint>();
+            IntPtr snap = NativeMethods.CreateToolhelp32Snapshot(2, 0);
+            if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return parents;
+            try
+            {
+                NativeMethods.PROCESSENTRY32W e = new NativeMethods.PROCESSENTRY32W();
+                e.dwSize = (uint)Marshal.SizeOf(typeof(NativeMethods.PROCESSENTRY32W));
+                if (!NativeMethods.Process32FirstW(snap, ref e)) return parents;
+                do { parents[e.th32ProcessID] = e.th32ParentProcessID; }
+                while (NativeMethods.Process32NextW(snap, ref e));
+            }
+            finally { NativeMethods.CloseHandle(snap); }
+            return parents;
+        }
+
+        private static bool IsDescendantOf(uint pid, uint root, Dictionary<uint, uint> parents)
+        {
+            for (int depth = 0; depth < 16 && pid != 0; depth++)
+            {
+                uint parent;
+                if (!parents.TryGetValue(pid, out parent)) return false;
+                if (parent == root) return true;
+                pid = parent;
+            }
+            return false;   // 父链断/成环（pid 复用）按非后代处理
+        }
+
+        private IntPtr FindVideoWindow(uint wantPid)
+        {
+            IntPtr found = IntPtr.Zero;
+            _parents = null;   // 每发现拍重拍父链快照
+            _findProc = delegate(IntPtr h, IntPtr lparam)
+            {
+                if (IsVideoWindow(h, wantPid)) { found = h; return false; }
+                return true;
+            };
+            NativeMethods.EnumWindows(_findProc, IntPtr.Zero);
+            return found;
+        }
+
+        private static bool PidAlive(uint pid)
+        {
+            if (pid == 0) return false;
+            try { Process.GetProcessById((int)pid); return true; }
+            catch (ArgumentException) { return false; }
+        }
+
         private void Discover()
         {
-            _hwnd = NativeMethods.FindWindowW(null, _title);
+            _hwnd = FindVideoWindow(_videoPid);
             if (_hwnd == IntPtr.Zero)
             {
-                _waitedMs += TickMs;
-                if (_waitedMs >= FirstWaitMs)
+                // 首绑晚到无死线：视频窗可晚于 overlay 任意久（无线 adb 首连/
+                // server push/首帧都可能超旧的 12s 死线）；overlay 生命周期归
+                // duo-core 会话树管。重绑等待中属主/根进程死了则随之退出。
+                if (_videoPid != 0 && !PidAlive(_videoPid))
                 {
-                    Log.Write("giving up: window never appeared");
+                    Log.Write("video process " + _videoPid + " exited while rebinding, closing");
                     Application.ExitThread();
+                    return;
                 }
+                if (_ownerPid != 0 && !PidAlive(_ownerPid))
+                {
+                    Log.Write("owner " + _ownerPid + " gone, closing");
+                    Application.ExitThread();
+                    return;
+                }
+                _waitedMs += TickMs;
+                if (_waitedMs == TickMs)
+                    Log.Write("waiting for visible scrcpy window titled '" + _title + "'");
                 return;
             }
+            NativeMethods.GetWindowThreadProcessId(_hwnd, out _videoPid);
             _discoveredAt = Environment.TickCount;
-            Log.Write("window found hwnd=0x" + _hwnd.ToString("x"));
+            Log.Write("window found hwnd=0x" + _hwnd.ToString("x") + " pid=" + _videoPid);
             _waitedMs = 0;
             Repair();
             if (_hook == IntPtr.Zero)

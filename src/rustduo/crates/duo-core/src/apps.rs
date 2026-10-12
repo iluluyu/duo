@@ -4,8 +4,9 @@
 //! 图标合成留 Python 面板侧，见 duo/core/apps.py。
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::catalog::{catalog_by_package, APP_CATALOG};
 use crate::quiet::quiet_command;
@@ -202,6 +203,42 @@ pub fn merge_catalog(packages: &[String]) -> Vec<AppRow> {
 
 /// 一次 ``wm density`` 查询：生效密度（Override 优先）。失败/无数字回
 /// None（调用方回退 160，对译 device_density 的容错语义）。
+pub const DENSITY_CACHE_TTL: Duration = Duration::from_secs(600);
+
+pub fn density_cache_path(serial: &str) -> PathBuf {
+    let safe = serial.replace([':', '/', '\\'], "-");
+    crate::paths::data_dir(None).join(format!("density-{safe}.txt"))
+}
+
+pub fn read_density_cache(path: &Path, now: SystemTime) -> Option<u32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    let dpi = lines.next()?.trim().parse::<u32>().ok()?;
+    let stamped = lines.next()?.trim().parse::<u64>().ok()?;
+    let now_s = now.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    (now_s.saturating_sub(stamped) < DENSITY_CACHE_TTL.as_secs()).then_some(dpi)
+}
+
+pub fn write_density_cache(path: &Path, dpi: u32, now: SystemTime) {
+    let Ok(now_s) = now.duration_since(UNIX_EPOCH) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, format!("{dpi}\n{}\n", now_s.as_secs()));
+}
+
+pub fn cached_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
+    let path = density_cache_path(serial);
+    if let Some(dpi) = read_density_cache(&path, SystemTime::now()) {
+        return Some(dpi);
+    }
+    let dpi = run_device_density(adb_binary, serial)?;
+    write_density_cache(&path, dpi, SystemTime::now());
+    Some(dpi)
+}
+
 pub fn run_device_density(adb_binary: &str, serial: &str) -> Option<u32> {
     let output = quiet_command(adb_binary)
         .args(["-s", serial, "shell", "wm", "density"])
@@ -282,6 +319,16 @@ mod tests {
         );
         assert_eq!(parse_device_density("Physical density: 420"), Some(420));
         assert_eq!(parse_device_density(""), None);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let path =
+            std::env::temp_dir().join(format!("duo-density-test-{}.txt", std::process::id()));
+        write_density_cache(&path, 356, now);
+        assert_eq!(
+            read_density_cache(&path, now + Duration::from_secs(30)),
+            Some(356)
+        );
+        assert_eq!(read_density_cache(&path, now + DENSITY_CACHE_TTL), None);
+        let _ = std::fs::remove_file(path);
         // 乱序出现仍按优先级裁决；无数字行忽略。
         assert_eq!(
             parse_device_density("Override density: 356\nPhysical density: 420"),

@@ -27,14 +27,12 @@ pub fn silent_command(program: &str, args: &[String]) -> Command {
     command
 }
 
-/// 终止 proc 及其全部后代整树。
+/// 终止 proc 及其全部后代整树。Windows 先让窗口自己收掉交换链，再静默 taskkill。
 pub fn terminate_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         if matches!(child.try_wait(), Ok(None)) {
-            let _ = Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &child.id().to_string()])
-                .status();
+            close_tree_quietly(child.id());
         }
     }
     #[cfg(not(windows))]
@@ -42,6 +40,123 @@ pub fn terminate_tree(child: &mut Child) {
         let _ = child.kill();
     }
     let _ = child.wait();
+}
+
+/// 结束进程树但不占用调用线程。面板关窗用这条，避免 taskkill 卡住界面。
+pub fn terminate_tree_detach(mut child: Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        if std::thread::Builder::new()
+            .name("duo-kill".into())
+            .spawn(move || terminate_tree(&mut child))
+            .is_err()
+        {
+            let _ = quiet_command("taskkill")
+                .args(["/T", "/F", "/PID", &pid])
+                .spawn();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        terminate_tree(&mut child);
+    }
+}
+
+#[cfg(windows)]
+fn close_tree_quietly(root: u32) {
+    use std::time::{Duration, Instant};
+    post_wm_close(&process_tree(root));
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < deadline {
+        if !pid_alive(root) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    let _ = quiet_command("taskkill")
+        .args(["/T", "/F", "/PID", &root.to_string()])
+        .status();
+}
+
+#[cfg(windows)]
+fn process_tree(root: u32) -> Vec<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut edges = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return vec![root];
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                edges.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+    }
+    let mut pids = vec![root];
+    let mut i = 0;
+    while i < pids.len() {
+        let parent = pids[i];
+        for &(pid, ppid) in &edges {
+            if ppid == parent && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        i += 1;
+    }
+    pids
+}
+
+#[cfg(windows)]
+fn post_wm_close(pids: &[u32]) {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+    };
+    struct Ctx<'a> {
+        pids: &'a [u32],
+    }
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &*(lparam.0 as *const Ctx);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if ctx.pids.contains(&pid) && IsWindowVisible(hwnd).as_bool() {
+            let _ = PostMessageW(hwnd, 0x0010, WPARAM(0), LPARAM(0));
+        }
+        BOOL(1)
+    }
+    let ctx = Ctx { pids };
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&ctx as *const Ctx as isize));
+    }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let live = GetExitCodeProcess(process, &mut code).is_ok() && code == 259;
+        let _ = CloseHandle(process);
+        live
+    }
 }
 
 /// Windows kill-on-close Job Object 容器。

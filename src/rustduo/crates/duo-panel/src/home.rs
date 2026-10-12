@@ -57,7 +57,16 @@ impl HomeLayout {
     }
 
     pub fn compute(w: f32, h: f32, has_pinned: bool, has_chips: bool) -> Self {
-        Self::compute_with_chips_height(w, h, has_pinned, if has_chips { 56.0 } else { 0.0 })
+        Self::compute_with_chips_height(
+            w,
+            h,
+            has_pinned,
+            if has_chips {
+                RUN_ICON + 2.0 * RUN_PAD
+            } else {
+                0.0
+            },
+        )
     }
 }
 
@@ -66,7 +75,7 @@ impl HomeLayout {
 /// 拖拽平移补位；2026-09-20 与设置页同构）。
 pub fn show(app: &mut PanelApp, ui: &mut egui::Ui) {
     let chips = app.running_chips();
-    let chips_h = running_card_height(ui.max_rect().width(), &chips, ui);
+    let chips_h = running_card_height(ui.max_rect().width(), &chips);
     let entries: Vec<AppEntry> = app.grid_entries();
     // 过渡状态按全量应用列表清理（不能用搜索结果：搜索隐藏/恢复会重播入场）。
     let live: HashSet<&str> = app.apps.apps.iter().map(|e| e.package.as_str()).collect();
@@ -1263,26 +1272,23 @@ fn load_icon_texture(
     tex
 }
 
-pub fn running_card_height(w: f32, chips: &[(String, String, bool)], ui: &egui::Ui) -> f32 {
+/// 运行卡布局：图标 40、图标间 6、卡内衬 12。
+const RUN_ICON: f32 = 40.0;
+const RUN_GAP: f32 = 6.0;
+const RUN_PAD: f32 = 12.0;
+
+/// 运行卡高度：按行数计，不随文字宽度变化。
+pub fn running_card_height(w: f32, chips: &[(String, String, bool)]) -> f32 {
     if chips.is_empty() {
         return 0.0;
     }
-    let inner_w = w - 2.0 * MARGIN - 24.0;
-    let mut rows: Vec<Vec<f32>> = vec![vec![]];
-    for (label, _, _) in chips {
-        let w = chip_width(ui, label);
-        let last = rows.last().unwrap();
-        let used: f32 = last.iter().sum::<f32>() + 8.0 * last.len().max(1) as f32;
-        if !last.is_empty() && used + w > inner_w {
-            rows.push(vec![w]);
-        } else {
-            rows.last_mut().unwrap().push(w);
-        }
-    }
-    rows.len() as f32 * 32.0 + (rows.len().saturating_sub(1)) as f32 * 8.0 + 24.0
+    let usable = (w - 2.0 * MARGIN - 2.0 * RUN_PAD).max(RUN_ICON);
+    let per_row = ((usable + RUN_GAP) / (RUN_ICON + RUN_GAP)).floor().max(1.0) as usize;
+    let rows = chips.len().div_ceil(per_row);
+    rows as f32 * RUN_ICON + (rows.saturating_sub(1)) as f32 * RUN_GAP + 2.0 * RUN_PAD
 }
 
-/// 运行卡（Main.qml chipsZone：bottom 56、卡内 Flow 间距 8 芯片）。
+/// 运行卡（Main.qml chipsZone：bottom 56；每会话一枚 40px 图标）。
 fn running_card(
     app: &mut PanelApp,
     ui: &mut egui::Ui,
@@ -1316,35 +1322,21 @@ fn running_card(
     } else {
         paint::card(ui.painter(), card, &t);
     }
-    let mut x = card.left() + 12.0;
-    let mut y = card.top() + 12.0;
+    let mut x = card.left() + RUN_PAD;
+    let mut y = card.top() + RUN_PAD;
     for (key, label, clickable) in chips.iter() {
-        let w = chip_width(ui, label);
-        if x + w > card.right() - 12.0 {
-            x = card.left() + 12.0;
-            y += 32.0 + 8.0;
+        if x + RUN_ICON > card.right() - RUN_PAD {
+            x = card.left() + RUN_PAD;
+            y += RUN_ICON + RUN_GAP;
         }
-        let chip = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, 32.0));
-        chip_ui(app, ui, chip, key, label, *clickable);
-        x += w + 8.0;
+        let icon = Rect::from_min_size(Pos2::new(x, y), Vec2::splat(RUN_ICON));
+        running_icon_ui(app, ui, icon, key, label, *clickable);
+        x += RUN_ICON + RUN_GAP;
     }
 }
 
-fn chip_width(ui: &egui::Ui, label: &str) -> f32 {
-    let galley = ui.ctx().fonts(|f| {
-        f.layout_job(egui::text::LayoutJob::simple(
-            label.to_owned(),
-            egui::FontId::proportional(12.0),
-            egui::Color32::WHITE,
-            f32::INFINITY,
-        ))
-    });
-    // Row: dot 8 + 间距 8 + 文本 + ✕ 24 + 左右 pad 12+12 + 间距 8
-    galley.size().x + 8.0 + 8.0 + 24.0 + 8.0 + 24.0
-}
-
-/// 芯片（Main.qml SessionChip：h32 r16、点+标签可点、✕ hover 露出）。
-fn chip_ui(
+/// 单枚运行图标：本体点击拉回会话（镜像禁点），右上 × 悬停露出、点击停止。
+fn running_icon_ui(
     app: &mut PanelApp,
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1352,61 +1344,85 @@ fn chip_ui(
     label: &str,
     clickable: bool,
 ) {
-    let t = app.tokens;
+    let package = key.split_once("::").map(|(_, p)| p).unwrap_or(key);
     let resp = ui.allocate_rect(rect, Sense::click());
-    let chip_bg = if app.settings.draft.glass_enabled {
-        crate::theme::srgba(
-            t.card.r(),
-            t.card.g(),
-            t.card.b(),
-            if t.kind == ThemeKind::Dark { 210 } else { 230 },
-        )
-    } else {
-        t.card
-    };
-    paint::rounded_fill(ui.painter(), rect, 16.0, chip_bg);
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(16),
-        egui::Stroke::new(1.0_f32, t.card_border),
-        egui::StrokeKind::Inside,
-    );
-    paint::dot(
-        ui.painter(),
-        Pos2::new(rect.left() + 12.0 + 4.0, rect.center().y),
-        8.0,
-        1.0,
-        t.running,
-    );
-    paint::text_left(
-        ui.painter(),
-        Pos2::new(rect.left() + 12.0 + 8.0 + 8.0, rect.center().y - 6.0),
-        label,
-        12.0,
-        t.ink,
-    );
-    if resp.hovered() {
-        let stop = Rect::from_min_size(
-            Pos2::new(rect.right() - 12.0 - 24.0, rect.center().y - 12.0),
-            Vec2::splat(24.0),
-        );
-        let sresp = ui.allocate_rect(stop, Sense::click());
-        let wash = if sresp.hovered() {
-            t.danger_on_card
+    let painter = ui.painter().with_clip_rect(ui.max_rect());
+    if package == crate::sessions::MIRROR_KEY {
+        if let Some(tex) = mirror_texture(app, ui.ctx(), rect.width()) {
+            painter.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                white_alpha(1.0),
+            );
         } else {
-            egui::Color32::TRANSPARENT
-        };
-        paint::rounded_fill(ui.painter(), stop, 12.0, wash);
-        let x_color = if sresp.hovered() { t.danger } else { t.ink2 };
-        paint::x_mark(ui.painter(), stop.center(), x_color);
+            draw_running_fallback(&painter, package, label, rect);
+        }
+    } else if let Some(entry) = running_entry(app, package) {
+        paint_glyph(app, ui, &painter, entry, rect, RUN_ICON, 1.0);
+    } else {
+        draw_running_fallback(&painter, package, label, rect);
+    }
+    let badge = rect.right_top() + egui::vec2(-9.0, 9.0);
+    let stop = Rect::from_center_size(badge, Vec2::splat(22.0));
+    let sresp = ui.allocate_rect(stop, Sense::click());
+    if resp.hovered() || sresp.hovered() {
+        paint::close_badge(&painter, badge, sresp.hovered());
         if sresp.clicked() {
             app.stop_session(key);
+            ui.ctx().request_repaint();
         }
     }
-    if clickable && resp.clicked() && !resp.hovered() {
-        // 绿点+标签整体可点 = 拉回该会话虚拟屏（镜像会话禁点）
+    if clickable && resp.clicked() && !sresp.clicked() {
         app.focus_session(key);
     }
+}
+
+/// 按 package 找运行中应用的 AppEntry。
+fn running_entry<'a>(app: &'a PanelApp, package: &str) -> Option<&'a AppEntry> {
+    app.apps.apps.iter().find(|e| e.package == package)
+}
+
+/// 无条目/无图标兜底：fallback 色块 + 标签首字（同网格 fallback 语言）。
+fn draw_running_fallback(painter: &egui::Painter, package: &str, label: &str, rect: Rect) {
+    painter.add(paint::g2_squircle(
+        rect,
+        crate::theme::fallback_color(package),
+    ));
+    let ch: String = label.chars().next().map(String::from).unwrap_or_default();
+    paint::text_centered(
+        painter,
+        rect.center(),
+        &ch,
+        rect.width() * 0.32,
+        true,
+        egui::Color32::WHITE,
+    );
+}
+
+/// 镜像图标贴图：内嵌 assets/duo.png，借 icon_tex 缓存按 DPR 生成圆角贴图。
+fn mirror_texture(app: &PanelApp, ctx: &egui::Context, size: f32) -> Option<egui::TextureHandle> {
+    let ppp = ctx.pixels_per_point();
+    let px = ((size * ppp).round() as u32).max(1);
+    let key = (std::path::PathBuf::from("embedded:assets/duo.png"), px);
+    if let Some(cached) = app.icon_tex.borrow().get(&key) {
+        return cached.clone();
+    }
+    let bytes = include_bytes!("../../../assets/duo.png");
+    let loaded = duo_core::icongen::panel_icon_rgba(bytes, px)
+        .map_err(|err| eprintln!("duo-panel: 镜像图标生成失败: {err}"))
+        .ok();
+    let tex = loaded.map(|rgba| {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([px as usize, px as usize], rgba.as_raw());
+        ctx.load_texture(
+            format!("duo-icon:mirror#{px}"),
+            image,
+            egui::TextureOptions::LINEAR,
+        )
+    });
+    app.icon_tex.borrow_mut().insert(key, tex.clone());
+    tex
 }
 
 /// Toast（app.rs update 调用；Main.qml statusToast：bottom16 h36 r18 pillFill）。
@@ -1476,8 +1492,8 @@ mod tests {
     fn grid_bottom_stops_before_running_zone() {
         let with_chips = HomeLayout::compute(420.0, 660.0, false, true);
         assert!(
-            (with_chips.grid.bottom() - (660.0 - 56.0 - 56.0 - 14.0)).abs() < 0.01,
-            "有芯片时网格底让位 56 + chips_h + 14"
+            (with_chips.grid.bottom() - (660.0 - 56.0 - 64.0 - 14.0)).abs() < 0.01,
+            "有芯片时网格底让位 56 + 单行图标卡高 64 + 14"
         );
         let custom_chips = HomeLayout::compute_with_chips_height(420.0, 660.0, false, 80.0);
         assert!(

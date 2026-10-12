@@ -43,17 +43,43 @@ flex 虚拟屏 1920x1080 (id=3) 60fps。
 fps 必须与面板**整除**，否则 judder：**60 = 默认**（视频 1:1、解码减半）；
 120 = 极致动画档（需 PC 软解余量）；40/30 = 省电；**90 禁用**（不整除，旧默认已改）。
 
-## 3. 音频（settings.audio_policy，默认 latest）
+## 3. 音频（settings.audio_policy，默认 latest；2026-11 独立 relay 架构）
 
-scrcpy 捕获**全局混音**——多会话各带音频必重叠。零损失并行 = 多应用进同一虚拟屏
-（`am start --display N` 直达）。策略三态：`latest`（新会话有声时其他自动静音重启，
-面板侧 proc.terminate→muted 重启）/ `all`（自担混音）/ `off`。
-编码 flac + `--audio-buffer=100` + `--audio-output-buffer=10`（防回退 5ms 爆音）。
+打开应用时，已指定 serial 不再查 `adb devices`；设备密度缓存 10 分钟；
+唤醒与贴窗并行；音频中继让出约 600ms，避免和视频抢 adb。
+
+scrcpy 捕获**全局混音**（REMOTE_SUBMIX）——多路采集互相争用必爆音（PC 侧
+SetMute 压不住，Grok 真机确认）。旧架构 latest 策略靠「terminate 旧会话→
+静音重启」交棒音频，副作用：打开新应用会把存活视频窗口整棵杀掉重建
+（真机复现：开设置后计算器 HWND/PID 变化）。**现行架构**：面板视频会话
+一律 `--no-audio`（永不因音频被终止/重启）；音频由独立**音频中继**
+`duo-core mirror --audio-only` 承载（scrcpy `--no-window`，隐含无视频无
+控制，无 new-display/start-app/chrome，不建虚拟屏不启应用；复用
+SessionSpec/AudioLock/设备拔出监视，缓冲 flac + `--audio-buffer=100` +
+`--audio-output-buffer=10` 防退回 5ms 爆音）。
+
+**会话优先级**（右键菜单，prefs `audio` 节 `{priority: "off"|"normal"|"high"}`，
+旧 `exclusive=true` 兼容映射 high）：High 压过 Normal；平级最新优先；
+Off 不请求。零损失并行 = 多应用进同一虚拟屏（`am start --display N`）。
+
+**relay 仲裁**（`duo-panel/src/sessions.rs::reconcile_relays`，幂等）：
+- `off`：全禁；`all`：**每设备一路**（同设备不重复采集，防 submix 争用；
+  多设备可多路——core 侧 all 不拿 AudioLock，第二设备不会被顶静音）；
+  `latest`（默认）：全局单路。owner = 优先级降序、平级最新优先的活请求者。
+- 交棒顺序恒为「回收不用的 relay（同 serial 活进程暂存复用）→ 终止剩余
+  → 再 spawn 新 relay」：新 relay 要拿 AudioLock，旧 relay 还活着会把
+  acquire 顶失败（静音退出 = 音频丢失）。视频会话在仲裁中永不被触碰。
+- 同 serial 换 owner 复用 relay 进程（音频零空窗）；owner 关窗后剩余窗
+  接棒（同设备复用进程/跨设备换进程），仅当设备不再被转发才真丢音。
+- spawn 失败/relay 崩溃：进 pending 节流（2s）重仲裁补齐，不静默丢音，
+  不影响已有视频；toast 提示「音频中继启动失败：…」。
 仲裁锁 `audio.lock`：
 - Windows 侧利用 `OpenProcess` + `WaitForSingleObject` 判定 PID 真实存活，并校验
   进程映像名防 PID 回收重用；避免陈锁把后续会话永久判为静音（退回平板物理外放）。
-- `AudioLock` 实现 RAII `Drop`；`duo-panel` 在 terminate/stop 旧音频会话时联动清理锁。
-调研过程与备选方案存档：`docs/history/research-audio.md`。
+- `AudioLock` 实现 RAII `Drop`；`duo-panel` 终止 relay 时联动清理锁
+  （仅当锁内 PID == 该 relay PID）；relay 被拒锁时打印后退出（不空转）。
+调研过程与备选方案存档：`docs/history/research-audio.md`；进程树契约见
+`docs/window-experience.md` §12。
 
 ## 4. 其他旗标结论
 
@@ -86,7 +112,7 @@ docs/history/window-overlay-experiments.md §3。
 整数契约：每维 round 后奇数上调到偶（`aspects.scaled_size`，奇数显示高度
 易踩编码器/窗口整数配置），两维独立取整的 ≤1px 比例漂移由比例锁兑底。
 
-## 5b. 虚拟屏密度（2026-09-11 默认改桌面档；2026-10-06 flex 自适应）
+## 5b. 虚拟屏密度（2026-09-11 默认改桌面档；2026-10-06 flex 自适应；2026-11 fixed 对齐）
 
 `settings.dpi` 默认 **160**（mdpi 基准，1dp==1px，同屏 dp 最多 = 桌面观感；
 此前默认设备密度探测，元素物理尺寸同手机/平板）。「跟随设备」仍是可选项
@@ -99,9 +125,35 @@ docs/history/window-overlay-experiments.md §3。
 `--dpi` 且设置为出厂默认时，按主屏工作区短边自适应
 （`display_adaptive_dpi`：dpi = 160×短边px÷1080，1080p=160 零变化、
 2K≈201、4K≈304-309）。优先级：--dpi 钉扎 > 自定义设置 > 跟随设备
-（null+探测成功）> flex 自适应；fixed 模式不介入（平行视窗保障独立）。
+（null+探测成功）> 显示器自适应；fixed 模式 2026-11 起同链
+（`parallel_view_dpi_cap` 平行视窗降密退役：旧档 1440 短边→140 与
+配套窗口 ×160/140 放大一并移除，固定窗恒不放大超过画布 px；显式
+--dpi/自定义/跟随设备/native-canvas 初筛一律不受影响）。
 真机：4K 工作区 3840x2088 → 309，最大化画布 ~1088dp。
 回退链：设置页/覆盖 > 设备探测（仅 null）> 160。
+
+**多显示器目标屏（2026-11，`monitor.launch_monitor`）**：目标屏裁决链 =
+面板 env 钉点 `DUO_HOST_X`/`DUO_HOST_Y`（Sessions 默认 spawner 启动时钉
+光标位置，避免 adb 探测后光标已移屏）> CLI 光标（`GetCursorPos`）> 主屏
+回退（探测失败回退 4K-任务栏常量）。Windows 侧临时线程 PerMonitorV2
+（`SetThreadDpiAwarenessContext` + 用后恢复）+ `MonitorFromPoint`/
+`GetMonitorInfoW` 取**物理像素**工作区（rcWork，副屏/负坐标屏 origin
+非零）与 `GetDpiForMonitor` 有效 DPI；实测：主 0,0 3840x2088 dpi144、
+副 3840,375 2560x1380 dpi120。非 Windows 恒回退主屏常量。
+
+几何与密度语义：
+- 密度源改目标屏工作区短边（显示器自适应；副屏 2560x1380 → 204），
+  优先级链不变（--dpi > 自定义 > 跟随设备 > 自适应，flex/fixed 同链）；
+  显式 DPI 不受影响。
+- 开窗：fixed/portrait 落在目标工作区内（相对坐标 + origin，负 origin 原样传出）。
+  flex 主屏仍由 OS 默认摆窗；flex 副屏按 1920×1080 种子钳进该屏工作区并居中，
+  不把主屏尺寸贴到副屏原点。
+- `--native-canvas`（设备原生画布，如计算器 2400x3392/356）：初窗宽钉
+  600 DIP×目标屏 DPI/96（144dpi → 900px、120dpi → 750px），高按画布
+  比例，再钳工作区（原生分辨率直接铺满会得到巨窗）；显式 size/dpi
+  照旧尊重，只约束宿主初始窗口。
+- 跨屏拖窗：虚拟屏密度建屏时一次性固定，跨屏只影响宿主几何/宿主
+  DPI，不重设 `wm density`（ColorOS no-op）、不重建会话/丢任务。
 
 ## 6. PC 端解码与长期策略
 

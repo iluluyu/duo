@@ -132,6 +132,9 @@ pub struct EngineArgs {
     pub audio_codec: String,
     pub audio_buffer_ms: u32,
     pub audio_output_buffer_ms: u32,
+    /// 面板音频中继形态：`--no-window`（隐含无视频无控制），只发音频
+    /// 旗标——无 new-display/start-app/chrome/窗口几何（docs/mirroring-quality.md §3）。
+    pub audio_only: bool,
     pub window_title: Option<String>,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
@@ -171,6 +174,12 @@ fn int_flag(name: &str, value: Option<i64>) -> Vec<String> {
 impl EngineArgs {
     /// 编译为完整 scrcpy argv。参数顺序与 Python 实现一致。
     pub fn to_argv(&self, binary: &str) -> Result<Vec<String>, String> {
+        if self.audio_only {
+            let mut argv = vec![binary.to_string(), format!("--serial={}", self.serial)];
+            argv.extend(self.audio_flags());
+            argv.push("--no-window".into());
+            return Ok(argv);
+        }
         let mut argv = vec![binary.to_string(), format!("--serial={}", self.serial)];
         argv.extend(self.display.to_flags()?);
         if self.vd_keep_content && self.display.mode != DisplayMode::Mirror {
@@ -200,12 +209,7 @@ impl EngineArgs {
         if !self.audio {
             argv.push("--no-audio".into());
         } else {
-            argv.push(format!("--audio-codec={}", self.audio_codec));
-            argv.push(format!("--audio-buffer={}", self.audio_buffer_ms));
-            argv.push(format!(
-                "--audio-output-buffer={}",
-                self.audio_output_buffer_ms
-            ));
+            argv.extend(self.audio_flags());
         }
         if let Some(title) = &self.window_title {
             argv.push(format!("--window-title={title}"));
@@ -220,6 +224,14 @@ impl EngineArgs {
             argv.extend(int_flag("window-height", self.window_height.map(i64::from)));
         }
         Ok(argv)
+    }
+
+    fn audio_flags(&self) -> Vec<String> {
+        vec![
+            format!("--audio-codec={}", self.audio_codec),
+            format!("--audio-buffer={}", self.audio_buffer_ms),
+            format!("--audio-output-buffer={}", self.audio_output_buffer_ms),
+        ]
     }
 }
 
@@ -245,6 +257,31 @@ mod tests {
         args.adb_binary = Some("C:\\tools\\adb.exe".into());
         assert!(!has_prefix(&argv(&args), "--adb"));
         assert!(!has_prefix(&argv(&EngineArgs::new("s")), "--adb"));
+    }
+
+    #[test]
+    fn audio_only_relay_shape() {
+        let mut args = EngineArgs::new("RELAY");
+        args.audio_only = true;
+        let argv = argv(&args);
+        assert!(has(&argv, "--no-window"));
+        assert!(has(&argv, "--audio-codec=flac"));
+        assert!(has(&argv, "--audio-buffer=100"));
+        assert!(has(&argv, "--audio-output-buffer=10"));
+        assert!(has_prefix(&argv, "--serial=RELAY"));
+        let joined = argv.join(" ");
+        for banned in [
+            "--new-display",
+            "--start-app",
+            "--turn-screen-off",
+            "--stay-awake",
+            "--video-codec",
+            "--window-title",
+            "--print-fps",
+            "--keyboard",
+        ] {
+            assert!(!joined.contains(banned), "{banned} must not appear");
+        }
     }
 
     #[test]

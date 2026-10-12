@@ -22,12 +22,12 @@ use crate::backend::{self, Background, DeviceWatch};
 use crate::model::{AppEntry, AppsModel};
 use crate::paint;
 use crate::prefs::{
-    load_audio_prefs, load_bar_prefs, load_behavior_prefs, load_density_prefs, load_display_prefs,
-    load_pinned_prefs, load_scale_prefs, save_audio_prefs, save_bar_prefs, save_behavior_prefs,
-    save_density_prefs, save_display_prefs, save_pinned_prefs, save_scale_prefs, BarChoice,
-    DisplayChoice,
+    load_audio_priorities, load_bar_prefs, load_behavior_prefs, load_density_prefs,
+    load_display_prefs, load_pinned_prefs, load_scale_prefs, save_audio_priorities, save_bar_prefs,
+    save_behavior_prefs, save_density_prefs, save_display_prefs, save_pinned_prefs,
+    save_scale_prefs, BarChoice, DisplayChoice,
 };
-use crate::sessions::{panel_log_path, session_label, Sessions, MIRROR_KEY};
+use crate::sessions::{panel_log_path, session_label, AudioPriority, Sessions, MIRROR_KEY};
 use crate::settings_view::SettingsPageModel;
 use crate::theme::{over, ThemeKind, Tokens};
 use crate::winproc;
@@ -78,6 +78,69 @@ type InstalledResult = Result<(String, Vec<String>, Vec<backend::AppRow>), Strin
 
 /// 菜单毛玻璃截图请求的归属标签（与 --shot 出图泵的回包区分，防互吞）。
 const GLASS_SHOT_TAG: &str = "duo-menu-glass-shot";
+/// 每次菜单打开最多截图次数：初始一拍 + 失效后补拍一拍（禁止逐帧重试）。
+const MENU_SHOT_MAX: u32 = 2;
+/// 在途截图回包等待上限：超时判失败，弹层退扁平底色不再请求。
+const MENU_SHOT_TIMEOUT: Duration = Duration::from_millis(500);
+/// 拖/缩 settle 期：几何变化后整窗暂不透明，DWM 模糊追上再回玻璃。
+const GEOMETRY_SETTLING: Duration = Duration::from_millis(200);
+
+/// 截图请求代次编解码：迟到回包按代次丢弃（见 arrival_matches）。
+fn glass_shot_tag(seq: u32) -> String {
+    format!("{GLASS_SHOT_TAG}:{seq}")
+}
+
+fn glass_shot_seq(ud: &egui::UserData) -> Option<u32> {
+    let s = ud.data.as_ref()?.downcast_ref::<String>()?;
+    s.strip_prefix(GLASS_SHOT_TAG)?
+        .strip_prefix(':')?
+        .parse()
+        .ok()
+}
+
+/// 回包是否属于当前在途代次（None = 已失效/已关闭，一律丢弃）。
+fn arrival_matches(inflight: Option<u32>, seq: u32) -> bool {
+    inflight == Some(seq)
+}
+
+/// 截图请求决策（纯函数）：菜单开且快照缺失、无在途、未失败、未超额
+/// 才发；设备浮层在画时不可压制跳画，故不放行（首发也等它关上）。
+fn shot_wanted(
+    open: bool,
+    snapshot: bool,
+    inflight: bool,
+    requests_made: u32,
+    failed: bool,
+    picker_showing: bool,
+) -> bool {
+    open && !snapshot && !inflight && !failed && requests_made < MENU_SHOT_MAX && !picker_showing
+}
+
+/// 弹层跳画判定（纯函数）：请求在途或待发时藏菜单，保证快照是纯背景；
+/// 失败/超额后不藏，画扁平 menu_glass 底色。
+fn glass_hides_menu(snapshot: bool, inflight: bool, requests_made: u32, failed: bool) -> bool {
+    inflight || (!snapshot && !failed && requests_made < MENU_SHOT_MAX)
+}
+
+fn rect_shifted(a: egui::Rect, b: egui::Rect) -> bool {
+    (a.min.x - b.min.x).abs() > 1.0
+        || (a.min.y - b.min.y).abs() > 1.0
+        || (a.width() - b.width()).abs() > 1.0
+        || (a.height() - b.height()).abs() > 1.0
+}
+
+/// 拖/缩 settle 决策（纯函数）：settle 期整窗不透明，稳定后恢复 0.85/216 玻璃稳态。
+fn settle_alphas(glass: bool, windows: bool, settling: bool) -> (f32, u8) {
+    if glass && windows {
+        if settling {
+            (1.0, 255)
+        } else {
+            (0.85, 216)
+        }
+    } else {
+        (1.0, 255)
+    }
+}
 /// --shot 出图泵的截图归属标签。
 const SHOT_TAG: &str = "duo-shot";
 
@@ -103,11 +166,18 @@ struct MoveResult {
 }
 
 /// 菜单毛玻璃状态机（生命周期 = 一次菜单打开；配方见 docs/ui/glass-recipe.md
-/// §8）：跳变帧跳画菜单并发截图命令 → 下一帧
-/// Event::Screenshot 落地 → 裁剪/模糊/贴图 → 菜单闭包开头垫贴图。
+/// §8.1）：开档跳变帧跳画菜单并发一次截图命令 → 下一帧 Event::Screenshot
+/// 落地 → 裁剪/模糊/贴图 → 菜单闭包开头垫贴图；滚动/移窗/换内容失效后
+/// 至多补拍一次，回包迟到按代次丢弃。
 pub(crate) struct MenuGlass {
-    /// 截图命令已发出（一次打开只发一次）。
-    pub(crate) requested: bool,
+    /// 在途截图请求的代次（None = 无在途；全局递增见 menu_shot_seq）。
+    pub(crate) inflight: Option<u32>,
+    /// 本开档已发截图请求数（≤ MENU_SHOT_MAX，禁止逐帧重试）。
+    pub(crate) requests_made: u32,
+    /// 回包超时：本开档退扁平底色，不再请求。
+    pub(crate) failed: bool,
+    /// 在途请求发出时刻（MENU_SHOT_TIMEOUT 判失败）。
+    pub(crate) sent_at: Instant,
     /// 菜单外沿矩形（逻辑 px，frame 边距含）。
     pub(crate) menu_rect: Option<egui::Rect>,
     /// 全窗设备像素快照 + 拍摄时 pixels_per_point。
@@ -129,7 +199,10 @@ pub(crate) struct MenuGlass {
 impl Default for MenuGlass {
     fn default() -> Self {
         Self {
-            requested: false,
+            inflight: None,
+            requests_made: 0,
+            failed: false,
+            sent_at: Instant::now(),
             menu_rect: None,
             snapshot: None,
             snapshot_ppp: 1.0,
@@ -181,7 +254,7 @@ pub struct PanelApp {
     pinned: BTreeMap<String, bool>,
     display_prefs: BTreeMap<String, DisplayChoice>,
     bar_prefs: BTreeMap<String, BarChoice>,
-    audio_prefs: BTreeMap<String, bool>,
+    audio_prefs: BTreeMap<String, AudioPriority>,
     behavior_prefs: BTreeMap<String, bool>,
     density_prefs: BTreeMap<String, i64>,
     scale_prefs: BTreeMap<String, f64>,
@@ -258,10 +331,17 @@ pub struct PanelApp {
     pub(crate) menu_rect_hint: Option<egui::Rect>,
     /// 菜单连续"未开"帧计数（宽容清空去抖，见 pump_menu_glass）。
     pub(crate) menu_glass_closed_frames: u32,
-    /// 全窗干净背景快照（菜单未开时捕获，供菜单打开时即时切图）。
-    pub(crate) menu_snapshot: Option<std::sync::Arc<egui::ColorImage>>,
-    pub(crate) menu_snapshot_ppp: f32,
+    /// 截图代次全局单调计数：迟到回包按代次丢弃，跨开档不复用。
+    pub(crate) menu_shot_seq: u32,
+    /// 上帧窗口外框位置（outer_rect.min 变化 = 移窗，快照失效）。
+    pub(crate) last_outer_pos: Option<egui::Pos2>,
     pub(crate) last_screen_size: Option<egui::Vec2>,
+    /// 拖/缩 settle 截止：期间整窗不透明防透出（见 settle_alphas）。
+    pub(crate) geometry_settling_until: Instant,
+    /// settle 期内尺寸变过：结束后丢一次菜单快照（不逐中间尺寸丢）。
+    pub(crate) menu_glass_size_dirty: bool,
+    /// 上帧窗口外框矩形（拖/缩进行中的判定来源）。
+    pub(crate) last_outer_rect: Option<egui::Rect>,
     /// 图标贴图缓存：(路径, 显示尺寸)。None = 加载失败不重试。
     pub(crate) icon_tex: RefCell<BTreeMap<(PathBuf, u32), Option<TextureHandle>>>,
     /// 图标切换过渡状态（键=包名；见 home.rs IconFade）。
@@ -307,7 +387,7 @@ impl PanelApp {
             pinned: load_pinned_prefs().into_iter().map(|p| (p, true)).collect(),
             display_prefs: load_display_prefs(),
             bar_prefs: load_bar_prefs(),
-            audio_prefs: load_audio_prefs(),
+            audio_prefs: load_audio_priorities(),
             behavior_prefs: load_behavior_prefs(),
             density_prefs: load_density_prefs(),
             scale_prefs: load_scale_prefs(),
@@ -359,9 +439,12 @@ impl PanelApp {
             menu_glass: None,
             menu_rect_hint: None,
             menu_glass_closed_frames: 0,
-            menu_snapshot: None,
-            menu_snapshot_ppp: 1.0,
+            menu_shot_seq: 0,
+            last_outer_pos: None,
             last_screen_size: None,
+            geometry_settling_until: Instant::now(),
+            menu_glass_size_dirty: false,
+            last_outer_rect: None,
             icon_tex: RefCell::new(BTreeMap::new()),
             icon_fades: RefCell::new(BTreeMap::new()),
             island_tex: RefCell::new([None, None]),
@@ -723,24 +806,40 @@ impl PanelApp {
         }
     }
 
-    /// 玻璃弹层快照引导（右键菜单/设备浮层共用）：建 menu_glass；无
-    /// 快照时发一次全窗截图请求（贴图由各弹层的 glass_record_main
-    /// 逐帧构建）。玻璃关 = no-op（走 window_fill 不透明退化）。
-    pub(crate) fn ensure_menu_glass(&mut self, ctx: &egui::Context) {
+    /// 玻璃弹层状态引导（右键菜单/设备浮层共用）：只建壳，不发截图、
+    /// 不请求重绘（截图由 pump_menu_glass 在开档跳变帧统一下发）。
+    pub(crate) fn ensure_menu_glass(&mut self, _ctx: &egui::Context) {
         if self.menu_glass.is_none() && self.settings.draft.glass_enabled {
             self.menu_glass = Some(MenuGlass {
                 menu_rect: self.menu_rect_hint,
-                snapshot: self.menu_snapshot.clone(),
-                snapshot_ppp: self.menu_snapshot_ppp,
-                requested: self.menu_snapshot.is_some(),
                 ..Default::default()
             });
-            if self.menu_snapshot.is_none() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                    GLASS_SHOT_TAG.to_string(),
-                )));
-                ctx.request_repaint();
-            }
+        }
+    }
+
+    /// 截图未就绪期间弹层跳画：请求在途/待发时藏，失败/超额不藏（扁平）。
+    pub(crate) fn menu_glass_hidden(&self) -> bool {
+        self.settings.draft.glass_enabled
+            && self.menu_glass.as_ref().is_some_and(|g| {
+                glass_hides_menu(
+                    g.snapshot.is_some(),
+                    g.inflight.is_some(),
+                    g.requests_made,
+                    g.failed,
+                )
+            })
+    }
+
+    /// 快照失效：图片、贴图、在途代次一起清（迟到回包按代次丢弃）。
+    pub(crate) fn menu_glass_drop_snapshot(&mut self) {
+        if let Some(g) = self.menu_glass.as_mut() {
+            g.snapshot = None;
+            g.main_tex = None;
+            g.main_rect = None;
+            g.sub_tex = None;
+            g.sub_draw = None;
+            g.sub_tex_rect = None;
+            g.inflight = None;
         }
     }
 
@@ -750,6 +849,15 @@ impl PanelApp {
         add_contents: impl FnOnce(&mut Self, &mut egui::Ui),
     ) {
         self.ensure_menu_glass(&resp.ctx);
+        if self.menu_glass_hidden() {
+            if !resp.context_menu_opened() {
+                // 点击帧：只网开档状态，零内容闭包不占几何
+                resp.context_menu(|_| {});
+            }
+            // 截图在途帧：完全不画弹层，本帧渲染即纯背景
+            resp.ctx.request_repaint();
+            return;
+        }
         resp.context_menu(|ui| {
             ui.set_width(MENU_INNER_WIDTH);
             self.glass_underlay(ui, false);
@@ -830,16 +938,25 @@ impl PanelApp {
         };
         self.menu_rect_hint = Some(effective);
         if let Some(g) = &mut self.menu_glass {
-            if let (Some(idx), Some(tex), Some(draw)) = (g.main_shape, &g.main_tex, g.main_rect) {
-                ui.painter().set(
-                    idx,
-                    egui::Shape::image(
-                        tex.id(),
-                        draw,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    ),
-                );
+            match (g.main_shape, g.main_tex.as_ref(), g.main_rect) {
+                (Some(idx), Some(tex), Some(draw)) => {
+                    ui.painter().set(
+                        idx,
+                        egui::Shape::image(
+                            tex.id(),
+                            draw,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        ),
+                    );
+                }
+                (Some(idx), _, _) => {
+                    ui.painter().set(
+                        idx,
+                        egui::Shape::rect_filled(effective, 12.0, menu_flat_fill(&self.tokens)),
+                    );
+                }
+                _ => {}
             }
         }
         if self
@@ -893,16 +1010,25 @@ impl PanelApp {
                 }
             };
             g.sub_rect = Some(effective);
-            if let (Some(idx), Some(tex), Some(draw)) = (g.sub_shape, &g.sub_tex, g.sub_draw) {
-                ui.painter().set(
-                    idx,
-                    egui::Shape::image(
-                        tex.id(),
-                        draw,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    ),
-                );
+            match (g.sub_shape, g.sub_tex.as_ref(), g.sub_draw) {
+                (Some(idx), Some(tex), Some(draw)) => {
+                    ui.painter().set(
+                        idx,
+                        egui::Shape::image(
+                            tex.id(),
+                            draw,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        ),
+                    );
+                }
+                (Some(idx), _, _) => {
+                    ui.painter().set(
+                        idx,
+                        egui::Shape::rect_filled(effective, 12.0, menu_flat_fill(&self.tokens)),
+                    );
+                }
+                _ => {}
             }
             if g.sub_tex.is_some() {
                 ui.painter().rect_stroke(
@@ -915,10 +1041,12 @@ impl PanelApp {
         }
     }
 
-    /// 菜单可视状态：真右键链路 + Wayland 出图 harness 托管菜单。
+    /// 菜单可视状态：真右键链路 + Wayland 出图 harness 托管菜单 +
+    /// 设备浮层（含待开：pending 时也视作开，让泵下发当次快照）。
     pub(crate) fn menu_effectively_open(&self, ctx: &egui::Context) -> bool {
         ctx.is_context_menu_open()
             || self.harness_menu_open()
+            || self.picker_pending
             || ctx.memory(|m| m.is_popup_open(egui::Id::new("duo-device-picker")))
     }
 
@@ -931,46 +1059,54 @@ impl PanelApp {
                 .is_some_and(|(_, frames, _)| *frames >= 46)
     }
 
-    /// 毛玻璃泵：开/关跳变、截图命令与 Event::Screenshot 消费、贴图懒
-    /// 构建。须在 pump_shot / pump_shot_menu 之前跑（后者会重跑
-    /// begin_pass 吞掉未读事件）。
+    /// 毛玻璃泵：开/关跳变、当次快照请求与 Event::Screenshot 消费、
+    /// 失效判定、贴图懒构建。须在 pump_shot / pump_shot_menu 之前跑
+    /// （后者会重跑 begin_pass 吞掉未读事件）。关档零动作：不截图、
+    /// 不为玻璃请求重绘（拖窗卡顿根因，见 docs/ui/glass-recipe.md §8.1）。
     pub(crate) fn pump_menu_glass(&mut self, ctx: &egui::Context) {
         if !self.settings.draft.glass_enabled {
             self.menu_glass = None;
-            self.menu_snapshot = None;
             self.menu_glass_closed_frames = 0;
             return;
         }
 
-        let shot = ctx.input(|i| {
+        // 回包按代次收编：无在途/代次失配 = 迟到或已失效，直接丢弃
+        let arrival = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
                 egui::Event::Screenshot {
                     image, user_data, ..
-                } if user_data_eq(user_data, GLASS_SHOT_TAG) => Some(image.clone()),
+                } => glass_shot_seq(user_data).map(|seq| (seq, image.clone())),
                 _ => None,
             })
         });
-        if let Some(image) = shot {
-            let ppp = ctx.pixels_per_point();
-            self.menu_snapshot = Some(image.clone());
-            self.menu_snapshot_ppp = ppp;
-            if let Some(g) = self.menu_glass.as_mut() {
-                g.snapshot = Some(image);
-                g.snapshot_ppp = ppp;
+        if let Some((seq, image)) = arrival {
+            let mine = self
+                .menu_glass
+                .as_ref()
+                .is_some_and(|g| arrival_matches(g.inflight, seq));
+            if mine {
+                let ppp = ctx.pixels_per_point();
+                if let Some(g) = self.menu_glass.as_mut() {
+                    g.snapshot = Some(image);
+                    g.snapshot_ppp = ppp;
+                    g.inflight = None;
+                }
+                ctx.request_repaint(); // 单跳：下帧垫玻璃贴图
             }
-            ctx.request_repaint();
         }
+
+        // 移窗感知：outer_rect.min 逐帧比对（等价 WindowEvent::Moved 失效）
+        let outer_pos = ctx.input(|i| i.viewport().outer_rect.map(|r| r.min));
+        let moved = self
+            .last_outer_pos
+            .is_some_and(|p| outer_pos.is_some_and(|q| q != p));
+        self.last_outer_pos = outer_pos;
 
         if !self.menu_effectively_open(ctx) {
             self.menu_glass_closed_frames += 1;
             if self.menu_glass_closed_frames >= 2 {
+                // 快照随关档丢弃，下次打开重拍（不跨开档复用旧画面）
                 self.menu_glass = None;
-            }
-            if self.menu_snapshot.is_none() && (self.shot.is_none() || self.shot_menu.is_some()) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                    GLASS_SHOT_TAG.to_string(),
-                )));
-                ctx.request_repaint();
             }
             return;
         }
@@ -978,22 +1114,69 @@ impl PanelApp {
         if self.menu_glass.is_none() {
             self.menu_glass = Some(MenuGlass {
                 menu_rect: self.menu_rect_hint,
-                snapshot: self.menu_snapshot.clone(),
-                snapshot_ppp: self.menu_snapshot_ppp,
-                requested: self.menu_snapshot.is_some(),
                 ..Default::default()
             });
         }
-        let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
-        let Some(g) = self.menu_glass.as_mut() else {
-            return;
-        };
-        if !g.requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                GLASS_SHOT_TAG.to_string(),
-            )));
-            g.requested = true;
+
+        // 失效：滚动/移窗 → 图片、贴图、代次一起清
+        let scrolled = ctx.input(|i| i.raw_scroll_delta != egui::Vec2::ZERO);
+        if (moved || scrolled)
+            && self
+                .menu_glass
+                .as_ref()
+                .is_some_and(|g| g.snapshot.is_some())
+        {
+            self.menu_glass_drop_snapshot();
         }
+
+        // 在途超时判失败：退扁平底色，不再请求
+        let timed_out = self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.inflight.is_some() && g.sent_at.elapsed() > MENU_SHOT_TIMEOUT);
+        if timed_out {
+            if let Some(g) = self.menu_glass.as_mut() {
+                g.inflight = None;
+                g.failed = true;
+            }
+            ctx.request_repaint(); // 单跳：下帧出扁平菜单
+        }
+
+        // 请求：开档首发一次，失效后至多补一次；设备浮层在画时不可跳画，不补拍
+        let picker_showing = ctx.memory(|m| m.is_popup_open(egui::Id::new("duo-device-picker")));
+        let want_shot = self.menu_glass.as_ref().is_some_and(|g| {
+            shot_wanted(
+                true,
+                g.snapshot.is_some(),
+                g.inflight.is_some(),
+                g.requests_made,
+                g.failed,
+                picker_showing,
+            )
+        });
+        if want_shot {
+            self.menu_shot_seq += 1;
+            let seq = self.menu_shot_seq;
+            if let Some(g) = self.menu_glass.as_mut() {
+                g.inflight = Some(seq);
+                g.requests_made += 1;
+                g.sent_at = Instant::now();
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                glass_shot_tag(seq),
+            )));
+            ctx.request_repaint(); // 单跳等回包帧，非循环
+        } else if self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.inflight.is_some())
+            || self.picker_pending
+        {
+            // 回包看门狗：仅在等待窗内低频唤醒（超时判定/浮层放行）
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        let is_dark = matches!(self.tokens.kind, ThemeKind::Dark);
         let (snapshot, ppp, rect, sub_rect) = match self.menu_glass.as_ref() {
             Some(g) => match (&g.snapshot, g.menu_rect, g.sub_rect) {
                 (Some(s), Some(r), sub) => (s.clone(), g.snapshot_ppp, r, sub),
@@ -1351,15 +1534,19 @@ impl PanelApp {
         }
         let portrait = self.sessions.portrait_of(package);
         let display = self.display_prefs.get(package).cloned();
-        // 机身 id 解析成具体几何后作为一次性 size 启动。
+        let native_canvas = size.is_none()
+            && (display.is_none() && crate::sessions::needs_native_portrait_canvas(package)
+                || matches!(&display, Some(DisplayChoice::Fixed { aspect }) if aspect == BODY_PORTRAIT_ID));
         let size = size.or_else(|| self.remembered_size(package));
         let keep_vd = self.behavior_prefs.get(package).copied().unwrap_or(false);
-        let exclusive = self.audio_prefs.get(package).copied().unwrap_or(false);
+        let audio_priority = self.audio_prefs.get(package).copied().unwrap_or_default();
+        let exclusive = audio_priority == AudioPriority::High;
         let params = crate::sessions::LaunchParams {
             package,
             serial: &serial,
             portrait,
-            muted: false,
+            audio_priority,
+            native_canvas,
             size,
             display: display.as_ref(),
             keep_vd,
@@ -1368,12 +1555,13 @@ impl PanelApp {
             .sessions
             .start(&binary.display().to_string(), &params, exclusive)
         {
-            Ok(restarted) => {
+            Ok(notes) => {
                 let orientation = if portrait { "竖屏" } else { "横屏" };
-                let suffix = if restarted.is_empty() {
+                // notes 已是完整短语（“X 已静音”/“音频中继启动失败：…”）。
+                let suffix = if notes.is_empty() {
                     String::new()
                 } else {
-                    format!("（{} 已静音重启）", restarted.join("、"))
+                    format!("（{}）", notes.join("、"))
                 };
                 self.toast_now(format!(
                     "已启动 {} · {orientation}{suffix}",
@@ -1386,7 +1574,11 @@ impl PanelApp {
 
     /// 记忆的 fixed 几何（body id 经 wm size 探测解析）。
     fn remembered_size(&mut self, package: &str) -> Option<(i64, i64)> {
-        let choice = self.display_prefs.get(package)?.clone();
+        let choice = self.display_prefs.get(package).cloned().or_else(|| {
+            crate::sessions::needs_native_portrait_canvas(package).then(|| DisplayChoice::Fixed {
+                aspect: BODY_PORTRAIT_ID.into(),
+            })
+        })?;
         let DisplayChoice::Fixed { aspect } = choice else {
             return None;
         };
@@ -1512,11 +1704,11 @@ impl PanelApp {
             .sessions
             .start_mirror(&binary.display().to_string(), &serial)
         {
-            Ok(restarted) => {
-                let suffix = if restarted.is_empty() {
+            Ok(notes) => {
+                let suffix = if notes.is_empty() {
                     String::new()
                 } else {
-                    format!("（{} 已静音重启）", restarted.join("、"))
+                    format!("（{}）", notes.join("、"))
                 };
                 self.toast_now(format!("已启动 设备镜像{suffix}"));
             }
@@ -1628,16 +1820,22 @@ impl PanelApp {
             .unwrap_or_else(|| serial.split(':').next().unwrap_or(serial).to_string())
     }
 
-    /// 设备浮层开门节流：玻璃开时等全窗快照就绪再开（右键菜单是先热
-    /// 快照后开菜单，popover 点击即开则贴图永远迟到一步）；玻璃关或等
-    /// 待超 30 帧直接开。返回本帧是否应开。
+    /// 设备浮层开门节流：玻璃开时等当次快照就绪再开（浮层在画时不可
+    /// 跳画，快照必得先干背景）；玻璃关/失败或等待超 30 帧直接开。
     pub(crate) fn picker_open_tick(&mut self) -> bool {
         if !self.picker_pending {
             return false;
         }
         self.picker_wait_frames += 1;
-        let warm = self.menu_snapshot.is_some();
-        if !self.settings.draft.glass_enabled || warm || self.picker_wait_frames > 30 {
+        let warm = self
+            .menu_glass
+            .as_ref()
+            .is_some_and(|g| g.snapshot.is_some());
+        if !self.settings.draft.glass_enabled
+            || warm
+            || self.picker_wait_frames > 30
+            || self.menu_glass.as_ref().is_some_and(|g| g.failed)
+        {
             self.picker_pending = false;
             self.picker_wait_frames = 0;
             return true;
@@ -1646,15 +1844,16 @@ impl PanelApp {
     }
 
     /// 请求开设备浮层（点击/出图钩子）。返回 true = 立即开；false =
-    /// 已排队等快照（就绪/超时后 picker_open_tick 放行）。
+    /// 已排队等当次快照（就绪/超时后 picker_open_tick 放行）。
     pub(crate) fn request_picker(&mut self, ctx: &egui::Context) -> bool {
         self.ensure_menu_glass(ctx);
-        if !self.settings.draft.glass_enabled || self.menu_snapshot.is_some() {
+        if !self.settings.draft.glass_enabled {
             return true;
         }
         if !self.picker_pending {
             self.picker_pending = true;
             self.picker_wait_frames = 0;
+            ctx.request_repaint(); // 唤醒泵下发本开档唯一一次截图
         }
         false
     }
@@ -2049,14 +2248,17 @@ impl PanelApp {
         save_bar_prefs(&self.bar_prefs);
     }
 
-    fn toggle_audio_exclusive(&mut self, package: &str) {
-        let now = !self.audio_prefs.get(package).copied().unwrap_or(false);
-        if now {
-            self.audio_prefs.insert(package.to_string(), true);
-        } else {
-            self.audio_prefs.remove(package);
+    fn set_audio_priority(&mut self, package: &str, priority: AudioPriority) {
+        self.audio_prefs.insert(package.to_string(), priority);
+        save_audio_priorities(&self.audio_prefs);
+        for (key, _) in self.sessions.running() {
+            if let Some((serial, running_package)) = key.rsplit_once("::") {
+                if running_package == package {
+                    self.sessions.set_audio_priority(serial, package, priority);
+                }
+            }
         }
-        save_audio_prefs(&self.audio_prefs);
+        self.toast_now("音频优先级已更新；设备声音仍为整机混音");
     }
 
     fn toggle_keep_vd(&mut self, package: &str) {
@@ -2107,6 +2309,11 @@ impl PanelApp {
             }
             self.glass_applied = want;
         }
+    }
+
+    /// settle 期判定（自检模式豁免，保持 A/B 对拍口径不变）。
+    fn geometry_settling(&self) -> bool {
+        self.selfcheck.is_none() && Instant::now() < self.geometry_settling_until
     }
 
     fn pump_selfcheck(&mut self, ctx: &egui::Context) {
@@ -2352,6 +2559,12 @@ impl PanelApp {
         bands: &[(f32, f32, Color32)],
         blocks: &[(Rect, Color32)],
     ) -> Option<TextureHandle> {
+        // settle 期复用上帧岛贴图：拖/缩中间矩形不重算，防抖。
+        if self.geometry_settling() {
+            if let Some((_, tex)) = self.island_tex.borrow().get(slot).and_then(|e| e.as_ref()) {
+                return Some(tex.clone());
+            }
+        }
         let dark = matches!(self.tokens.kind, ThemeKind::Dark);
         let key = (
             page_tag,
@@ -2687,10 +2900,6 @@ impl PanelApp {
     }
 
     pub(crate) fn tile_menu(&mut self, ui: &mut egui::Ui, entry: &AppEntry) {
-        // Main.qml appContextMenu 一级结构逐行对齐：打开 / 置顶到固定栏 /
-        // hairline / 自适应窗口 | 固定比例 ▸ / 窗口栏 ▸ / 音频独占（勾选
-        // 不收菜单）/ 断开保留画面（勾选不收菜单）/ DPI ▸ / 渲染倍率 ▸。
-        // 皮肤 = menu_item（13px 行 32 + painter 4px 勾选点）。
         let package = entry.package.clone();
         if self.menu_item(ui, "打开", None) {
             self.launch(&package, None);
@@ -2706,12 +2915,17 @@ impl PanelApp {
             ui.close_menu();
         }
         menu_hairline(ui, &self.tokens);
-        let fixed_now = matches!(
-            self.display_prefs.get(&package),
-            Some(DisplayChoice::Fixed { .. })
-        );
+        let choice = self.display_prefs.get(&package);
+        let native_now = choice.is_none()
+            && crate::sessions::needs_native_portrait_canvas(&package)
+            || matches!(choice, Some(DisplayChoice::Fixed { aspect }) if aspect == BODY_PORTRAIT_ID);
+        let fixed_now = native_now || matches!(choice, Some(DisplayChoice::Fixed { .. }));
         if self.menu_item(ui, "自适应窗口", Some(!fixed_now)) {
             self.set_display_flex(&package);
+            ui.close_menu();
+        }
+        if self.menu_item(ui, "原生竖屏画布", Some(native_now)) {
+            self.set_display_fixed(&package, BODY_PORTRAIT_ID);
             ui.close_menu();
         }
         self.menu_sub_button(ui, "固定比例", |app, ui| {
@@ -2740,11 +2954,19 @@ impl PanelApp {
             row(app, ui, false, Some("native"), "系统");
             row(app, ui, false, Some("none"), "不显示");
         });
-        let exclusive = self.audio_prefs.get(&package).copied().unwrap_or(false);
-        if self.menu_item(ui, "音频独占", Some(exclusive)) {
-            // QML 勾选行切换不收菜单（圆点即时可见）
-            self.toggle_audio_exclusive(&package);
-        }
+        self.menu_sub_button(ui, "音频优先级", |app, ui| {
+            let current = app.audio_prefs.get(&package).copied().unwrap_or_default();
+            for (priority, label) in [
+                (AudioPriority::Off, "无需声音"),
+                (AudioPriority::Normal, "普通"),
+                (AudioPriority::High, "优先"),
+            ] {
+                if app.menu_item(ui, label, Some(current == priority)) {
+                    app.set_audio_priority(&package, priority);
+                    ui.close_menu();
+                }
+            }
+        });
         let keep_vd = self.behavior_prefs.get(&package).copied().unwrap_or(false);
         if self.menu_item(ui, "断开保留画面", Some(keep_vd)) {
             self.toggle_keep_vd(&package);
@@ -3022,13 +3244,8 @@ impl PanelApp {
         if !self.harness_menu_open() {
             return;
         }
-        if self
-            .menu_glass
-            .as_ref()
-            .is_some_and(|g| g.snapshot.is_none())
-        {
-            // 玻璃截图帧：不画菜单，拍纯背景（快照到达为止，见
-            // context_menu 同款注释）
+        if self.menu_glass_hidden() {
+            // 玻璃截图帧：不画菜单，拍纯背景（回包到达/判失败为止）
             return;
         }
         let mode = self.shot_menu.clone().unwrap_or_default();
@@ -3136,7 +3353,7 @@ impl PanelApp {
                                     .borrow_mut()
                                     .insert(pkg.clone(), crate::home::IconFade::replaced());
                             }
-                            self.menu_snapshot = None;
+                            self.menu_glass_drop_snapshot();
                             if !patched.is_empty() {
                                 self.toast_now("应用图标已更新");
                             }
@@ -3245,11 +3462,11 @@ impl eframe::App for PanelApp {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.tokens.bg;
-        let a = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
-            0.85_f32
-        } else {
-            1.0_f32
-        };
+        let (a, _) = settle_alphas(
+            self.settings.draft.glass_enabled,
+            cfg!(target_os = "windows"),
+            self.geometry_settling(),
+        );
         [
             c.r() as f32 / 255.0,
             c.g() as f32 / 255.0,
@@ -3268,15 +3485,36 @@ impl eframe::App for PanelApp {
         if self.shot.is_some() {
             ctx.request_repaint(); // 出图模式：静态画面也推进帧计数
         }
+        // 拖/缩 settle：几何一变延 200ms 截止并整窗暂不透明（防透出/防抖）。
+        let now = Instant::now();
         let cur_size = ctx.screen_rect().size();
-        if self.last_screen_size != Some(cur_size) {
-            self.last_screen_size = Some(cur_size);
-            self.menu_snapshot = None;
+        let outer = ctx.input(|i| i.viewport().outer_rect);
+        let resized = self.last_screen_size.is_some_and(|s| s != cur_size);
+        let moved = self
+            .last_outer_rect
+            .is_some_and(|r| outer.is_some_and(|o| rect_shifted(r, o)));
+        if resized || moved {
+            self.geometry_settling_until = now + GEOMETRY_SETTLING;
+            if resized {
+                self.menu_glass_size_dirty = true;
+            }
+            ctx.request_repaint();
+        }
+        self.last_screen_size = Some(cur_size);
+        if let Some(o) = outer {
+            self.last_outer_rect = Some(o);
+        }
+        if now < self.geometry_settling_until {
+            ctx.request_repaint_after(self.geometry_settling_until.saturating_duration_since(now));
+        } else if self.menu_glass_size_dirty {
+            // settle 结束且尺寸确实变了：只在此丢一次菜单快照。
+            self.menu_glass_size_dirty = false;
+            self.menu_glass_drop_snapshot();
         }
         let kind = ThemeKind::from_settings(&self.settings.draft.theme, ctx.system_theme());
         if self.tokens.kind != kind {
             self.tokens = Tokens::of(kind);
-            self.menu_snapshot = None;
+            self.menu_glass_drop_snapshot();
             self.glass_applied = false; // 换 tint 重挂一次 DWM blur
         }
         let prev_page = self.page;
@@ -3307,12 +3545,17 @@ impl eframe::App for PanelApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full = ui.max_rect();
-                let bg = if self.settings.draft.glass_enabled && cfg!(target_os = "windows") {
+                let (_, panel_a) = settle_alphas(
+                    self.settings.draft.glass_enabled,
+                    cfg!(target_os = "windows"),
+                    self.geometry_settling(),
+                );
+                let bg = if panel_a < 255 {
                     crate::theme::srgba(
                         self.tokens.bg.r(),
                         self.tokens.bg.g(),
                         self.tokens.bg.b(),
-                        216,
+                        panel_a,
                     )
                 } else {
                     self.tokens.bg
@@ -3345,14 +3588,14 @@ impl eframe::App for PanelApp {
             }
         }
         if self.page != prev_page {
-            self.menu_snapshot = None;
+            self.menu_glass_drop_snapshot();
         }
         // Toast 计时需要重绘驱动
-        if self.toast.is_some() || self.volume_pending.is_some() {
+        if self.toast.is_some()
+            || self.volume_pending.is_some()
+            || !self.sessions.running().is_empty()
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
-        } else if !self.sessions.running().is_empty() {
-            // 运行卡存活探测：会话退出后芯片免输入也能及时消失
-            ctx.request_repaint_after(Duration::from_millis(500));
         }
     }
 }
@@ -3371,6 +3614,11 @@ pub(crate) fn ease_out_cubic(p: f32) -> f32 {
 
 /// 岛贴图缓存键：页 / 滚动量化 / 暗色 / 岛矩形。
 type IslandKey = (u8, u32, u8, u8, Rect);
+
+/// 扁平 menu_glass 底色：截图未到/判失败时的不透明菜单底。
+fn menu_flat_fill(t: &Tokens) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(t.menu_fill.r(), t.menu_fill.g(), t.menu_fill.b(), 244)
+}
 
 /// 菜单行高与悬停皮肤（高 32、行距 0、8% 白悬停洗色，详见 docs/ui/glass-recipe.md §8）。
 fn menu_row_style(ui: &mut egui::Ui, t: &Tokens) {
@@ -3486,5 +3734,73 @@ mod menu_tests {
         // 单边清不退场
         let kept = bar_entry_after(first, false, Some("none"));
         assert!(kept.is_some());
+    }
+
+    #[test]
+    fn menu_glass_closed_sends_no_screenshot() {
+        // 关档零动作：任何快照/在途/预算/浮层组合都不发截图（拖窗卡顿回归锚）
+        for snapshot in [false, true] {
+            for made in [0u32, 1, 2] {
+                for failed in [false, true] {
+                    assert!(!shot_wanted(false, snapshot, false, made, failed, false));
+                    assert!(!shot_wanted(false, snapshot, true, made, failed, false));
+                    assert!(!shot_wanted(false, snapshot, false, made, false, true));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn menu_glass_open_shots_once_plus_one_reshot() {
+        assert!(shot_wanted(true, false, false, 0, false, false)); // 开档首发
+        assert!(!shot_wanted(true, false, true, 1, false, false)); // 在途不重发
+        assert!(!shot_wanted(true, true, false, 1, false, false)); // 已拍到
+        assert!(shot_wanted(true, false, false, 1, false, false)); // 失效补拍（最后一次）
+        assert!(!shot_wanted(true, false, false, 2, false, false)); // 超额：不逐帧重试
+        assert!(!shot_wanted(true, false, false, 1, true, false)); // 判失败：退扁平
+        assert!(!shot_wanted(true, false, false, 1, false, true)); // 浮层在画：不补拍
+    }
+
+    #[test]
+    fn menu_glass_hides_only_while_shot_pending() {
+        assert!(glass_hides_menu(false, true, 1, false)); // 在途跳画
+        assert!(glass_hides_menu(false, false, 0, false)); // 开档头帧（待发）
+        assert!(!glass_hides_menu(true, false, 1, false)); // 有贴图源
+        assert!(!glass_hides_menu(false, false, 2, false)); // 超额：画扁平
+        assert!(!glass_hides_menu(false, false, 1, true)); // 失败：画扁平
+    }
+
+    #[test]
+    fn geometry_settling_is_opaque_then_restores_glass() {
+        assert_eq!(settle_alphas(true, true, true), (1.0, 255)); // settle 期不透明
+        assert_eq!(settle_alphas(true, true, false), (0.85, 216)); // 稳定后恢复玻璃 alpha
+        assert_eq!(settle_alphas(false, true, true), (1.0, 255)); // 玻璃关：恒不透明
+        assert_eq!(settle_alphas(true, false, true), (1.0, 255)); // 非 Windows：不参与
+        assert_eq!(settle_alphas(true, false, false), (1.0, 255));
+        let origin = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 80.0));
+        assert!(!rect_shifted(
+            origin,
+            origin.translate(egui::vec2(0.4, 0.0))
+        ));
+        assert!(rect_shifted(origin, origin.translate(egui::vec2(2.0, 0.0))));
+    }
+
+    #[test]
+    fn menu_glass_late_arrival_discarded_by_seq() {
+        assert_eq!(
+            glass_shot_seq(&egui::UserData::new(glass_shot_tag(7))),
+            Some(7)
+        );
+        assert_eq!(
+            glass_shot_seq(&egui::UserData::new(GLASS_SHOT_TAG.to_string())),
+            None
+        );
+        assert_eq!(
+            glass_shot_seq(&egui::UserData::new("duo-shot".to_string())),
+            None
+        );
+        assert!(arrival_matches(Some(7), 7));
+        assert!(!arrival_matches(Some(7), 6)); // 迟到旧代次
+        assert!(!arrival_matches(None, 7)); // 无在途（已失效/关档）
     }
 }

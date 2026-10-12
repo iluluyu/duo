@@ -348,6 +348,32 @@ pub fn elide_to_width(s: &str, max_w: f32, char_w: &dyn Fn(char) -> f32) -> Stri
     head
 }
 
+/// 运行图标上的关闭标：白底黑叉，悬停反相，始终黑白。
+pub fn close_badge(painter: &egui::Painter, center: Pos2, hovered: bool) {
+    let radius = 9.0;
+    let (fill, glyph) = if hovered {
+        (Color32::BLACK, Color32::WHITE)
+    } else {
+        (Color32::WHITE, Color32::BLACK)
+    };
+    painter.circle_filled(center, radius, fill);
+    painter.circle_stroke(
+        center,
+        radius - 0.5,
+        Stroke::new(1.0_f32, Color32::from_black_alpha(50)),
+    );
+    let arm = 3.1;
+    let stroke = Stroke::new(1.8_f32, glyph);
+    painter.line_segment(
+        [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(-arm, arm), center + Vec2::new(arm, -arm)],
+        stroke,
+    );
+}
+
 /// 清空钮/停止 ✕ 的双斜线（QML 两条 10×1.6 旋转矩形；线帽圆头）。
 pub fn x_mark(painter: &egui::Painter, center: Pos2, color: Color32) {
     let half = 5.0_f32;

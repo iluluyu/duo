@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::apps::run_device_density;
+use crate::apps::cached_device_density;
 use crate::audio_lock::AudioLock;
 use crate::catalog::catalog_by_package;
 use crate::chrome::borderless_for;
@@ -17,8 +17,8 @@ use crate::codec;
 use crate::devices::{run_devices_query, DeviceStates, EXIT_DEVICE_LOST};
 use crate::engine::{DisplayMode, DisplaySpec, EngineArgs, VideoSpec};
 use crate::monitor::{
-    apply_render_scale, primary_work_area, recommend_landscape, recommend_portrait, WorkArea,
-    LANDSCAPE_TARGET_DP, PORTRAIT_TARGET_DP,
+    apply_render_scale, dip_px, launch_monitor, recommend_landscape, recommend_portrait,
+    TargetMonitor, WorkArea, HOST_INITIAL_DIP_WIDTH, LANDSCAPE_TARGET_DP, PORTRAIT_TARGET_DP,
 };
 use crate::paths::logs_dir;
 use crate::quiet::quiet_command;
@@ -94,9 +94,8 @@ pub fn pick_serial(explicit: Option<&str>, states: &DeviceStates) -> Result<Stri
     }
 }
 
-/// 平行视窗密度上限：字框宽（短边×9:16 px）÷ 密度 ≥ ~925dp 目标的
-/// 最大整数密度（1440 短边 → 140，字框 ~917dp > 900dp 阈值留 17dp
-/// 余量）；钳到出厂 160（固定屏几何不变，再大的密度只会让字框 <925dp）。
+/// 平行视窗密度上限（2026-11 退役：默认固定比例改走显示器自适应，见 docs/mirroring-quality.md §5b；保留供真机标定测试）。
+#[allow(dead_code)]
 fn parallel_view_dpi_cap(short_side_px: i64) -> i64 {
     crate::session::density_for_letterbox(short_side_px)
         .round()
@@ -141,6 +140,9 @@ pub struct MirrorArgs {
     pub bitrate: Option<i64>,
     pub no_screen_off: bool,
     pub no_audio: bool,
+    /// 内部：面板音频中继形态（无窗口/无视频/无 overlay）。
+    pub audio_only: bool,
+    pub native_canvas: bool,
     pub no_vd_destroy_content: bool,
     pub video_codec: Option<String>,
     pub title: Option<String>,
@@ -169,6 +171,8 @@ impl Default for MirrorArgs {
             bitrate: None,
             no_screen_off: false,
             no_audio: false,
+            audio_only: false,
+            native_canvas: false,
             no_vd_destroy_content: false,
             video_codec: None,
             title: None,
@@ -259,6 +263,8 @@ pub fn parse_args(argv: &[String]) -> Result<MirrorArgs, String> {
             "bitrate" => args.bitrate = Some(parse_int("bitrate", &value(&mut i)?)?),
             "no-screen-off" => args.no_screen_off = true,
             "no-audio" => args.no_audio = true,
+            "audio-only" => args.audio_only = true,
+            "native-canvas" => args.native_canvas = true,
             "no-vd-destroy-content" => args.no_vd_destroy_content = true,
             "video-codec" => {
                 args.video_codec = Some(one_of(
@@ -317,27 +323,25 @@ pub struct DisplayPlan {
 }
 
 /// 密度注入：args.dpi > 自定义设置（≠160）> 跟随设备（null+探测）>
-/// flex 显示器自适应默认（2026-10-06）> 160。density_probe 由驱动层
-/// 注入（None = 探测失败/跳过），保持纯函数可测。
+/// 显示器自适应默认（flex 2026-10-06 / fixed 2026-11 对齐）> 160。
+/// density_probe 由驱动层注入（None = 探测失败/跳过），保持纯函数可测。
 ///
-/// 固定横屏的平行视窗保障：竖屏锁定应用（酷安等）在固定横屏上被系统
-/// 信箱化为「短边×9:16」居中竖条，应用侧双栏/平行视窗阈值 sw>900dp
-/// （真机标定 917dp ON / 900dp OFF，见 docs/window-experience.md）。默认
-/// 密度 160 下 1440 短边只给 801dp、跟随设备（如 356）更只给 ~364dp；
-/// 在无显式 --dpi 且设置密度为默认或「跟随设备」时，自动降到使字框
-/// ≥~920dp 的密度（1440 短边 → 140）。用户自定义全局密度（非默认非
-/// null）与按应用 --dpi 钉扎一律不动。
+/// 固定横屏的平行视窗降密保障已退役（2026-11）：默认固定比例与 flex
+/// 同用目标屏自适应，固定窗恒不放大超过画布 px（§5b）。
 ///
 /// flex 显示器自适应默认（2026-10-06，4K 真机「像素太多」反馈）：出厂
 /// 160 按 1080p 短边标定（~1080dp 画布）；高分屏 flex 像素跟随窗口 →
 /// dp 同倍膨胀、内容相对窗口过小（4K 最大化实测 2096dp）。仅当无
 /// --dpi 且设置为出厂默认时，按工作区短边把画布钉回 ~1080dp。
+///
+/// 多显示器目标屏与 native-canvas 初窗几何见 docs/mirroring-quality.md §5b。
 pub fn plan_display(
     args: &MirrorArgs,
     settings: &Settings,
-    area: WorkArea,
+    monitor: TargetMonitor,
     density_probe: Option<u32>,
 ) -> Result<DisplayPlan, String> {
+    let area = monitor.area;
     let render_scale = args.render_scale.unwrap_or(settings.render_scale);
     if !(1.0..=3.0).contains(&render_scale) {
         return Err(format!("render scale {render_scale} out of range 1.0-3.0"));
@@ -351,7 +355,14 @@ pub fn plan_display(
             ..Default::default()
         });
     }
-    let mut dpi = args.dpi.or(settings.dpi);
+    let native_default = args.native_canvas && !settings.dpi.is_some_and(|d| d != DEFAULT_VD_DPI);
+    let mut dpi = args.dpi.or_else(|| {
+        if native_default {
+            density_probe.map(i64::from).or(settings.dpi)
+        } else {
+            settings.dpi
+        }
+    });
     if dpi.is_none() {
         dpi = density_probe
             .or(Some(DEFAULT_VD_DPI as u32))
@@ -365,19 +376,15 @@ pub fn plan_display(
     {
         dpi = Some(display_adaptive_dpi(&area));
     }
-    if args.display == DisplayMode::Fixed && args.dpi.is_none() && !custom_density {
-        if let (Some(w), Some(h)) = (args.width, args.height) {
-            if w >= h {
-                dpi = Some(parallel_view_dpi_cap(w.min(h)));
-            }
-        }
-    }
-    // 补偿基准恒为出厂 160（跟随设备的探测值不作基准——356/140 会把
-    // 补偿推到 fit 上限变全屏窗，2026-09-19 真机撞出）。
-    let parallel_capped = matches!((args.display, dpi), (DisplayMode::Fixed, Some(d))
-        if d < DEFAULT_VD_DPI)
+    // fixed 默认密度同走目标屏自适应（2026-11，平行视窗 cap 退役）；native-canvas 初筛不让位。
+    if args.display == DisplayMode::Fixed
         && args.dpi.is_none()
-        && !custom_density;
+        && !custom_density
+        && !follows_device
+        && !native_default
+    {
+        dpi = Some(display_adaptive_dpi(&area));
+    }
     let mut display = DisplaySpec {
         mode: args.display,
         width: args.width.map(|w| w as u32),
@@ -403,8 +410,8 @@ pub fn plan_display(
         };
         if let Some(window) = rec.window {
             if args.display == DisplayMode::Flex {
-                plan.window_x = Some(window.x as i32);
-                plan.window_y = Some(window.y as i32);
+                plan.window_x = Some(window.x as i32 + monitor.origin_x as i32);
+                plan.window_y = Some(window.y as i32 + monitor.origin_y as i32);
             }
         }
     } else {
@@ -424,16 +431,15 @@ pub fn plan_display(
             let dh = dh as f64;
             let avail_w = (area.width - 40).max(320) as f64;
             let avail_h = (area.height - 60).max(320) as f64;
-            // 平行视窗降密度的窗口补偿（§16）：display 几何不变、窗口按
-            // 出厂 160/实际密度 放大（140 档 = ×8/7），屏上文字回到 160
-            // 桌面密度时代的物理尺寸；钳进工作区，小屏放不下时退回
-            // 工作区适配。
-            let text_scale = if parallel_capped {
-                (DEFAULT_VD_DPI as f64 / f64::from(dpi.unwrap_or(DEFAULT_VD_DPI) as u32)).min(2.0)
+            // native-canvas 初窗宽钉 600 DIP×目标屏 DPI/96（§5b）；只约
+            // 束宿主窗口，显式 size/dpi 照旧尊重。
+            let host_w = if args.native_canvas {
+                dip_px(HOST_INITIAL_DIP_WIDTH, monitor.effective_dpi) as f64
             } else {
-                1.0
+                f64::INFINITY
             };
-            let scale = (avail_w / dw).min(avail_h / dh).min(text_scale);
+            // 固定窗恒不放大超过画布 px（平行视窗 text_scale 补偿随 cap 退役）。
+            let scale = (avail_w / dw).min(avail_h / dh).min(1.0).min(host_w / dw);
             let mut w = (dw * scale).round() as u32;
             let mut h = (dh * scale).round() as u32;
             w += w & 1;
@@ -441,15 +447,22 @@ pub fn plan_display(
             plan.window_width = Some(w);
             plan.window_height = Some(h);
             if portrait {
-                plan.window_x = Some((area.width as i32 - w as i32).max(0));
-                plan.window_y = Some(((area.height as i32 - h as i32) / 2).max(0));
+                plan.window_x =
+                    Some((area.width as i32 - w as i32).max(0) + monitor.origin_x as i32);
+                plan.window_y =
+                    Some(((area.height as i32 - h as i32) / 2).max(0) + monitor.origin_y as i32);
             } else {
-                plan.window_x = Some(((area.width as i32 - w as i32) / 2).max(0));
-                plan.window_y = Some(((area.height as i32 - h as i32) / 2).max(0));
+                plan.window_x =
+                    Some(((area.width as i32 - w as i32) / 2).max(0) + monitor.origin_x as i32);
+                plan.window_y =
+                    Some(((area.height as i32 - h as i32) / 2).max(0) + monitor.origin_y as i32);
             }
         }
     }
-    let mut area_text = format!("work area {}x{}", area.width, area.height);
+    let mut area_text = format!(
+        "work area {}x{}{:+}{:+} host-dpi={}",
+        area.width, area.height, monitor.origin_x, monitor.origin_y, monitor.effective_dpi
+    );
     if render_scale > 1.0 && args.display == DisplayMode::Flex {
         display = apply_render_scale(&display, area, render_scale);
         plan = DisplayPlan {
@@ -462,6 +475,30 @@ pub fn plan_display(
     }
     if render_scale > 1.0 && args.display == DisplayMode::Fixed {
         area_text += &format!(" render÷{}", trim_float(render_scale));
+    }
+    // 副屏初窗必须完整落在目标工作区，不能照搬主屏尺寸。
+    if args.display == DisplayMode::Flex && !monitor.primary && plan.window_width.is_none() {
+        let factor = if render_scale > 1.0 {
+            render_scale
+        } else {
+            1.0
+        };
+        let seed_w = f64::from(display.width.unwrap_or(1920)) * factor;
+        let seed_h = f64::from(display.height.unwrap_or(1080)) * factor;
+        let scale = ((area.width - 40).max(1) as f64 / seed_w)
+            .min((area.height - 60).max(1) as f64 / seed_h)
+            .min(1.0);
+        let width = (seed_w * scale).floor().max(1.0) as u32;
+        let height = (seed_h * scale).floor().max(1.0) as u32;
+        plan.window_width = Some(width);
+        plan.window_height = Some(height);
+        let left = if portrait {
+            area.width - i64::from(width)
+        } else {
+            (area.width - i64::from(width)) / 2
+        };
+        plan.window_x = Some((monitor.origin_x + left) as i32);
+        plan.window_y = Some((monitor.origin_y + (area.height - i64::from(height)) / 2) as i32);
     }
     let new_display = display
         .to_flags()
@@ -693,6 +730,14 @@ fn device_states(adb: &str) -> DeviceStates {
     run_devices_query(adb).unwrap_or_default()
 }
 
+/// 面板已传入 serial 时不再打 adb devices。离线会在 scrcpy 连接时失败。
+fn resolve_serial(explicit: Option<&str>, adb: &str) -> Result<String, String> {
+    if let Some(serial) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(serial.to_string());
+    }
+    pick_serial(None, &device_states(adb))
+}
+
 /// `mirror` 驱动：设置 → 工具/serial 择一 → 显示规划 → 视频择优 →
 /// （Windows chrome）C# overlay 贴窗 / 其余受监督会话；设备拔出返回 2。
 pub fn run(argv: &[String]) -> i32 {
@@ -703,6 +748,9 @@ pub fn run(argv: &[String]) -> i32 {
             return 2;
         }
     };
+    if args.audio_only {
+        return run_audio_relay(&args);
+    }
     let (settings, problems) = load_settings(None);
     for problem in &problems {
         println!("settings: {problem}");
@@ -714,21 +762,28 @@ pub fn run(argv: &[String]) -> i32 {
             return 1;
         }
     };
-    let states = device_states(&adb_path);
-    let serial = match pick_serial(args.serial.as_deref(), &states) {
+    let serial = match resolve_serial(args.serial.as_deref(), &adb_path) {
         Ok(serial) => serial,
         Err(err) => {
             eprintln!("error: {err}");
             return 1;
         }
     };
-    // 跟随设备（dpi 未设且无 --dpi）才消费探测；默认 160 时这次 adb 往返是空的。
-    let density_probe = if args.dpi.is_none() && settings.dpi.is_none() {
-        run_device_density(&adb_path, &serial)
+    let density_probe = if args.dpi.is_none() && (settings.dpi.is_none() || args.native_canvas) {
+        cached_device_density(&adb_path, &serial)
     } else {
         None
     };
-    let plan = match plan_display(&args, &settings, primary_work_area(), density_probe) {
+    let wake = {
+        let adb = adb_path.clone();
+        let serial = serial.clone();
+        thread::spawn(move || {
+            let mut cmd = quiet_command(&adb);
+            cmd.args(["-s", &serial, "shell", "input", "keyevent", "224"]);
+            let _ = cmd.output();
+        })
+    };
+    let plan = match plan_display(&args, &settings, launch_monitor(), density_probe) {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("error: {err}");
@@ -868,31 +923,8 @@ pub fn run(argv: &[String]) -> i32 {
 
     let abort = Arc::new(AtomicBool::new(false));
     let watcher_gone = Arc::new(Mutex::new(false));
-    {
-        let abort = abort.clone();
-        let watcher_gone = watcher_gone.clone();
-        let adb_path = adb_path.clone();
-        let serial = serial.clone();
-        thread::spawn(move || loop {
-            if abort.load(Ordering::Acquire) {
-                return;
-            }
-            let states = device_states(&adb_path);
-            if !states.is_empty() && states.get(&serial).map(String::as_str) != Some("device") {
-                *watcher_gone.lock().expect("device watch lock") = true;
-                abort.store(true, Ordering::Release);
-                return;
-            }
-            thread::sleep(Duration::from_secs(2));
-        });
-    }
-    // 睡眠中启动的会话拿不到 Surface（-S/scrcpy 自带 power-on 叫不醒
-    // 已入睡设备，真机 T8 复现）：启动前先发用户级唤醒。
-    {
-        let mut cmd = quiet_command(&adb_path);
-        cmd.args(["-s", &serial, "shell", "input", "keyevent", "224"]);
-        let _ = cmd.output();
-    }
+    spawn_device_watcher(&abort, &watcher_gone, &adb_path, &serial);
+    let _ = wake.join();
     println!("starting engine... (Ctrl+C to stop)");
     let code = run_session_abortable(&spec, &abort, &mut |_| {});
     if let Some(overlay) = overlay.as_mut() {
@@ -901,6 +933,100 @@ pub fn run(argv: &[String]) -> i32 {
     audio_lock.release();
     if *watcher_gone.lock().expect("device watch lock") {
         println!("device disconnected - session stopped");
+        return EXIT_DEVICE_LOST;
+    }
+    code
+}
+
+// --------------------------------------------------------------- audio relay
+
+/// 设备拔出监视（run 与音频中继共用）：offline/unauthorized 即置 abort。
+fn spawn_device_watcher(
+    abort: &Arc<AtomicBool>,
+    watcher_gone: &Arc<Mutex<bool>>,
+    adb_path: &str,
+    serial: &str,
+) {
+    let abort = abort.clone();
+    let watcher_gone = watcher_gone.clone();
+    let adb_path = adb_path.to_string();
+    let serial = serial.to_string();
+    thread::spawn(move || loop {
+        if abort.load(Ordering::Acquire) {
+            return;
+        }
+        let states = device_states(&adb_path);
+        if !states.is_empty() && states.get(&serial).map(String::as_str) != Some("device") {
+            *watcher_gone.lock().expect("device watch lock") = true;
+            abort.store(true, Ordering::Release);
+            return;
+        }
+        thread::sleep(Duration::from_secs(2));
+    });
+}
+
+/// `--audio-only` 面板音频中继：无窗口/无视频/无 overlay，只转发设备全局
+/// 混音（argv 形态见 EngineArgs::audio_only；生命周期与仲裁语义见
+/// docs/mirroring-quality.md §3）。复用 resolve_binaries/AudioLock/
+/// SessionSpec；设备拔出返回 2。
+fn run_audio_relay(args: &MirrorArgs) -> i32 {
+    let (settings, problems) = load_settings(None);
+    for problem in &problems {
+        println!("settings: {problem}");
+    }
+    let (adb_path, scrcpy_path) = match resolve_binaries(&settings) {
+        Ok(paths) => paths,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return 1;
+        }
+    };
+    let serial = match resolve_serial(args.serial.as_deref(), &adb_path) {
+        Ok(serial) => serial,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return 1;
+        }
+    };
+    let (forward, arbitrate) = resolve_audio(args.no_audio, &settings.audio_policy);
+    if !forward {
+        println!("audio relay: nothing to forward (policy off)");
+        return 0;
+    }
+    let mut audio_lock = AudioLock::new(None);
+    if arbitrate && !audio_lock.acquire() {
+        println!("audio already owned by another duo window - relay exits muted");
+        return 0;
+    }
+    let mut engine = EngineArgs::new(serial.clone());
+    engine.audio_only = true;
+    let log_path = session_log_path(args, None);
+    println!("session log: {}", log_path.display());
+    let spec = SessionSpec {
+        command: match engine.to_argv(&scrcpy_path) {
+            Ok(argv) => argv,
+            Err(err) => {
+                eprintln!("error: {err}");
+                audio_lock.release();
+                return 1;
+            }
+        },
+        log_path,
+        max_restarts: 3,
+        restart_delay_s: 2.0,
+        env: [("ADB".to_string(), adb_path.clone())].into(),
+        orientation_lock: None,
+        orientation_serial: None,
+    };
+    let abort = Arc::new(AtomicBool::new(false));
+    let watcher_gone = Arc::new(Mutex::new(false));
+    spawn_device_watcher(&abort, &watcher_gone, &adb_path, &serial);
+    println!("starting audio relay... (Ctrl+C to stop)");
+    thread::sleep(Duration::from_millis(600));
+    let code = run_session_abortable(&spec, &abort, &mut |_| {});
+    audio_lock.release();
+    if *watcher_gone.lock().expect("device watch lock") {
+        println!("device disconnected - relay stopped");
         return EXIT_DEVICE_LOST;
     }
     code
@@ -957,6 +1083,15 @@ mod tests {
         map.iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect::<BTreeMap<String, String>>()
+    }
+
+    #[test]
+    fn explicit_serial_skips_device_query() {
+        assert_eq!(
+            resolve_serial(Some(" 4444bd6b "), "missing-adb").unwrap(),
+            "4444bd6b"
+        );
+        assert!(resolve_serial(Some("   "), "missing-adb").is_err());
     }
 
     #[test]
@@ -1028,6 +1163,59 @@ mod tests {
     }
 
     #[test]
+    fn native_canvas_uses_device_density_without_overriding_manual_choices() {
+        let mut args = MirrorArgs {
+            display: DisplayMode::Fixed,
+            width: Some(2400),
+            height: Some(3392),
+            native_canvas: true,
+            ..Default::default()
+        };
+        let mut settings = Settings::default();
+        let area = mon(WorkArea {
+            width: 3840,
+            height: 2088,
+        });
+        assert_eq!(
+            plan_display(&args, &settings, area, Some(356))
+                .unwrap()
+                .display
+                .dpi,
+            Some(356)
+        );
+        args.dpi = Some(240);
+        assert_eq!(
+            plan_display(&args, &settings, area, Some(356))
+                .unwrap()
+                .display
+                .dpi,
+            Some(240)
+        );
+        args.dpi = None;
+        settings.dpi = Some(400);
+        assert_eq!(
+            plan_display(&args, &settings, area, Some(356))
+                .unwrap()
+                .display
+                .dpi,
+            Some(400)
+        );
+        assert!(
+            parse_args(&argv("mirror --native-canvas"))
+                .unwrap()
+                .native_canvas
+        );
+    }
+
+    #[test]
+    fn parser_accepts_audio_only() {
+        let a = parse_args(&argv("mirror --audio-only --serial S")).unwrap();
+        assert!(a.audio_only);
+        assert_eq!(a.serial.as_deref(), Some("S"));
+        assert!(!parse_args(&argv("mirror")).unwrap().audio_only);
+    }
+
+    #[test]
     fn parser_enums_and_rejections() {
         let a = parse_args(&argv(
             "mirror --chrome-top native --chrome-bottom immersive",
@@ -1059,9 +1247,25 @@ mod tests {
         assert!(parse_args(&argv("mirror --embed-style native")).is_err());
     }
 
-    const AREA: WorkArea = WorkArea {
-        width: 3840,
-        height: 2054,
+    fn mon(area: WorkArea) -> TargetMonitor {
+        TargetMonitor {
+            origin_x: 0,
+            origin_y: 0,
+            area,
+            effective_dpi: 144,
+            primary: true,
+        }
+    }
+
+    const AREA: TargetMonitor = TargetMonitor {
+        origin_x: 0,
+        origin_y: 0,
+        area: WorkArea {
+            width: 3840,
+            height: 2054,
+        },
+        effective_dpi: 144,
+        primary: true,
     };
 
     #[test]
@@ -1093,7 +1297,7 @@ mod tests {
             }),
             201
         );
-        assert_eq!(display_adaptive_dpi(&AREA), 304, "4K 工作区→304");
+        assert_eq!(display_adaptive_dpi(&AREA.area), 304, "4K 工作区→304");
         assert_eq!(
             display_adaptive_dpi(&WorkArea {
                 width: 1366,
@@ -1115,14 +1319,14 @@ mod tests {
             let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
             assert_eq!(plan.display.dpi, Some(304));
         }
-        // 固定屏的 §16 平行视窗 cap 不受影响。
+        // 固定屏默认密度与 flex 同链：目标屏自适应，不按应用特殊化。
         let mut a = args();
         a.display = DisplayMode::Fixed;
         a.width = Some(2560);
         a.height = Some(1440);
         a.app = Some("com.coolapk.market".into());
         let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
-        assert_eq!(plan.display.dpi, Some(140));
+        assert_eq!(plan.display.dpi, Some(304));
     }
 
     #[test]
@@ -1132,10 +1336,10 @@ mod tests {
         let plan = plan_display(&args(), &settings(), AREA, Some(356)).unwrap();
         assert_eq!(plan.display.dpi, Some(304));
         assert!(plan.diag.contains("display: flex dpi=304"));
-        let area_1080p = WorkArea {
+        let area_1080p = mon(WorkArea {
             width: 1920,
             height: 1040,
-        };
+        });
         let plan = plan_display(&args(), &settings(), area_1080p, Some(356)).unwrap();
         assert_eq!(plan.display.dpi, Some(160));
     }
@@ -1170,21 +1374,21 @@ mod tests {
     }
 
     #[test]
-    fn plan_display_fixed_landscape_default_dpi_gets_parallel_cap() {
+    fn plan_display_fixed_landscape_default_dpi_is_display_adaptive() {
+        // 默认固定横屏与 flex 同用目标屏自适应（4K → 304），固定窗不再按密度放大。
         let mut a = args();
         a.display = DisplayMode::Fixed;
         a.width = Some(2560);
         a.height = Some(1440);
         let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
-        assert_eq!(plan.display.dpi, Some(140));
-        assert!(plan.diag.contains("new-display=2560x1440/140"));
-        // 窗口补偿：2560×1440 × 160/140 ≈ 2926×1646（屏上文字回到
-        // 降密前尺寸；4K 工作区放得下）。
+        assert_eq!(plan.display.dpi, Some(304));
+        assert!(plan.diag.contains("new-display=2560x1440/304"));
+        // 窗口恒等于画布 px（旧 ×160/140 补偿已删，4K 工作区也不放大）。
         assert_eq!(
             (plan.window_width, plan.window_height),
-            (Some(2926), Some(1646))
+            (Some(2560), Some(1440))
         );
-        // 1:1 也算横屏（竖屏锁定应用同样被信箱化）。
+        // 1:1 也走同一默认链。
         let mut sq = a.clone();
         sq.width = Some(1440);
         sq.height = Some(1440);
@@ -1193,24 +1397,23 @@ mod tests {
                 .unwrap()
                 .display
                 .dpi,
-            Some(140)
+            Some(304)
         );
     }
 
     #[test]
-    fn plan_display_fixed_window_compensation_clamps_to_work_area() {
-        // 小工作区放不下补偿窗口：退回工作区适配（文字略小于降密前但
-        // 窗口不溢出）。
+    fn plan_display_fixed_window_fits_small_work_area() {
+        // 小工作区放不下画布：窗口钳进工作区；密度已是小屏自适应（1200 短边 → 178）。
         let mut a = args();
         a.display = DisplayMode::Fixed;
         a.width = Some(2560);
         a.height = Some(1440);
-        let tiny = WorkArea {
+        let tiny = mon(WorkArea {
             width: 2000,
             height: 1200,
-        };
+        });
         let plan = plan_display(&a, &settings(), tiny, None).unwrap();
-        assert_eq!(plan.display.dpi, Some(140));
+        assert_eq!(plan.display.dpi, Some(178));
         let w = plan.window_width.unwrap() as f64;
         let h = plan.window_height.unwrap() as f64;
         assert!(
@@ -1242,30 +1445,29 @@ mod tests {
             plan_display(&a, &s, AREA, None).unwrap().display.dpi,
             Some(150)
         );
-        // 「跟随设备」（None + 探测）同样被保障覆盖（否则 356 密度下
-        // 固定横屏字框 ~364dp 永远手机形态）；窗口补偿基准恒为 160
-        //（不用探测值，否则补偿失控到全屏）。
+        // 「跟随设备」（None + 探测成功）对固定横屏同样胜出：不被降密/
+        // 自适应改写；窗口恒等画布 px，不随探测密度膨胀。
         let mut follow = settings();
         follow.dpi = None;
         let plan_follow = plan_display(&a, &follow, AREA, Some(356)).unwrap();
-        assert_eq!(plan_follow.display.dpi, Some(140));
+        assert_eq!(plan_follow.display.dpi, Some(356));
         assert_eq!(
             (plan_follow.window_width, plan_follow.window_height),
-            (Some(2926), Some(1646)),
-            "补偿窗口对准 160 基准，不随探测密度膨胀"
+            (Some(2560), Some(1440)),
+            "窗口对准画布 px，不做密度补偿放大"
         );
     }
 
     #[test]
-    fn plan_display_fixed_portrait_keeps_default_dpi() {
-        // 竖屏固定屏：竖屏应用原生填满，无信箱化，密度保障不介入。
+    fn plan_display_fixed_portrait_default_dpi_is_display_adaptive() {
+        // 竖屏固定屏：无信箱化特殊化，默认密度同走目标屏自适应。
         let mut a = args();
         a.display = DisplayMode::Fixed;
         a.width = Some(1440);
         a.height = Some(2560);
         let plan = plan_display(&a, &settings(), AREA, None).unwrap();
-        assert_eq!(plan.display.dpi, Some(160));
-        assert!(plan.diag.contains("new-display=1440x2560/160"));
+        assert_eq!(plan.display.dpi, Some(304));
+        assert!(plan.diag.contains("new-display=1440x2560/304"));
     }
 
     #[test]
@@ -1295,10 +1497,10 @@ mod tests {
 
     #[test]
     fn plan_display_fixed_aspect_preserves_proportions_on_1080p() {
-        let area_1080p = WorkArea {
+        let area_1080p = mon(WorkArea {
             width: 1920,
             height: 1040,
-        };
+        });
         let mut a = args();
         a.display = DisplayMode::Fixed;
         a.width = Some(1440);
@@ -1454,6 +1656,150 @@ mod tests {
                 .iter()
                 .any(|f| f == "--window-borderless"),
             "native 顶 = 真系统标题栏"
+        );
+    }
+
+    fn side_monitor() -> TargetMonitor {
+        // 实测副屏：2560x1440@125%（120dpi），右置底对齐 → origin 3840,375。
+        TargetMonitor {
+            origin_x: 3840,
+            origin_y: 375,
+            area: WorkArea {
+                width: 2560,
+                height: 1380,
+            },
+            effective_dpi: 120,
+            primary: false,
+        }
+    }
+
+    #[test]
+    fn plan_display_secondary_flex_follows_target_monitor() {
+        let plan = plan_display(&args(), &settings(), side_monitor(), Some(356)).unwrap();
+        assert_eq!(plan.display.mode, DisplayMode::Flex);
+        assert_eq!(plan.display.dpi, Some(204));
+        assert_eq!((plan.window_x, plan.window_y), (Some(4160), Some(525)));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(1920), Some(1080))
+        );
+        assert!(plan.diag.contains("work area 2560x1380+3840+375"));
+        assert!(plan.diag.contains("host-dpi=120"));
+    }
+
+    #[test]
+    fn plan_display_secondary_fixed_fits_target_work_area() {
+        // 固定横屏默认密度 = 目标屏自适应（副屏 2560x1380 → 204）；窗口钳进副屏工作区并带 origin。
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2560);
+        a.height = Some(1440);
+        let m = side_monitor();
+        let plan = plan_display(&a, &settings(), m, None).unwrap();
+        assert_eq!(plan.display.dpi, Some(204));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(2348), Some(1320))
+        );
+        let (x, y) = (plan.window_x.unwrap(), plan.window_y.unwrap());
+        assert_eq!((x, y), (3946, 405));
+        assert!(x + plan.window_width.unwrap() as i32 <= m.origin_x as i32 + m.area.width as i32);
+        assert!(y + plan.window_height.unwrap() as i32 <= m.origin_y as i32 + m.area.height as i32);
+    }
+
+    #[test]
+    fn plan_display_negative_origin_monitor() {
+        // 负坐标副屏（左置竖屏 1440x2560@144%）：origin 原样传出。
+        let m = TargetMonitor {
+            origin_x: -2560,
+            origin_y: 0,
+            area: WorkArea {
+                width: 1440,
+                height: 2560,
+            },
+            effective_dpi: 144,
+            primary: false,
+        };
+        let plan = plan_display(&args(), &settings(), m, Some(356)).unwrap();
+        assert_eq!((plan.window_x, plan.window_y), (Some(-2540), Some(886)));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(1400), Some(787))
+        );
+        assert_eq!(plan.display.dpi, Some(213), "密度源 = 目标屏短边 1440");
+        assert!(plan.diag.contains("-2560+0"));
+
+        let mut p = args();
+        p.portrait = true;
+        let plan = plan_display(&p, &settings(), m, Some(356)).unwrap();
+        assert_eq!(
+            (plan.display.width, plan.display.height),
+            (Some(1080), Some(1920))
+        );
+        assert_eq!((plan.window_x, plan.window_y), (Some(-2200), Some(320)));
+    }
+
+    #[test]
+    fn plan_display_primary_flex_keeps_os_default_position() {
+        // 主屏（实测 4K@144%）：flex 密度 309，不显式摆窗（单屏行为零变化）。
+        let m = TargetMonitor {
+            origin_x: 0,
+            origin_y: 0,
+            area: WorkArea {
+                width: 3840,
+                height: 2088,
+            },
+            effective_dpi: 144,
+            primary: true,
+        };
+        let plan = plan_display(&args(), &settings(), m, Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(309));
+        assert_eq!((plan.window_x, plan.window_y), (None, None));
+    }
+
+    #[test]
+    fn plan_display_explicit_dpi_beats_target_adaptive() {
+        // 显式 --dpi 优先于目标屏自适应密度。
+        let mut a = args();
+        a.dpi = Some(240);
+        let plan = plan_display(&a, &settings(), side_monitor(), Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(240));
+    }
+
+    #[test]
+    fn plan_display_native_canvas_host_window_dip_bounded() {
+        // native-canvas（计算器兼容 2400x3392/356）：初窗宽 = 600 DIP×目标
+        // 屏 DPI/96，高按画布比例；显示几何与密度不受影响。
+        let mut a = args();
+        a.display = DisplayMode::Fixed;
+        a.width = Some(2400);
+        a.height = Some(3392);
+        a.native_canvas = true;
+        let plan = plan_display(&a, &settings(), AREA, Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(356), "设备原生密度跟随探测");
+        assert!(plan.diag.contains("new-display=2400x3392/356"));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(900), Some(1272))
+        );
+        assert_eq!((plan.window_x, plan.window_y), (Some(2940), Some(391)));
+
+        // 同会话落在副屏（120dpi）：上限 750px，仍按画布比例。
+        let plan = plan_display(&a, &settings(), side_monitor(), Some(356)).unwrap();
+        assert_eq!(plan.display.dpi, Some(356));
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(750), Some(1060))
+        );
+        assert_eq!((plan.window_x, plan.window_y), (Some(5650), Some(535)));
+
+        // 非 native-canvas 的固定竖屏保持旧的铺满适配（无 DIP 上限）。
+        let mut plain = a.clone();
+        plain.native_canvas = false;
+        let plan = plan_display(&plain, &settings(), AREA, Some(356)).unwrap();
+        assert_eq!(
+            (plan.window_width, plan.window_height),
+            (Some(1412), Some(1994))
         );
     }
 }
